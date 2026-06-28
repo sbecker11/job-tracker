@@ -1,0 +1,4 @@
+# Dealbreakers, stack exclusions, and comp floor — used by scoring (TBD).
+dealbreakers: []
+stack_exclusions: []
+comp_floor_usd: null
