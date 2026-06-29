@@ -1,0 +1,9 @@
+{
+  "id": "fixture-newsletter-noise",
+  "from_address": "newsletter@substack.com",
+  "subject": "This week in tech news",
+  "snippet": "Top stories you missed",
+  "body_plain": "Welcome to our weekly roundup.\n\n1. AI funding trends\n2. Cloud provider updates\n3. Industry news\n\nUnsubscribe | Manage preferences",
+  "body_html": "",
+  "date": "2026-06-26T08:00:00Z"
+}

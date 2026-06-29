@@ -1,0 +1,9 @@
+{
+  "id": "fixture-rejection",
+  "from_address": "talent@acme.example",
+  "subject": "Update on your application — Senior Software Engineer",
+  "snippet": "Thank you for your interest",
+  "body_plain": "Hi Shawn,\n\nThank you for your application for the Senior Software Engineer role at Acme Corp.\n\nAfter careful consideration, we have decided to pursue other candidates whose experience more closely matches our needs at this time.\n\nWe appreciate your interest and wish you the best.\n\nAcme Talent Team",
+  "body_html": "",
+  "date": "2026-06-27T16:00:00Z"
+}

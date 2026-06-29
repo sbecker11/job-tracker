@@ -1,0 +1,9 @@
+{
+  "id": "fixture-recruiter-outreach",
+  "from_address": "jane.doe@techrecruiters.example",
+  "subject": "Quick chat about a great opportunity?",
+  "snippet": "Came across your profile",
+  "body_plain": "Hi Shawn,\n\nI came across your profile and thought you'd be a strong fit for one of my clients.\n\nWould you be open to a quick chat this week? Here's my calendar: https://calendly.com/jane/15min\n\nBest,\nJane Doe\nTech Recruiters LLC",
+  "body_html": "",
+  "date": "2026-06-27T14:00:00Z"
+}

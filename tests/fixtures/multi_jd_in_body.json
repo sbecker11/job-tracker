@@ -1,0 +1,9 @@
+{
+  "id": "fixture-multi-jd",
+  "from_address": "careers@startup.example",
+  "subject": "We're hiring — open roles at StartupCo",
+  "snippet": "Multiple engineering openings",
+  "body_plain": "Hi Shawn,\n\nStartupCo has several open roles:\n\n- Senior Software Engineer — backend platform\n- Full Stack Engineer — product team\n- Data Engineer — analytics\n\nApply:\nhttps://jobs.lever.co/startupco/senior-backend\nhttps://jobs.lever.co/startupco/fullstack\n\nThanks,\nStartupCo People Team",
+  "body_html": "",
+  "date": "2026-06-26T11:00:00Z"
+}

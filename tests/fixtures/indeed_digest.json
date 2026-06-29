@@ -1,0 +1,9 @@
+{
+  "id": "fixture-indeed-digest",
+  "from_address": "noreply@indeed.com",
+  "subject": "Your job matches — Software Engineer",
+  "snippet": "New matches in Boston",
+  "body_plain": "Jobs picked for you:\n\nhttps://www.indeed.com/viewjob?jk=aaa\nhttps://www.indeed.com/viewjob?jk=bbb\nhttps://www.indeed.com/viewjob?jk=ccc\n\nView more on Indeed.",
+  "body_html": "",
+  "date": "2026-06-25T07:00:00Z"
+}

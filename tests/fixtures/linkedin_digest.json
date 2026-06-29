@@ -1,0 +1,9 @@
+{
+  "id": "fixture-linkedin-digest",
+  "from_address": "jobalerts-noreply@linkedin.com",
+  "subject": "15 new jobs for you",
+  "snippet": "Software Engineer and more",
+  "body_plain": "Hi Shawn,\n\nHere are jobs matching your preferences:\n\nhttps://www.linkedin.com/jobs/view/111\nhttps://www.linkedin.com/jobs/view/222\nhttps://www.linkedin.com/jobs/view/333\nhttps://www.linkedin.com/jobs/view/444\n\nSee all on LinkedIn.",
+  "body_html": "",
+  "date": "2026-06-28T09:00:00Z"
+}

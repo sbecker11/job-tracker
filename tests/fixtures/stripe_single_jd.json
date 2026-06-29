@@ -1,0 +1,9 @@
+{
+  "id": "fixture-stripe-single-jd",
+  "from_address": "noreply@greenhouse.io",
+  "subject": "Software Engineer — Stripe",
+  "snippet": "Apply for Software Engineer at Stripe",
+  "body_plain": "Hi Shawn,\n\nStripe is hiring a Software Engineer.\n\nView role: https://boards.greenhouse.io/stripe/jobs/8009143\n\nResponsibilities:\n- Design and build APIs and services\n- Work with Ruby, Go, and distributed systems\n\nApply today.",
+  "body_html": "",
+  "date": "2026-06-28T10:00:00Z"
+}
