@@ -20,7 +20,7 @@ recruiting Gmail inbox
 | Path | Status |
 |---|---|
 | `src/job_tracker/ats/jd_resolver.py` | Public ATS board lookup (Greenhouse, Lever, Ashby, SmartRecruiters) |
-| `src/job_tracker/email/` | Gmail classifier — planned |
+| `src/job_tracker/email/` | Gmail reader + heuristic classifier |
 | `src/job_tracker/pipeline/` | Classify → resolve → score → dedup — planned |
 | `config/framework.yaml` | Scoring config stub |
 
@@ -31,7 +31,27 @@ cd job-tracker
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+pip install -e ".[dev]"
 ```
+
+## Gmail setup (one-time)
+
+1. [Google Cloud Console](https://console.cloud.google.com/) → create project → enable **Gmail API**.
+2. OAuth consent screen → add test user (`shawnbecker.recruiting@gmail.com`).
+3. Credentials → **OAuth client ID** → Desktop app → download JSON.
+4. Save as `credentials.json` in the repo root (gitignored), or set `JOB_TRACKER_GMAIL_CREDENTIALS`.
+5. First fetch opens a browser; token caches to `token.json` (gitignored) or `JOB_TRACKER_GMAIL_TOKEN`.
+
+## Classify recruiting inbox
+
+```bash
+pytest tests/test_classifier.py tests/test_gmail_reader.py -v
+python scripts/classify_inbox.py --all-fixtures
+python scripts/classify_inbox.py --dry-run --limit 5
+python scripts/classify_inbox.py --message-id <GMAIL_MESSAGE_ID>
+```
+
+Use `--newer-than 7` during development to limit how far back unread search goes.
 
 ## Resolve a job description
 
