@@ -81,17 +81,23 @@ def test_ats_search_agent_digest_extracts_real_listings_not_the_saved_search():
     assert all(r.company == "Acme Corp" for r in roles)
 
 
-def test_flattened_job_board_digest_surfaces_for_review_without_fake_company():
-    """Regression: aggregator digests (Adzuna, etc.) flatten 'Title Company -
-    Location more details' into one run-on paragraph with no reliable
-    title/company delimiter. Rather than guess and risk a wrong split
-    (e.g. company='Platform Engineer TOP MATCH NEW Robert Half'), extraction
-    must leave company blank so the pipeline routes it to manual review."""
+def test_flattened_job_board_digest_extracts_title_and_company_per_listing():
+    """Aggregator digests (Adzuna, etc.) list 'Title / [flags] / Company -
+    Location / more details' with each field on its own line (once HTML
+    block tags are converted to real line breaks — see htmltext.py). Company
+    and title should be split cleanly, and flag lines (TOP MATCH, NEW,
+    REMOTE, ...) must never be mistaken for the title."""
     message = load_fixture("job_board_flattened_digest.json")
     roles = extract_roles(message, Label.MULTI_JD_IN_BODY)
-    assert roles, "should surface something for a human to review"
-    assert all(r.company == "" for r in roles)
-    assert any("Robert Half" in r.title for r in roles)
+    by_company = {r.company: r.title for r in roles}
+    assert by_company["Robert Half"] == "Platform Engineer"
+    assert by_company["Quantum Technologies LLC"] == "AI/ML Engineer"
+    # Trailing flag line ("This job is available in multiple locations")
+    # comes *after* the company/location line for this listing — must not
+    # break the company/location match or get picked up as the title.
+    assert by_company["Fidelity Investments"] == "Principal HashiCorp Vault Expert"
+    assert by_company["Nelnet"] == "Senior Software Engineer"
+    assert all(r.title.lower() not in {"top match", "new", "remote"} for r in roles)
 
 
 def test_job_board_marketing_noise_does_not_extract_the_job_board_as_employer():
@@ -104,16 +110,21 @@ def test_job_board_marketing_noise_does_not_extract_the_job_board_as_employer():
     assert all(r.company != "Ladders" for r in roles)
 
 
-def test_ref_no_web_aggregation_digest_surfaces_snippets_for_review():
-    """Regression: 'matching jobs from the web' aggregation digests (Energy
-    Job Line and similar) delimit listings with a unique 'Ref no.: <hex>' id,
-    but don't cleanly separate title from company/location. Extraction must
-    surface a readable snippet for manual review rather than guess a split."""
+def test_ref_no_web_aggregation_digest_extracts_clean_titles():
+    """'Matching jobs from the web' aggregation digests (Energy Job Line and
+    similar) delimit listings with a unique 'Ref no.: <hex>' id. With real
+    line breaks preserved, the title is reliably the first line of each
+    listing — extract it cleanly. (The very first listing, before any Ref
+    no. marker, is preceded by sender-specific header boilerplate with no
+    reliable anchor, so it's not recovered — only listings after the first
+    marker are.) The line after the title is ambiguously either a company or
+    a location depending on the aggregator's source, so company is
+    deliberately left blank rather than guessed (routes to review)."""
     message = load_fixture("ref_no_web_aggregation_digest.json")
     roles = extract_roles(message, Label.MULTI_JD_IN_BODY)
-    assert roles, "should surface something for a human to review"
+    titles = {r.title for r in roles}
+    assert "Senior Software Engineer - Full-Stack Developer (Hybrid)" in titles
     assert all(r.company == "" for r in roles)
-    assert any("Full-Stack Developer" in r.title for r in roles)
 
 
 def test_company_extraction_stops_at_sentence_boundary():

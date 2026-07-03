@@ -49,7 +49,6 @@ from __future__ import annotations
 
 import argparse
 import difflib
-import html
 import json
 import re
 import sys
@@ -62,11 +61,7 @@ try:
 except ImportError:  # pragma: no cover
     requests = None  # network calls will raise a clear error; selftest still runs
 
-try:
-    from bs4 import BeautifulSoup
-    _HAS_BS4 = True
-except ImportError:
-    _HAS_BS4 = False
+from job_tracker.htmltext import html_to_text
 
 
 # ----------------------------------------------------------------------------
@@ -116,42 +111,6 @@ class Posting:
 # ----------------------------------------------------------------------------
 # HTML -> text
 # ----------------------------------------------------------------------------
-
-_BLOCK_TAG_RE = re.compile(
-    r"</?(?:p|br|li|div|tr|h[1-6]|ul|ol|table|section|article|header|footer)[^>]*>",
-    re.IGNORECASE,
-)
-
-
-def html_to_text(raw: str) -> str:
-    """Convert (possibly entity-escaped) HTML into clean plain text.
-
-    Only block-level tags introduce line breaks; inline tags (<b>, <i>, <a>,
-    <span>) are stripped without splitting the surrounding sentence.
-    """
-    if not raw:
-        return ""
-    # Greenhouse returns content as an HTML-entity-escaped string; unescape first.
-    unescaped = html.unescape(raw)
-    # Turn block-level tags into newlines BEFORE stripping the rest.
-    blocked = _BLOCK_TAG_RE.sub("\n", unescaped)
-    if _HAS_BS4:
-        text = BeautifulSoup(blocked, "html.parser").get_text("")
-    else:
-        text = re.sub(r"<[^>]+>", "", blocked)
-    # Tidy whitespace: collapse runs of blank lines, trim trailing spaces.
-    lines = [ln.strip() for ln in text.splitlines()]
-    out: list[str] = []
-    blank = False
-    for ln in lines:
-        if ln:
-            out.append(ln)
-            blank = False
-        elif not blank:
-            out.append("")
-            blank = True
-    return "\n".join(out).strip()
-
 
 # ----------------------------------------------------------------------------
 # Token generation & title matching

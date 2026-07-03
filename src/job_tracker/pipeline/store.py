@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS job_leads (
     extraction_confidence REAL,
     jd_resolved INTEGER,
     jd_source TEXT,
+    jd_text TEXT,
     match_pct REAL,
     matched_skills TEXT,
     verdict TEXT,
@@ -38,6 +39,21 @@ CREATE TABLE IF NOT EXISTS job_leads (
 );
 """
 
+# Columns added after the initial release. New databases get them via
+# _SCHEMA above; this backfills any pre-existing var/leads.db in place so
+# upgrading never requires deleting stored leads.
+_MIGRATIONS: list[tuple[str, str]] = [
+    ("jd_text", "ALTER TABLE job_leads ADD COLUMN jd_text TEXT"),
+]
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(job_leads)")}
+    for column, ddl in _MIGRATIONS:
+        if column not in existing:
+            conn.execute(ddl)
+    conn.commit()
+
 
 def connect(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     db_path = Path(db_path)
@@ -46,6 +62,7 @@ def connect(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute(_SCHEMA)
     conn.commit()
+    _apply_migrations(conn)
     return conn
 
 
@@ -61,10 +78,10 @@ def upsert_lead(conn: sqlite3.Connection, lead: JobLead) -> bool:
             """
             INSERT INTO job_leads (
                 normalized_key, company, title, source_message_id, source_label,
-                apply_url, extraction_confidence, jd_resolved, jd_source,
+                apply_url, extraction_confidence, jd_resolved, jd_source, jd_text,
                 match_pct, matched_skills, verdict, rationale, status,
                 first_seen, last_seen, times_seen
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 key,
@@ -76,6 +93,7 @@ def upsert_lead(conn: sqlite3.Connection, lead: JobLead) -> bool:
                 lead.extraction_confidence,
                 int(lead.jd_resolved),
                 lead.jd_source,
+                lead.jd_text,
                 lead.match_pct,
                 json.dumps(lead.matched_skills),
                 lead.verdict,
@@ -89,7 +107,9 @@ def upsert_lead(conn: sqlite3.Connection, lead: JobLead) -> bool:
         return True
 
     # Preserve any manual status the user already set (e.g. "pursuing"),
-    # just bump last_seen/times_seen and refresh scoring if it's still "new".
+    # just bump last_seen/times_seen and refresh scoring (and the JD text it
+    # was based on) if it's still "new". Once a human has triaged a lead,
+    # a re-send of the same digest shouldn't silently overwrite their record.
     conn.execute(
         """
         UPDATE job_leads
@@ -98,7 +118,10 @@ def upsert_lead(conn: sqlite3.Connection, lead: JobLead) -> bool:
             match_pct = CASE WHEN status = 'new' THEN ? ELSE match_pct END,
             matched_skills = CASE WHEN status = 'new' THEN ? ELSE matched_skills END,
             verdict = CASE WHEN status = 'new' THEN ? ELSE verdict END,
-            rationale = CASE WHEN status = 'new' THEN ? ELSE rationale END
+            rationale = CASE WHEN status = 'new' THEN ? ELSE rationale END,
+            jd_resolved = CASE WHEN status = 'new' THEN ? ELSE jd_resolved END,
+            jd_source = CASE WHEN status = 'new' THEN ? ELSE jd_source END,
+            jd_text = CASE WHEN status = 'new' THEN ? ELSE jd_text END
         WHERE normalized_key = ?
         """,
         (
@@ -107,6 +130,9 @@ def upsert_lead(conn: sqlite3.Connection, lead: JobLead) -> bool:
             json.dumps(lead.matched_skills),
             lead.verdict,
             json.dumps(lead.rationale),
+            int(lead.jd_resolved),
+            lead.jd_source,
+            lead.jd_text,
             key,
         ),
     )

@@ -115,21 +115,26 @@ _TITLE_LOCATION_PAIR = re.compile(
     r"(?=\s+[A-Z]|\s*$)"
 )
 
-# Job-board digests that flatten many listings into one run-on paragraph, each
-# terminated by a "more details" call-to-action (seen from Adzuna and similar
-# aggregators). There's no reliable delimiter between a listing's title and
-# company in this flattened format (e.g. "Platform Engineer TOP MATCH NEW
-# Robert Half" — title/company boundary is genuinely ambiguous without NLP),
-# so rather than guess and risk confidently-wrong structured data, this only
-# surfaces the raw listing line for manual review.
+# Job-board digests that list several postings, each terminated by a "more
+# details" call-to-action (seen from Adzuna and similar aggregators). Once
+# HTML block tags are converted to real line breaks (see htmltext.py), each
+# listing reliably takes the shape:
+#     <Title>
+#     [flag lines: TOP MATCH / NEW / REMOTE]
+#     <Company> - <Location>
+#     [trailing flag lines, e.g. "This job is available in multiple locations"]
+#     more details »
 _MORE_DETAILS_SPLIT = re.compile(r"more details(?:\s*(?:&raquo;|»|>>))?", re.I)
-_LOOKS_LIKE_LISTING = re.compile(r"[A-Za-z]\s+-\s+[A-Z][\w .,]{2,40}$")
+_COMPANY_LOCATION_LINE = re.compile(r"^(?P<company>.+?)\s+-\s+(?P<location>[A-Z].+)$")
+_DIGEST_FLAG_LINES = {"top match", "new", "remote", "this job is available in multiple locations"}
 
 # "Matching jobs from the web" style aggregation (e.g. Energy Job Line,
 # LinkedIn-style curation): each listing ends with a unique "Ref no.: <hex>"
-# id — a very reliable per-listing anchor — but titles/company/location are
-# still flattened together ambiguously, so this only surfaces text for review
-# just like the "more details" digests above.
+# id — a reliable per-listing anchor. With real line breaks preserved, the
+# listing's title is reliably the first line right after the previous
+# listing's Ref no.; company vs. location on the following line is still
+# ambiguous (could be either — the aggregation mixes formats per source), so
+# that part is left for manual review rather than guessed.
 _REF_NO_SPLIT = re.compile(r"Ref no\.?:\s*[0-9A-Fa-f]{16,40}")
 
 
@@ -211,56 +216,81 @@ def _extract_job_matches_roles(text: str) -> list[ExtractedRole]:
 
 
 def _extract_ref_no_digest_roles(text: str) -> list[ExtractedRole]:
-    """Surface 'matching jobs from the web' style digests (Energy Job Line and
-    similar curated-aggregation senders) for manual review. Each entry
-    between consecutive 'Ref no.: <hex>' markers starts with the next
-    listing's title, but title/company/location aren't cleanly delimited —
-    same rationale as the flattened job-board digest below: report a
-    readable snippet rather than fabricate a structured split.
+    """Parse 'matching jobs from the web' style digests (Energy Job Line and
+    similar curated-aggregation senders). Each entry between consecutive
+    'Ref no.: <hex>' markers reliably starts with the next listing's real
+    title on its own line. The line after that is either a company or a
+    location depending on the source the aggregator pulled from — that
+    ambiguity is left blank for manual review rather than guessed.
     """
     chunks = _REF_NO_SPLIT.split(text)
     if len(chunks) < 3:
         return []
     roles = []
     for chunk in chunks[1:-1]:  # first chunk is header noise, last is footer
-        snippet = " ".join(chunk.split()).strip()
-        if len(snippet) < 8:
+        lines = [ln.strip() for ln in chunk.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        title = lines[0]
+        if len(title) < 8:
             continue
         roles.append(
             ExtractedRole(
                 company="",
-                title=snippet[:120],
+                title=title,
                 source="ref_no_digest",
-                confidence=0.3,
+                confidence=0.35,
             )
         )
     return roles
 
 
 def _extract_more_details_digest_roles(text: str) -> list[ExtractedRole]:
-    """Surface flattened 'Title [flags] Company - Location more details' digest
-    listings (Adzuna and similar) for manual review.
-
-    Deliberately leaves company blank: the flattened text has no reliable
-    title/company delimiter, so this reports the raw listing line rather than
-    fabricate a structured split that could easily attribute the wrong
-    company to a role.
+    """Parse 'Title / [flags] / Company - Location / more details' digest
+    listings (Adzuna and similar), now that each field reliably sits on its
+    own line (see htmltext.py's structure-preserving HTML conversion).
     """
     chunks = _MORE_DETAILS_SPLIT.split(text)
     roles = []
     for chunk in chunks[:-1]:  # last chunk is always trailing footer/noise
         lines = [ln.strip() for ln in chunk.splitlines() if ln.strip()]
-        if not lines:
+        if len(lines) < 2:
             continue
-        candidate = lines[-1]
-        if not _LOOKS_LIKE_LISTING.search(candidate):
+
+        # The company/location line isn't always the chunk's last line — a
+        # trailing flag like "This job is available in multiple locations"
+        # can follow it — so search backward for the last line that actually
+        # matches "<Company> - <Location>". Gmail's own `snippet` preview
+        # (prepended in combined_text) flattens the first listing onto one
+        # un-broken line with no real newlines, which can spuriously match
+        # this pattern with a 100+ character "company" — a length cap
+        # rejects that without needing to special-case the snippet field.
+        company = None
+        company_idx = None
+        for i in range(len(lines) - 1, -1, -1):
+            m = _COMPANY_LOCATION_LINE.match(lines[i])
+            if m and len(m.group("company").strip()) <= 60:
+                company = m.group("company").strip()
+                company_idx = i
+                break
+        if company is None or _is_job_board_name(company):
             continue
+
+        title = None
+        for line in reversed(lines[:company_idx]):
+            if line.lower() in _DIGEST_FLAG_LINES:
+                continue
+            title = line
+            break
+        if not title:
+            continue
+
         roles.append(
             ExtractedRole(
-                company="",
-                title=candidate,
+                company=company,
+                title=title,
                 source="digest_listing",
-                confidence=0.3,
+                confidence=0.55,
             )
         )
     return roles

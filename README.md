@@ -134,20 +134,25 @@ Adzuna, Robert Half, corporate "search agent" ATS notifications, etc.):**
 these senders are never trusted as the employer — the pipeline keeps a
 denylist of job-board domains/names (`_JOB_BOARD_DOMAINS` /
 `_JOB_BOARD_NAMES` in `pipeline/extract.py`) so e.g. "Adzuna" or "Ladders,
-Inc." never gets stored as a fake hiring company. Three digest shapes are
-handled explicitly:
+Inc." never gets stored as a fake hiring company. HTML mail is converted to
+plain text with block-level structure preserved (paragraphs/list items keep
+their own lines — see `htmltext.py`) rather than flattened to one run-on
+line, which is what makes the following digest shapes parseable at all:
 - **Search-agent digests** (e.g. jobs2web-style "Job Matches:" emails) —
   the real per-listing titles are parsed cleanly and paired with the sender
   company; the saved-search name itself (e.g. "Agent: Sr Software Engineer")
   is never mistaken for a posting.
-- **Flattened "more details" digests** (Adzuna-style) and **"Ref no.:"
-  web-aggregation digests** (Energy Job Line / LinkedIn-style) — these
-  formats have no reliable delimiter between a listing's title and its
-  company, so rather than guess and risk a wrong split, extraction reports
-  the raw listing snippet with an empty company. That routes it to
-  `EXTRACTION NEEDS REVIEW`, grouped by source email with a few sample
-  snippets shown inline (`--json` has the full per-listing list) — enough
-  to skim and manually pursue anything interesting.
+- **Flattened "more details" digests** (Adzuna-style) — title, flags (TOP
+  MATCH/NEW/REMOTE), and "Company - Location" each reliably land on their
+  own line, so these are parsed into clean structured leads.
+- **"Ref no.:" web-aggregation digests** (Energy Job Line / LinkedIn-style
+  curation) — the title is reliably the first line of each listing and is
+  extracted cleanly, but the following line is ambiguously either a company
+  or a location depending on which site the aggregator pulled the posting
+  from, so company is deliberately left blank rather than guessed. That
+  routes it to `EXTRACTION NEEDS REVIEW`, grouped by source email with a
+  few sample titles shown inline (`--json` has the full per-listing list)
+  — enough to skim and manually pursue anything interesting.
 
 **Tuning the framework:** edit `config/framework.yaml` directly — dealbreakers,
 skills vocabulary/weights, and the `pursue_min_pct` / `review_min_pct`
@@ -176,8 +181,14 @@ it in batches.
 python scripts/list_leads.py --verdict pursue
 python scripts/list_leads.py --verdict review
 
-# Full detail (rationale, matched skills) as JSON
+# Narrow to one lead
+python scripts/list_leads.py --company "Acme" --title "Software Engineer"
+
+# Full detail (rationale, matched skills, full jd_text) as JSON
 python scripts/list_leads.py --verdict pursue --json
+
+# Print the full stored JD text for a specific lead (e.g. before writing a cover letter)
+python scripts/list_leads.py --company "Acme" --title "Software Engineer" --show-jd-text
 
 # Export everything to CSV for a spreadsheet pass
 python scripts/list_leads.py --csv ~/Desktop/job_leads.csv
@@ -185,6 +196,19 @@ python scripts/list_leads.py --csv ~/Desktop/job_leads.csv
 # Mark leads you've decided to pursue so future runs don't re-suggest them the same way
 python scripts/list_leads.py --verdict pursue --set-status pursuing
 ```
+
+**Stored JD text:** each lead's `jd_text` column keeps the full description
+text the score was computed against — the real ATS posting when
+`jd_resolved` is true, or the raw email body otherwise — so you can write a
+tailored cover letter or application answer later without re-fetching
+anything. It's kept as plain SQLite `TEXT` in the same row as everything
+else (no separate file store); the text is stored with its original
+paragraph/bullet-list structure intact rather than collapsed to one line,
+since a JD is semi-structured (headers, responsibilities, requirements), not
+a flat blob. Once a lead's `status` moves off `new` (e.g. to `pursuing`),
+`jd_text` — like the rest of the scoring fields — stops being overwritten by
+later re-sends of the same digest, so it won't quietly change out from under
+you after you've started using it.
 
 Leads persist in `var/leads.db` (gitignored — personal data) across runs, so
 you can classify a batch, step away, and come back to review with

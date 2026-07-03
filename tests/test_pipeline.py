@@ -45,22 +45,24 @@ def test_pipeline_produces_leads_for_single_and_multi_jd(db_path: Path):
     assert "Stripe" in companies
     assert "StartupCo" in companies
     assert "Acme Corp" in companies
-    # 1 single-jd + 3 multi-jd bullets + 2 ATS search-agent digest listings.
-    # (The flattened job-board digest and marketing-noise fixtures correctly
-    # produce zero leads — see test_extract.py for why.)
-    assert len(summary.leads) == 6
+    assert "Robert Half" in companies  # from the flattened job-board digest
+    # 1 single-jd + 3 multi-jd bullets + 2 ATS search-agent digest listings
+    # + 4 flattened job-board digest listings. (The Ref-no web-aggregation
+    # and marketing-noise fixtures correctly produce zero leads — company
+    # is ambiguous/absent in those formats — see test_extract.py for why.)
+    assert len(summary.leads) == 10
 
 
 def test_pipeline_dedups_on_rerun(db_path: Path):
     messages = load_all_fixtures()
     first = run_pipeline(messages, db_path=db_path, resolve_full_jd=False)
     second = run_pipeline(messages, db_path=db_path, resolve_full_jd=False)
-    assert first.new_leads == 6
+    assert first.new_leads == 10
     assert second.new_leads == 0
 
     conn = connect(db_path)
     rows = list_leads(conn)
-    assert len(rows) == 6
+    assert len(rows) == 10
     assert all(row["times_seen"] == 2 for row in rows)
     conn.close()
 

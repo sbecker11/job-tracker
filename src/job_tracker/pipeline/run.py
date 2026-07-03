@@ -153,6 +153,7 @@ def run_pipeline(
                     extraction_confidence=role.confidence,
                     jd_resolved=jd_resolved,
                     jd_source="ats_api" if jd_resolved else "email_body",
+                    jd_text=jd_text,
                     match_pct=score.match_pct,
                     matched_skills=score.matched_skills,
                     verdict=score.verdict,

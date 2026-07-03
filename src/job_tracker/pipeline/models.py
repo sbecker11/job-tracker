@@ -27,6 +27,7 @@ class JobLead:
     extraction_confidence: float = 0.0
     jd_resolved: bool = False
     jd_source: str = ""  # "ats_api" | "email_body" | ""
+    jd_text: str = ""  # full JD body, whatever its source — kept for reference
     match_pct: float = 0.0
     matched_skills: list[str] = field(default_factory=list)
     verdict: str = "review"

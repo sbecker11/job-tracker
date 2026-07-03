@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from job_tracker.email.models import EmailMessage
+from job_tracker.htmltext import html_to_text
 
 GMAIL_SCOPES = ("https://www.googleapis.com/auth/gmail.readonly",)
 DEFAULT_QUERY = "is:unread in:inbox"
@@ -122,15 +123,6 @@ def _collect_bodies(payload: dict[str, Any], plain_parts: list[str], html_parts:
         _collect_bodies(part, plain_parts, html_parts)
 
 
-_STYLE_OR_SCRIPT_BLOCK = re.compile(r"<(style|script)\b[^>]*>.*?</\1>", re.I | re.S)
-
-
-def _strip_tags(html: str) -> str:
-    without_blocks = _STYLE_OR_SCRIPT_BLOCK.sub(" ", html)
-    text = re.sub(r"<[^>]+>", " ", without_blocks)
-    return re.sub(r"\s+", " ", text).strip()
-
-
 def parse_gmail_message(raw: dict[str, Any]) -> EmailMessage:
     """Convert a Gmail API messages.get payload into EmailMessage."""
     payload = raw.get("payload") or {}
@@ -142,7 +134,11 @@ def parse_gmail_message(raw: dict[str, Any]) -> EmailMessage:
     body_plain = "\n".join(part.strip() for part in plain_parts if part.strip())
     body_html = "\n".join(part.strip() for part in html_parts if part.strip())
     if not body_plain.strip() and body_html.strip():
-        body_plain = _strip_tags(body_html)
+        # Structure-preserving conversion (paragraph/list breaks kept, not
+        # flattened to one line) — many senders are HTML-only, and this text
+        # both classification/extraction and (when used as a JD fallback)
+        # the stored lead record depend on.
+        body_plain = html_to_text(body_html)
     # Some senders ship stray HTML entities (e.g. "&amp;") even inside a
     # nominally plain-text part; unescape defensively so downstream regexes
     # matching on literal text (e.g. "&") aren't broken by "&amp;".

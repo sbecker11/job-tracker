@@ -18,9 +18,11 @@ _COLUMNS = [
     "status",
     "apply_url",
     "jd_resolved",
+    "jd_source",
     "times_seen",
     "first_seen",
     "last_seen",
+    "jd_text",
 ]
 
 
@@ -36,8 +38,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--db", type=Path, default=DEFAULT_DB_PATH, help=f"Leads DB path (default: {DEFAULT_DB_PATH})")
     ap.add_argument("--verdict", choices=["pursue", "review", "pass"], help="Filter by verdict")
     ap.add_argument("--status", help="Filter by status (new, pursuing, passed, applied)")
+    ap.add_argument("--company", help="Filter to companies containing this text (case-insensitive)")
+    ap.add_argument("--title", help="Filter to titles containing this text (case-insensitive)")
     ap.add_argument("--csv", type=Path, help="Write results to this CSV path instead of printing")
-    ap.add_argument("--json", action="store_true", help="Print full JSON (including rationale) instead of a table")
+    ap.add_argument("--json", action="store_true", help="Print full JSON (including rationale, jd_text) instead of a table")
+    ap.add_argument(
+        "--show-jd-text",
+        action="store_true",
+        help="Print the full stored JD text for each matching lead (best combined with --company/--title to narrow to one)",
+    )
     ap.add_argument("--set-status", help="Set status for all matching rows (e.g. --verdict pursue --set-status pursuing)")
     args = ap.parse_args(argv)
 
@@ -49,6 +58,12 @@ def main(argv: list[str] | None = None) -> int:
     rows = [_row_to_dict(r) for r in list_leads(conn, verdict=args.verdict)]
     if args.status:
         rows = [r for r in rows if r["status"] == args.status]
+    if args.company:
+        needle = args.company.lower()
+        rows = [r for r in rows if needle in r["company"].lower()]
+    if args.title:
+        needle = args.title.lower()
+        rows = [r for r in rows if needle in r["title"].lower()]
 
     if args.set_status:
         for r in rows:
@@ -78,6 +93,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.json:
         print(json.dumps(rows, indent=2))
+        return 0
+
+    if args.show_jd_text:
+        for i, r in enumerate(rows):
+            if i:
+                print("\n" + "=" * 70 + "\n")
+            print(f"{r['title']} @ {r['company']}  [{r['jd_source'] or 'no jd text stored'}]")
+            print("-" * 70)
+            print(r.get("jd_text") or "(no JD text stored for this lead)")
         return 0
 
     header = f"{'MATCH%':>7}  {'VERDICT':<8} {'STATUS':<9} {'COMPANY':<24} {'TITLE':<40}"
