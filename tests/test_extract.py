@@ -65,3 +65,79 @@ def test_no_roles_for_non_jd_labels():
 def test_recruiter_outreach_has_no_roles():
     message = load_fixture("recruiter_outreach.json")
     assert extract_roles(message, Label.RECRUITER_OUTREACH) == []
+
+
+def test_ats_search_agent_digest_extracts_real_listings_not_the_saved_search():
+    """Regression: a corporate 'search agent' digest (e.g. jobs2web) lists the
+    sender company's *real* openings after 'Job Matches:'. The saved-search
+    name itself ("Agent: Sr Software Engineer") is not a real posting and
+    must never be extracted as a role."""
+    message = load_fixture("ats_search_agent_digest.json")
+    roles = extract_roles(message, Label.MULTI_JD_IN_BODY)
+    titles = {r.title for r in roles}
+    assert "Motion Graphics & Illustration Specialist" in titles
+    assert "IT Finance Administrator" in titles
+    assert "Sr Software Engineer" not in titles
+    assert all(r.company == "Acme Corp" for r in roles)
+
+
+def test_flattened_job_board_digest_surfaces_for_review_without_fake_company():
+    """Regression: aggregator digests (Adzuna, etc.) flatten 'Title Company -
+    Location more details' into one run-on paragraph with no reliable
+    title/company delimiter. Rather than guess and risk a wrong split
+    (e.g. company='Platform Engineer TOP MATCH NEW Robert Half'), extraction
+    must leave company blank so the pipeline routes it to manual review."""
+    message = load_fixture("job_board_flattened_digest.json")
+    roles = extract_roles(message, Label.MULTI_JD_IN_BODY)
+    assert roles, "should surface something for a human to review"
+    assert all(r.company == "" for r in roles)
+    assert any("Robert Half" in r.title for r in roles)
+
+
+def test_job_board_marketing_noise_does_not_extract_the_job_board_as_employer():
+    """Regression: 'Ladders' re-engagement marketing mentions 'at Ladders,
+    Inc.' in its own boilerplate footer; that must never be extracted as the
+    hiring company."""
+    message = load_fixture("job_board_marketing_noise.json")
+    roles = extract_roles(message, Label.SINGLE_JD)
+    assert all(r.company != "Ladders, Inc" for r in roles)
+    assert all(r.company != "Ladders" for r in roles)
+
+
+def test_ref_no_web_aggregation_digest_surfaces_snippets_for_review():
+    """Regression: 'matching jobs from the web' aggregation digests (Energy
+    Job Line and similar) delimit listings with a unique 'Ref no.: <hex>' id,
+    but don't cleanly separate title from company/location. Extraction must
+    surface a readable snippet for manual review rather than guess a split."""
+    message = load_fixture("ref_no_web_aggregation_digest.json")
+    roles = extract_roles(message, Label.MULTI_JD_IN_BODY)
+    assert roles, "should surface something for a human to review"
+    assert all(r.company == "" for r in roles)
+    assert any("Full-Stack Developer" in r.title for r in roles)
+
+
+def test_company_extraction_stops_at_sentence_boundary():
+    """Regression: 'at DTN. We are hiring...' must not capture 'DTN. We' —
+    the multi-word continuation in the company regexes can otherwise swallow
+    the next sentence's capitalized first word."""
+    message = EmailMessage(
+        id="fixture-sentence-boundary",
+        from_address="careers@dtn.example",
+        subject="Opportunity at DTN",
+        snippet="",
+        body_plain="We have an opening at DTN. We are hiring a Software Engineer to join our team.",
+        body_html="",
+        date="2026-07-01T09:00:00Z",
+    )
+    roles = extract_roles(message, Label.SINGLE_JD)
+    assert roles
+    assert roles[0].company == "DTN"
+
+
+def test_sender_domain_fallback_ignores_known_job_boards():
+    message = load_fixture("job_board_marketing_noise.json")
+    roles = extract_roles(message, Label.SINGLE_JD)
+    # No real employer signal anywhere in this mail — must fall through to
+    # an incomplete role (empty company) rather than fabricate one from the
+    # job board's own sender domain.
+    assert roles and roles[0].company == ""

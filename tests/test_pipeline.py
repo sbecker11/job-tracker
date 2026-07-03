@@ -44,19 +44,23 @@ def test_pipeline_produces_leads_for_single_and_multi_jd(db_path: Path):
     companies = {lead["company"] for lead in summary.leads}
     assert "Stripe" in companies
     assert "StartupCo" in companies
-    assert len(summary.leads) == 4  # 1 single-jd + 3 multi-jd bullets
+    assert "Acme Corp" in companies
+    # 1 single-jd + 3 multi-jd bullets + 2 ATS search-agent digest listings.
+    # (The flattened job-board digest and marketing-noise fixtures correctly
+    # produce zero leads — see test_extract.py for why.)
+    assert len(summary.leads) == 6
 
 
 def test_pipeline_dedups_on_rerun(db_path: Path):
     messages = load_all_fixtures()
     first = run_pipeline(messages, db_path=db_path, resolve_full_jd=False)
     second = run_pipeline(messages, db_path=db_path, resolve_full_jd=False)
-    assert first.new_leads == 4
+    assert first.new_leads == 6
     assert second.new_leads == 0
 
     conn = connect(db_path)
     rows = list_leads(conn)
-    assert len(rows) == 4
+    assert len(rows) == 6
     assert all(row["times_seen"] == 2 for row in rows)
     conn.close()
 
@@ -67,7 +71,7 @@ def test_pipeline_offline_mode_never_hits_network(db_path: Path, monkeypatch):
 
     monkeypatch.setattr("job_tracker.pipeline.run.resolve_ats_jd", _fail)
     summary = run_pipeline(load_all_fixtures(), db_path=db_path, resolve_full_jd=False)
-    assert summary.total_messages == 7
+    assert summary.total_messages == 11
 
 
 def test_pipeline_reuses_postings_across_roles_from_same_company(db_path: Path, monkeypatch):

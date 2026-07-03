@@ -31,6 +31,45 @@ _ATS_VENDOR_DOMAINS = {
     "smartrecruiters.com",
 }
 
+# Job boards / aggregators / ATS-notification platforms are never the actual
+# employer — never attribute a role to them via the sender-domain fallback.
+# (Real examples that produced false "companies" before this fix: Adzuna,
+# Ladders, CareerBuilder, talent.com.)
+_JOB_BOARD_DOMAINS = {
+    "adzuna.com",
+    "adzunajobs.com",
+    "theladders.com",
+    "careerbuilder.com",
+    "talent.com",
+    "jobs2web.com",
+    "indeed.com",
+    "linkedin.com",
+    "ziprecruiter.com",
+    "glassdoor.com",
+    "monster.com",
+    "dice.com",
+    "simplyhired.com",
+    "lensa.com",
+    "jobright.ai",
+    "hired.com",
+    "welcometothejungle.com",
+}
+
+# Same idea as _JOB_BOARD_DOMAINS, but matched against a *resolved company
+# name string* rather than a sender domain — e.g. text like "our secure
+# server at Ladders, Inc." lets the job board's own name leak in as a
+# "company" via the generic text patterns, even though the mail is pure
+# marketing/re-engagement copy with no real listing.
+_JOB_BOARD_NAMES = re.compile(
+    r"^(?:ladders|adzuna|indeed|linkedin|careerbuilder|talent\.com|monster|"
+    r"dice|simplyhired|lensa|ziprecruiter|glassdoor|ladders,?\s*inc\.?)\b",
+    re.I,
+)
+
+
+def _is_job_board_name(candidate: str) -> bool:
+    return bool(_JOB_BOARD_NAMES.match(candidate.strip()))
+
 _JOB_TITLE = re.compile(
     r"\b(?:(?:senior|staff|principal|lead|sr\.?|jr\.?)\s+)?"
     r"(?:software|full[\s-]?stack|backend|front[\s-]?end|data|platform|"
@@ -57,6 +96,41 @@ _COMPANY_OPEN_ROLES_AT = re.compile(
 _COMPANY_HIRING_FOR = re.compile(
     r"\bhiring for\s+([A-Z][\w&.,'-]*(?:\s+[A-Z][\w&.,'-]*){0,3})\b", re.I
 )
+_COMPANY_FROM = re.compile(
+    r"\bjobs?\s+(?:posted|alerts?)\s+from\s+([A-Z][\w&.,'-]*(?:\s+[A-Z][\w&.,'-]*){0,3})\b", re.I
+)
+
+# Corporate ATS "search agent" digests (e.g. jobs2web-style): a single sender
+# company lists several of its own real openings after a "Job Matches:" marker.
+# The search-agent NAME itself (e.g. "Agent: Sr Software Engineer") is a saved
+# search, not a real posting — never extract a role from it.
+_JOB_MATCHES_SECTION = re.compile(
+    r"Job Matches:\s*(.*?)(?=Remember to forward|Getting these notifications|"
+    r"Add another agent|Connect with us|Manage your Job Preferences|$)",
+    re.I | re.S,
+)
+_TITLE_LOCATION_PAIR = re.compile(
+    r"(?P<title>[A-Z][\w&,.'/ ]{2,60}?)\s+-\s+"
+    r"(?P<location>(?:[A-Z][a-zA-Z.]+,\s*)?[A-Z]{2}(?:,\s*(?:US|USA))?(?:,\s*\d{5})?)"
+    r"(?=\s+[A-Z]|\s*$)"
+)
+
+# Job-board digests that flatten many listings into one run-on paragraph, each
+# terminated by a "more details" call-to-action (seen from Adzuna and similar
+# aggregators). There's no reliable delimiter between a listing's title and
+# company in this flattened format (e.g. "Platform Engineer TOP MATCH NEW
+# Robert Half" — title/company boundary is genuinely ambiguous without NLP),
+# so rather than guess and risk confidently-wrong structured data, this only
+# surfaces the raw listing line for manual review.
+_MORE_DETAILS_SPLIT = re.compile(r"more details(?:\s*(?:&raquo;|»|>>))?", re.I)
+_LOOKS_LIKE_LISTING = re.compile(r"[A-Za-z]\s+-\s+[A-Z][\w .,]{2,40}$")
+
+# "Matching jobs from the web" style aggregation (e.g. Energy Job Line,
+# LinkedIn-style curation): each listing ends with a unique "Ref no.: <hex>"
+# id — a very reliable per-listing anchor — but titles/company/location are
+# still flattened together ambiguously, so this only surfaces text for review
+# just like the "more details" digests above.
+_REF_NO_SPLIT = re.compile(r"Ref no\.?:\s*[0-9A-Fa-f]{16,40}")
 
 
 def _token_to_company(token: str) -> str:
@@ -92,16 +166,104 @@ def _company_from_text(text: str) -> str | None:
         for pattern in (
             _COMPANY_OPEN_ROLES_AT,
             _COMPANY_HIRING_FOR,
+            _COMPANY_FROM,
             _COMPANY_IS_HIRING,
             _COMPANY_TRAILING_DASH,
             _COMPANY_AT,
         ):
             m = pattern.search(line)
             if m:
-                candidate = m.group(1).strip().rstrip(".,")
-                if candidate and len(candidate) <= 50:
+                candidate = m.group(1).strip()
+                # A mid-name "." (e.g. "Corp.") is legitimate, but ". <Capital>"
+                # is a sentence boundary the capture group's multi-word
+                # continuation can otherwise swallow (e.g. "at DTN. We are
+                # hiring" -> "DTN. We"). Truncate there.
+                candidate = re.split(r"\.\s+(?=[A-Z])", candidate)[0].rstrip(".,")
+                if candidate and len(candidate) <= 50 and not _is_job_board_name(candidate):
                     return candidate
     return None
+
+
+def _extract_job_matches_roles(text: str) -> list[ExtractedRole]:
+    """Parse a corporate ATS 'search agent' digest's real Job Matches: list.
+
+    The search-agent name itself (e.g. "Agent: Sr Software Engineer") is a
+    saved search, not a posting, and is deliberately never used as a title.
+    """
+    section = _JOB_MATCHES_SECTION.search(text)
+    if not section:
+        return []
+    company = _company_from_text(text)
+    roles = []
+    for m in _TITLE_LOCATION_PAIR.finditer(section.group(1)):
+        title = m.group("title").strip()
+        if not title:
+            continue
+        roles.append(
+            ExtractedRole(
+                company=company or "",
+                title=title,
+                source="job_matches_digest",
+                confidence=0.6 if company else 0.35,
+            )
+        )
+    return roles
+
+
+def _extract_ref_no_digest_roles(text: str) -> list[ExtractedRole]:
+    """Surface 'matching jobs from the web' style digests (Energy Job Line and
+    similar curated-aggregation senders) for manual review. Each entry
+    between consecutive 'Ref no.: <hex>' markers starts with the next
+    listing's title, but title/company/location aren't cleanly delimited —
+    same rationale as the flattened job-board digest below: report a
+    readable snippet rather than fabricate a structured split.
+    """
+    chunks = _REF_NO_SPLIT.split(text)
+    if len(chunks) < 3:
+        return []
+    roles = []
+    for chunk in chunks[1:-1]:  # first chunk is header noise, last is footer
+        snippet = " ".join(chunk.split()).strip()
+        if len(snippet) < 8:
+            continue
+        roles.append(
+            ExtractedRole(
+                company="",
+                title=snippet[:120],
+                source="ref_no_digest",
+                confidence=0.3,
+            )
+        )
+    return roles
+
+
+def _extract_more_details_digest_roles(text: str) -> list[ExtractedRole]:
+    """Surface flattened 'Title [flags] Company - Location more details' digest
+    listings (Adzuna and similar) for manual review.
+
+    Deliberately leaves company blank: the flattened text has no reliable
+    title/company delimiter, so this reports the raw listing line rather than
+    fabricate a structured split that could easily attribute the wrong
+    company to a role.
+    """
+    chunks = _MORE_DETAILS_SPLIT.split(text)
+    roles = []
+    for chunk in chunks[:-1]:  # last chunk is always trailing footer/noise
+        lines = [ln.strip() for ln in chunk.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        candidate = lines[-1]
+        if not _LOOKS_LIKE_LISTING.search(candidate):
+            continue
+        roles.append(
+            ExtractedRole(
+                company="",
+                title=candidate,
+                source="digest_listing",
+                confidence=0.3,
+            )
+        )
+    return roles
 
 
 def _company_from_sender(from_address: str) -> str | None:
@@ -109,9 +271,9 @@ def _company_from_sender(from_address: str) -> str | None:
     if not m:
         return None
     domain = m.group(1).lower()
-    for vendor in _ATS_VENDOR_DOMAINS:
+    for vendor in _ATS_VENDOR_DOMAINS | _JOB_BOARD_DOMAINS:
         if domain == vendor or domain.endswith("." + vendor):
-            return None  # ATS notification domain, not the employer
+            return None  # ATS/job-board notification domain, not the employer
     parts = domain.split(".")
     if len(parts) < 2:
         return None
@@ -207,6 +369,15 @@ def _extract_multi_jd(message: EmailMessage) -> list[ExtractedRole]:
                 confidence=0.75 if company else 0.4,
             )
         )
+
+    if not roles:
+        roles = _extract_job_matches_roles(text)
+
+    if not roles:
+        roles = _extract_more_details_digest_roles(text)
+
+    if not roles:
+        roles = _extract_ref_no_digest_roles(text)
 
     if not roles:
         # No parseable bullet lines — fall back to one row per ATS link found.

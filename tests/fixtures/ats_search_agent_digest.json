@@ -1,0 +1,9 @@
+{
+  "id": "fixture-ats-search-agent-digest",
+  "from_address": "acme-jobnotification@noreply.jobs2web.com",
+  "subject": "New jobs posted from Acme Corp",
+  "snippet": "New jobs matched your search agent",
+  "body_plain": "The following jobs matched your search agent at Acme Corp and can be found at careers.acmecorp.example . Agent: Sr Software Engineer (Click to modify) Job Matches: Motion Graphics & Illustration Specialist - Lehi, UT, US, 84043 IT Finance Administrator - UT, US, 84043 Remember to forward these jobs to any of your friends who might have interest in any of these positions. Getting these notifications too often? Change the frequency here.",
+  "body_html": "",
+  "date": "2026-07-01T09:00:00Z"
+}

@@ -1,0 +1,9 @@
+{
+  "id": "fixture-ref-no-web-aggregation-digest",
+  "from_address": "alerts@energyjobline.com",
+  "subject": "New Jobs Matching Your Profile",
+  "snippet": "Here are your latest jobs",
+  "body_plain": "Job Results Shawn HERE ARE YOUR LATEST JOBS FROM ENERGY JOB LINE MATCHING JOBS FROM THE WEB Senior Full Stack Engineer Remote - Example State Overview Remote - Example State Example Co empowers organizations to take back control of security. Ref no.: 0EF560BB2FC09B5E8C684CAF31BD3140 Senior Software Engineer - Full-Stack Developer (Hybrid) Example Town Senior Software Engineer - Full-Stack Developer (Hybrid) Join to apply for the Senior Software Engineer role. Ref no.: 82601AC27070CB63E4AE2918AE54915B Unsubscribe from these alerts here.",
+  "body_html": "",
+  "date": "2026-07-01T09:00:00Z"
+}

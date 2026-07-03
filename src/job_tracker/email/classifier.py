@@ -75,8 +75,16 @@ _UNSUBSCRIBE = re.compile(r"\bunsubscribe\b", re.I)
 
 _MULTI_JD_HINTS = re.compile(
     r"\b(?:open roles?|multiple positions?|several (?:open )?roles?|"
-    r"jobs? (?:at|from) \w+|we(?:'re| are) hiring for)\b",
+    r"jobs? (?:at|from) \w+|we(?:'re| are) hiring for|job matches:|"
+    r"jobs? (?:posted|alerts?) from)\b",
     re.I,
+)
+
+# schema.org JSON-LD marketing boilerplate (promo cards, discount offers) that
+# leaks into body_plain for some senders — a strong noise signal on its own,
+# since real job listings don't ship as raw JSON-LD markup.
+_SCHEMA_ORG_MARKETING = re.compile(
+    r'"@type"\s*:\s*"(?:EmailMessage|Organization|DiscountOffer|PromotionCard)"', re.I
 )
 
 
@@ -131,6 +139,13 @@ def classify(message: EmailMessage) -> ClassificationResult:
     title_count = _count_job_titles(text)
     unique_titles = _unique_job_titles(text)
     has_jobs = _has_job_keywords(text)
+
+    # 1.5. schema.org JSON-LD marketing boilerplate — real job listings never
+    # ship as raw JSON-LD; this is a strong noise signal even if the mail
+    # incidentally mentions job-title-like words elsewhere.
+    if _SCHEMA_ORG_MARKETING.search(text) and ats_count == 0:
+        reasons.append("body: schema.org marketing JSON-LD, no ATS links")
+        return ClassificationResult(Label.NOISE, 0.8, reasons)
 
     # 2. Noise — no job signal, or obvious non-job mail
     if _NOISE_SENDERS.search(from_addr) and not has_jobs:

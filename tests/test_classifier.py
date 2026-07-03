@@ -21,6 +21,8 @@ FIXTURE_EXPECTATIONS = {
     "recruiter_outreach.json": Label.RECRUITER_OUTREACH,
     "multi_jd_in_body.json": Label.MULTI_JD_IN_BODY,
     "newsletter_noise.json": Label.NOISE,
+    "ats_search_agent_digest.json": Label.MULTI_JD_IN_BODY,
+    "job_board_flattened_digest.json": Label.MULTI_JD_IN_BODY,
 }
 
 
@@ -55,3 +57,25 @@ def test_single_jd_includes_reasons() -> None:
 def test_extracted_roles_empty_stub() -> None:
     result = classify(load_fixture("stripe_single_jd.json"))
     assert result.extracted_roles == []
+
+
+def test_schema_org_marketing_json_ld_is_noise() -> None:
+    """Regression: some senders' marketing mail leaks raw schema.org JSON-LD
+    (promo cards, discount offers) into body_plain. That's a strong noise
+    signal even if it incidentally mentions job-title-like words, since real
+    listings never ship as JSON-LD markup."""
+    message = EmailMessage(
+        id="fixture-schema-org-noise",
+        from_address="jobs@inform.theladders.com",
+        subject="RE: Your Onsite Action",
+        snippet="Is your dream job a destination?",
+        body_plain=(
+            'Is your dream job a destination? {"@context": "http://schema.org/", '
+            '"@type": "EmailMessage", "action": {"@type": "DiscountOffer"}} '
+            "Software Engineer roles await."
+        ),
+        body_html="",
+        date="2026-07-01T09:00:00Z",
+    )
+    result = classify(message)
+    assert result.label == Label.NOISE

@@ -45,9 +45,29 @@ def _print_report(summary) -> None:
             print(f"  {item['subject']}  <{item['from']}>")
 
     if summary.needs_review:
-        print(f"\n=== EXTRACTION NEEDS REVIEW ({len(summary.needs_review)}) ===")
+        # A single flattened digest email (e.g. an Energy Job Line or Adzuna
+        # aggregation) can surface a dozen+ unstructured listing snippets —
+        # group by source message so the report stays one line per email,
+        # with a few sample snippets, instead of drowning in repeats of the
+        # same subject line.
+        by_message: dict[str, list[dict]] = {}
         for item in summary.needs_review:
-            print(f"  {item['subject']}  ({item['reason']})")
+            by_message.setdefault(item["message_id"], []).append(item)
+
+        total_snippets = len(summary.needs_review)
+        print(
+            f"\n=== EXTRACTION NEEDS REVIEW ({len(by_message)} messages, "
+            f"{total_snippets} items) ==="
+        )
+        for message_id, items in by_message.items():
+            subject = items[0]["subject"]
+            reasons = {it["reason"] for it in items}
+            print(f"  {subject}  ({', '.join(sorted(reasons))}, {len(items)} item(s))  [{message_id}]")
+            samples = [it["partial"]["title"] for it in items if it.get("partial", {}).get("title")]
+            for sample in samples[:3]:
+                print(f"      - {sample[:100]}")
+            if len(samples) > 3:
+                print(f"      ... and {len(samples) - 3} more (see --json)")
 
     if summary.passed:
         print(f"\n=== PASS ({len(summary.passed)}) — not shown in detail, see --json for full list ===")

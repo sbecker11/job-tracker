@@ -129,6 +129,26 @@ needs a human look), `PASS` (low match or a load-bearing dealbreaker hit),
 `EXTRACTION NEEDS REVIEW` (couldn't confidently parse a company/title — check
 manually rather than silently dropping it).
 
+**Job-board / aggregator digests (LinkedIn, Lensa, Talent.com, Indeed,
+Adzuna, Robert Half, corporate "search agent" ATS notifications, etc.):**
+these senders are never trusted as the employer — the pipeline keeps a
+denylist of job-board domains/names (`_JOB_BOARD_DOMAINS` /
+`_JOB_BOARD_NAMES` in `pipeline/extract.py`) so e.g. "Adzuna" or "Ladders,
+Inc." never gets stored as a fake hiring company. Three digest shapes are
+handled explicitly:
+- **Search-agent digests** (e.g. jobs2web-style "Job Matches:" emails) —
+  the real per-listing titles are parsed cleanly and paired with the sender
+  company; the saved-search name itself (e.g. "Agent: Sr Software Engineer")
+  is never mistaken for a posting.
+- **Flattened "more details" digests** (Adzuna-style) and **"Ref no.:"
+  web-aggregation digests** (Energy Job Line / LinkedIn-style) — these
+  formats have no reliable delimiter between a listing's title and its
+  company, so rather than guess and risk a wrong split, extraction reports
+  the raw listing snippet with an empty company. That routes it to
+  `EXTRACTION NEEDS REVIEW`, grouped by source email with a few sample
+  snippets shown inline (`--json` has the full per-listing list) — enough
+  to skim and manually pursue anything interesting.
+
 **Tuning the framework:** edit `config/framework.yaml` directly — dealbreakers,
 skills vocabulary/weights, and the `pursue_min_pct` / `review_min_pct`
 thresholds are all data, not code. Keep it in sync with `~/Wisdom/CLAUDE.md`

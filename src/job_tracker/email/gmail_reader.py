@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import os
 import re
 from email.utils import parseaddr
@@ -121,8 +122,12 @@ def _collect_bodies(payload: dict[str, Any], plain_parts: list[str], html_parts:
         _collect_bodies(part, plain_parts, html_parts)
 
 
+_STYLE_OR_SCRIPT_BLOCK = re.compile(r"<(style|script)\b[^>]*>.*?</\1>", re.I | re.S)
+
+
 def _strip_tags(html: str) -> str:
-    text = re.sub(r"<[^>]+>", " ", html)
+    without_blocks = _STYLE_OR_SCRIPT_BLOCK.sub(" ", html)
+    text = re.sub(r"<[^>]+>", " ", without_blocks)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -138,6 +143,10 @@ def parse_gmail_message(raw: dict[str, Any]) -> EmailMessage:
     body_html = "\n".join(part.strip() for part in html_parts if part.strip())
     if not body_plain.strip() and body_html.strip():
         body_plain = _strip_tags(body_html)
+    # Some senders ship stray HTML entities (e.g. "&amp;") even inside a
+    # nominally plain-text part; unescape defensively so downstream regexes
+    # matching on literal text (e.g. "&") aren't broken by "&amp;".
+    body_plain = html.unescape(body_plain)
 
     _, from_address = parseaddr(headers.get("from", ""))
     _, to_address = parseaddr(headers.get("to", ""))

@@ -64,3 +64,19 @@ def test_parse_html_fallback_when_no_plain():
 
 def test_build_query_appends_newer_than():
     assert build_query("is:unread in:inbox", newer_than_days=7) == "is:unread in:inbox newer_than:7d"
+
+
+def test_html_fallback_strips_style_and_script_blocks():
+    """Regression: HTML-only marketing mail (e.g. CareerBuilder) embeds a <style>
+    block with raw CSS before any real content; it must not leak into body_plain."""
+    html = (
+        "<style>p, a, td { mso-line-height-rule: exactly; } "
+        ".ExternalClass { width: 100%; }</style>"
+        "<script>trackOpen('abc123');</script>"
+        "<p>New role: Senior Software Engineer at Acme Corp</p>"
+    )
+    raw = _sample_message(html=html)
+    message = parse_gmail_message(raw)
+    assert "mso-line-height-rule" not in message.body_plain
+    assert "trackOpen" not in message.body_plain
+    assert "Senior Software Engineer at Acme Corp" in message.body_plain
