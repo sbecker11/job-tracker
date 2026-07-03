@@ -13,6 +13,7 @@ from job_tracker.email.models import EmailMessage
 
 GMAIL_SCOPES = ("https://www.googleapis.com/auth/gmail.readonly",)
 DEFAULT_QUERY = "is:unread in:inbox"
+CONFIG_DIR = Path.home() / ".config" / "job-tracker"
 
 
 def repo_root() -> Path:
@@ -23,20 +24,26 @@ def default_credentials_path() -> Path:
     env = os.environ.get("JOB_TRACKER_GMAIL_CREDENTIALS")
     if env:
         return Path(env).expanduser()
+    config_path = CONFIG_DIR / "credentials.json"
+    if config_path.is_file():
+        return config_path
     local = repo_root() / "credentials.json"
     if local.is_file():
         return local
-    return Path.home() / ".config" / "job-tracker" / "credentials.json"
+    return config_path
 
 
 def default_token_path() -> Path:
     env = os.environ.get("JOB_TRACKER_GMAIL_TOKEN")
     if env:
         return Path(env).expanduser()
+    config_path = CONFIG_DIR / "token.json"
+    if config_path.is_file():
+        return config_path
     local = repo_root() / "token.json"
-    if local.is_file() or local.parent.is_dir():
+    if local.is_file():
         return local
-    return Path.home() / ".config" / "job-tracker" / "token.json"
+    return config_path
 
 
 def _require_google_libs():

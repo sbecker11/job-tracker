@@ -1,4 +1,166 @@
-# Dealbreakers, stack exclusions, and comp floor — used by scoring (TBD).
-dealbreakers: []
-stack_exclusions: []
-comp_floor_usd: null
+# JD Match Framework — transcribed from ~/Wisdom/CLAUDE.md (Sections 1-3, 8-9).
+# Used by src/job_tracker/scoring/scorer.py to run the dealbreaker sweep and
+# skills-alignment match % before a lead is surfaced as pursue/review/pass.
+#
+# This is a keyword-heuristic v1 (no LLM). It is intentionally conservative:
+# ambiguous or low-signal results come back as "review" rather than being
+# silently dropped, since a human still makes the final call (per CLAUDE.md's
+# human-in-the-loop rule for recruiter/client-facing decisions).
+#
+# Keep this file in sync with ~/Wisdom/CLAUDE.md when that file changes.
+
+candidate:
+  name: "Shawn Becker"
+  positioning: "Senior individual-contributor track"
+  compensation_floor:
+    contract_hourly_w2_usd: 75
+    permanent_base_usd: 115000
+
+# Structural / stack dealbreakers (CLAUDE.md §3). "keywords" are matched
+# case-insensitively with word boundaries against the JD text.
+# load_bearing_threshold: how many times a keyword must appear (or appear in
+# the title) before it's treated as "load-bearing" rather than a passing
+# mention in a long stack list.
+dealbreakers:
+  - id: c2c_only
+    label: "C2C-only (no W2 option)"
+    keywords: ["corp-to-corp only", "corp to corp only", "c2c only", "1099 only", "no w2"]
+    min_hits: 1
+    verdict: "Structural mismatch — cannot do C2C"
+  - id: golang
+    label: "Go/Golang as load-bearing requirement"
+    keywords: ["golang", "\\bgo\\b"]
+    min_hits: 2
+    verdict: "Dealbreaker if load-bearing"
+  - id: django
+    label: "Django as load-bearing requirement"
+    keywords: ["django"]
+    min_hits: 1
+    verdict: "Dealbreaker if load-bearing"
+  - id: php
+    label: "PHP as load-bearing requirement"
+    keywords: ["\\bphp\\b"]
+    min_hits: 1
+    verdict: "Dealbreaker if load-bearing"
+  - id: angular
+    label: "Angular as load-bearing requirement"
+    keywords: ["angular"]
+    min_hits: 1
+    verdict: "Dealbreaker if load-bearing"
+  - id: dotnet
+    label: ".NET / C# as load-bearing requirement"
+    keywords: ["\\.net\\b", "c#", "asp\\.net"]
+    min_hits: 1
+    verdict: "Dealbreaker if load-bearing"
+
+# Explicitly NOT a dealbreaker (CLAUDE.md §3) — never flagged.
+not_dealbreakers:
+  - id: w2_only
+    label: "W2-only"
+    note: "This is a fit, not a concern"
+
+# Skills vocabulary pulled from CLAUDE.md §8 (portfolio projects) and §9
+# (technical anchors by engagement), weighted toward the most current stack
+# per CLAUDE.md's "lead with what's used in the latest engagements" rule.
+# match_pct = (sum of weights matched in the JD) / (sum of all weights below).
+skills:
+  # Core / most current (weight 3)
+  - keyword: "java"
+    weight: 3
+  - keyword: "spring boot"
+    weight: 3
+  - keyword: "spring ai"
+    weight: 3
+  - keyword: "python"
+    weight: 3
+  - keyword: "fastapi"
+    weight: 3
+  - keyword: "langchain"
+    weight: 3
+  - keyword: "langgraph"
+    weight: 3
+  - keyword: "\\baws\\b"
+    weight: 3
+  - keyword: "aurora"
+    weight: 3
+  - keyword: "postgres"
+    weight: 3
+  - keyword: "pgvector"
+    weight: 3
+  - keyword: "bedrock"
+    weight: 3
+  - keyword: "ecs fargate"
+    weight: 3
+  - keyword: "\\brag\\b"
+    weight: 3
+  - keyword: "\\bllm\\b"
+    weight: 3
+  - keyword: "react"
+    weight: 3
+  - keyword: "typescript"
+    weight: 3
+  - keyword: "vue"
+    weight: 3
+  - keyword: "snowflake"
+    weight: 3
+  - keyword: "mlflow"
+    weight: 3
+
+  # Mid / recent-past engagements (weight 2)
+  - keyword: "pyspark"
+    weight: 2
+  - keyword: "\\bemr\\b"
+    weight: 2
+  - keyword: "redshift"
+    weight: 2
+  - keyword: "tableau"
+    weight: 2
+  - keyword: "\\bdbt\\b"
+    weight: 2
+  - keyword: "aws glue"
+    weight: 2
+  - keyword: "airflow"
+    weight: 2
+  - keyword: "ci/cd"
+    weight: 2
+  - keyword: "codepipeline"
+    weight: 2
+  - keyword: "cyberark"
+    weight: 2
+  - keyword: "segment"
+    weight: 2
+  - keyword: "bigquery"
+    weight: 2
+  - keyword: "pytorch"
+    weight: 2
+  - keyword: "sagemaker"
+    weight: 2
+  - keyword: "looker"
+    weight: 2
+  - keyword: "docker"
+    weight: 2
+  - keyword: "kubernetes"
+    weight: 2
+  - keyword: "microservices"
+    weight: 2
+
+  # Broader / domain signal (weight 1)
+  - keyword: "flyway"
+    weight: 1
+  - keyword: "chromadb"
+    weight: 1
+  - keyword: "vector database"
+    weight: 1
+  - keyword: "full[- ]stack"
+    weight: 1
+  - keyword: "machine learning"
+    weight: 1
+  - keyword: "healthcare"
+    weight: 1
+  - keyword: "fintech"
+    weight: 1
+
+# Verdict thresholds on match_pct (0-100), applied after the dealbreaker sweep.
+thresholds:
+  pursue_min_pct: 15
+  review_min_pct: 5

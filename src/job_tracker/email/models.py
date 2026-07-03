@@ -9,10 +9,13 @@ from job_tracker.email.labels import Label
 
 @dataclass
 class ExtractedRole:
-    """Stub for fan-out (2c); populated in a later commit."""
+    """One (company, title) pair fanned out of a SINGLE_JD or MULTI_JD_IN_BODY message."""
 
     company: str = ""
     title: str = ""
+    apply_url: str = ""
+    source: str = ""  # "ats_url" | "bullet_line" | "subject" | "sender_domain"
+    confidence: float = 0.0
 
 
 @dataclass

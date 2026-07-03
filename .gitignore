@@ -4,7 +4,13 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 .env
+.env.*
+!.env.example
 *.db
+
+# Gmail OAuth — never commit (prefer ~/.config/job-tracker/)
 credentials.json
 token.json
+client_secret*.json
+
 .DS_Store

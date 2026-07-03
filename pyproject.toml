@@ -13,11 +13,14 @@ dependencies = [
     "beautifulsoup4>=4.12.0",
     "google-api-python-client>=2.100.0",
     "google-auth-oauthlib>=1.1.0",
+    "PyYAML>=6.0",
 ]
 
 [project.scripts]
 resolve-jd = "job_tracker.cli.resolve_jd:main"
 classify-inbox = "job_tracker.cli.classify_inbox:main"
+run-pipeline = "job_tracker.cli.run_pipeline:main"
+list-leads = "job_tracker.cli.list_leads:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]

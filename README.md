@@ -39,8 +39,12 @@ recruiting Gmail inbox
 |---|---|
 | `src/job_tracker/ats/jd_resolver.py` | Public ATS board lookup (Greenhouse, Lever, Ashby, SmartRecruiters) |
 | `src/job_tracker/email/` | Gmail reader + heuristic classifier |
-| `src/job_tracker/pipeline/` | Classify → resolve → score → dedup — planned |
-| `config/framework.yaml` | Scoring config stub |
+| `src/job_tracker/pipeline/extract.py` | Fan-out: (company, title) roles from SINGLE_JD / MULTI_JD_IN_BODY messages |
+| `src/job_tracker/scoring/scorer.py` | Dealbreaker sweep + skills alignment match % (CLAUDE.md §10, keyword heuristic v1) |
+| `src/job_tracker/pipeline/store.py` | SQLite dedup store (`var/leads.db`, gitignored) |
+| `src/job_tracker/pipeline/run.py` | Orchestrator: classify → extract → resolve → score → store |
+| `src/job_tracker/cli/list_leads.py` | Review/export/update stored leads without re-running the pipeline |
+| `config/framework.yaml` | Dealbreakers + skills vocabulary, transcribed from `~/Wisdom/CLAUDE.md` |
 
 ## Setup
 
@@ -94,6 +98,77 @@ python scripts/resolve_jd.py --company "Ancestry" --title "Senior Software Engin
 ```
 
 Pin board tokens that guessing misses in `KNOWN_BOARDS` at the top of `jd_resolver.py`.
+
+## Run the full pipeline (classify → extract → resolve → score → store)
+
+This is the one-command version of "read the recruiting inbox and tell me
+what's worth pursuing." It classifies each message, fans multi-role digests
+out into individual (company, title) leads, tries to resolve the full JD from
+the public ATS APIs, scores it against the JD Match Framework in
+`config/framework.yaml` (dealbreaker sweep + skills alignment — see CLAUDE.md
+§10), and dedups into `var/leads.db` (gitignored) so re-processing the same
+inbox never creates duplicate rows.
+
+```bash
+# Offline dry run against the bundled fixtures — no network, no Gmail auth needed
+python scripts/run_pipeline.py --all-fixtures --offline
+
+# Against real Gmail (requires the one-time OAuth login below)
+python scripts/run_pipeline.py --dry-run --newer-than 30 --limit 50
+
+# Skip live ATS lookups (faster, scores against email body text only)
+python scripts/run_pipeline.py --dry-run --newer-than 30 --offline
+
+# Full JSON output (every lead, full rationale) for scripting/inspection
+python scripts/run_pipeline.py --dry-run --newer-than 30 --json > /tmp/run.json
+```
+
+**Output buckets:** `PURSUE` (match % ≥ `pursue_min_pct`), `REVIEW` (borderline —
+needs a human look), `PASS` (low match or a load-bearing dealbreaker hit),
+`RECRUITER OUTREACH` (no JD to score — needs a reply, not a lead), and
+`EXTRACTION NEEDS REVIEW` (couldn't confidently parse a company/title — check
+manually rather than silently dropping it).
+
+**Tuning the framework:** edit `config/framework.yaml` directly — dealbreakers,
+skills vocabulary/weights, and the `pursue_min_pct` / `review_min_pct`
+thresholds are all data, not code. Keep it in sync with `~/Wisdom/CLAUDE.md`
+§3 (dealbreakers) and §8–9 (skills) when those change.
+
+**Limitation (by design, v1):** matching is keyword-based, not an LLM read of
+the JD — it's the "rule engine" layer from the runbook's architecture
+(Appendix D). A JD using unlisted synonyms for a known skill won't match, and
+"load-bearing" is approximated by mention count, not real emphasis. Nothing in
+this pipeline applies, replies, or sends anything on your behalf — it only
+surfaces and ranks leads for you to act on.
+
+**Scale note:** when a batch pulls several roles from the same employer (a
+3-role digest, or the same company showing up across multiple emails), the
+pipeline fetches that company's ATS board once per run and reuses it for
+every title — it does not refetch per role. ATS requests also get one retry
+with backoff on a transient error or a 429. Still, be considerate running
+against hundreds of backlog messages at once; `--limit` lets you work through
+it in batches.
+
+## Review stored leads (without re-running the pipeline)
+
+```bash
+# Table view
+python scripts/list_leads.py --verdict pursue
+python scripts/list_leads.py --verdict review
+
+# Full detail (rationale, matched skills) as JSON
+python scripts/list_leads.py --verdict pursue --json
+
+# Export everything to CSV for a spreadsheet pass
+python scripts/list_leads.py --csv ~/Desktop/job_leads.csv
+
+# Mark leads you've decided to pursue so future runs don't re-suggest them the same way
+python scripts/list_leads.py --verdict pursue --set-status pursuing
+```
+
+Leads persist in `var/leads.db` (gitignored — personal data) across runs, so
+you can classify a batch, step away, and come back to review with
+`list_leads.py` without touching the network again.
 
 ## Limits
 

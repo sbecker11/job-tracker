@@ -53,6 +53,7 @@ import html
 import json
 import re
 import sys
+import time
 from dataclasses import dataclass, asdict, field
 from typing import Iterable, Optional
 
@@ -214,20 +215,29 @@ def title_score(a: str, b: str) -> float:
 # HTTP helper
 # ----------------------------------------------------------------------------
 
-def _get_json(url: str) -> Optional[object]:
+def _get_json(url: str, *, retries: int = 1) -> Optional[object]:
     if requests is None:
         raise RuntimeError("The 'requests' package is required for network calls. pip install requests")
-    try:
-        resp = requests.get(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-                            timeout=REQUEST_TIMEOUT)
-    except requests.RequestException:
-        return None
-    if resp.status_code != 200:
-        return None
-    try:
-        return resp.json()
-    except ValueError:
-        return None
+    attempts = retries + 1
+    for attempt in range(attempts):
+        try:
+            resp = requests.get(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+                                timeout=REQUEST_TIMEOUT)
+        except requests.RequestException:
+            if attempt + 1 < attempts:
+                continue
+            return None
+        if resp.status_code == 429 and attempt + 1 < attempts:
+            # Rate-limited — brief backoff then one retry.
+            time.sleep(1.5)
+            continue
+        if resp.status_code != 200:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return None
+    return None
 
 
 # ----------------------------------------------------------------------------
@@ -380,7 +390,8 @@ def gather_postings(company: str, providers: Iterable[str] = PROVIDERS.keys(),
 
 
 def resolve(company: str, title: str, threshold: float = DEFAULT_MATCH_THRESHOLD,
-            top_n: int = 5, verbose: bool = False) -> dict:
+            top_n: int = 5, verbose: bool = False,
+            postings: Optional[list[Posting]] = None) -> dict:
     """
     Returns a dict:
       {
@@ -389,8 +400,13 @@ def resolve(company: str, title: str, threshold: float = DEFAULT_MATCH_THRESHOLD
         "accepted": bool,
         "candidates": [top-N Posting dicts with scores, no descriptions],
       }
+
+    Pass a pre-fetched `postings` list (from `gather_postings`) to score a
+    different title against the same company's board without refetching —
+    useful when resolving several roles from the same employer in one batch.
     """
-    postings = gather_postings(company, verbose=verbose)
+    if postings is None:
+        postings = gather_postings(company, verbose=verbose)
     for p in postings:
         p.match_score = title_score(title, p.title)
     postings.sort(key=lambda x: x.match_score, reverse=True)
