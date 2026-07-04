@@ -105,7 +105,7 @@ def test_connect_migrates_a_pre_existing_db_missing_jd_text_column(tmp_path: Pat
     legacy_schema = _SCHEMA.replace("    jd_text TEXT,\n", "")
     assert "jd_text" not in legacy_schema
     raw_conn = sqlite3.connect(str(db_path))
-    raw_conn.execute(legacy_schema)
+    raw_conn.executescript(legacy_schema)
     raw_conn.execute(
         """
         INSERT INTO job_leads (normalized_key, company, title, status, first_seen, last_seen)

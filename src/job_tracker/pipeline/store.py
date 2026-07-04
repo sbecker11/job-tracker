@@ -37,6 +37,18 @@ CREATE TABLE IF NOT EXISTS job_leads (
     last_seen TEXT,
     times_seen INTEGER DEFAULT 1
 );
+
+-- One row per email message ever sent through the LLM extraction fallback
+-- (pipeline/llm_extract.py), keyed by Gmail message id. Caches the raw
+-- parsed response (even when it's an empty list) so re-running the pipeline
+-- over the same backlog never re-bills the Anthropic API for a message it
+-- has already classified.
+CREATE TABLE IF NOT EXISTS llm_extraction_cache (
+    message_id TEXT PRIMARY KEY,
+    model TEXT,
+    roles_json TEXT NOT NULL,
+    created_at TEXT
+);
 """
 
 # Columns added after the initial release. New databases get them via
@@ -60,7 +72,7 @@ def connect(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    conn.execute(_SCHEMA)
+    conn.executescript(_SCHEMA)
     conn.commit()
     _apply_migrations(conn)
     return conn
@@ -138,6 +150,32 @@ def upsert_lead(conn: sqlite3.Connection, lead: JobLead) -> bool:
     )
     conn.commit()
     return False
+
+
+def get_llm_cache(conn: sqlite3.Connection, message_id: str) -> list[dict] | None:
+    """Return the cached LLM extraction items for `message_id`, or None on a
+    cache miss (never called yet for this message)."""
+    row = conn.execute(
+        "SELECT roles_json FROM llm_extraction_cache WHERE message_id = ?", (message_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return json.loads(row["roles_json"])
+
+
+def set_llm_cache(conn: sqlite3.Connection, message_id: str, model: str, items: list[dict]) -> None:
+    conn.execute(
+        """
+        INSERT INTO llm_extraction_cache (message_id, model, roles_json, created_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(message_id) DO UPDATE SET
+            model = excluded.model,
+            roles_json = excluded.roles_json,
+            created_at = excluded.created_at
+        """,
+        (message_id, model, json.dumps(items), utc_now_iso()),
+    )
+    conn.commit()
 
 
 def list_leads(conn: sqlite3.Connection, *, verdict: str | None = None) -> list[sqlite3.Row]:

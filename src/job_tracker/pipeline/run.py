@@ -16,6 +16,7 @@ from job_tracker.email.classifier import classify
 from job_tracker.email.labels import Label
 from job_tracker.email.models import EmailMessage
 from job_tracker.pipeline.extract import extract_roles
+from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_MODEL, extract_roles_llm_cached
 from job_tracker.pipeline.models import JobLead
 from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect, upsert_lead
 from job_tracker.scoring.scorer import score_jd
@@ -31,6 +32,8 @@ class PipelineSummary:
     needs_review: list[dict] = field(default_factory=list)
     leads: list[dict] = field(default_factory=list)  # every lead scored this run
     new_leads: int = 0
+    llm_fallback_used: int = 0  # number of messages where the LLM fallback was invoked (cache hit or miss)
+    llm_fallback_rescued: int = 0  # of those, how many produced roles the regex pass had missed
 
     @property
     def pursue(self) -> list[dict]:
@@ -82,6 +85,8 @@ def run_pipeline(
     db_path: Path = DEFAULT_DB_PATH,
     resolve_full_jd: bool = True,
     ats_verbose: bool = False,
+    use_llm_fallback: bool = False,
+    llm_model: str = DEFAULT_LLM_MODEL,
 ) -> PipelineSummary:
     summary = PipelineSummary(total_messages=len(messages))
     conn = connect(db_path)
@@ -107,6 +112,21 @@ def run_pipeline(
                 continue
 
             roles = extract_roles(message, result.label)
+
+            # The regex pass either found nothing, or found only incomplete
+            # roles (missing company or title on every one) — in both cases
+            # it's cheaper and more reliable to let the LLM re-read the whole
+            # message once than to try to patch up partial regex output.
+            regex_found_nothing_useful = not roles or all(
+                not r.company or not r.title for r in roles
+            )
+            if use_llm_fallback and regex_found_nothing_useful:
+                summary.llm_fallback_used += 1
+                llm_roles = extract_roles_llm_cached(conn, message, model=llm_model)
+                if llm_roles:
+                    summary.llm_fallback_rescued += 1
+                    roles = llm_roles
+
             if not roles:
                 summary.needs_review.append(
                     {

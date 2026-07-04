@@ -9,6 +9,7 @@ from pathlib import Path
 
 from job_tracker.email.gmail_reader import fetch_message_by_id, fetch_unread
 from job_tracker.email.models import EmailMessage
+from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_MODEL
 from job_tracker.pipeline.run import DEFAULT_DB_PATH, run_pipeline
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -26,6 +27,11 @@ def _print_report(summary) -> None:
         skipped_str = ", ".join(f"{k}={v}" for k, v in summary.skipped.items())
         print(f"Skipped (no lead): {skipped_str}")
     print(f"New leads stored: {summary.new_leads}  (total scored this run: {len(summary.leads)})")
+    if summary.llm_fallback_used:
+        print(
+            f"LLM fallback invoked for {summary.llm_fallback_used} message(s) "
+            f"(rescued {summary.llm_fallback_rescued} that regex extraction missed)"
+        )
 
     if summary.pursue:
         print(f"\n=== PURSUE ({len(summary.pursue)}) ===")
@@ -96,6 +102,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip live ATS board lookups; score against email body/snippet text only",
     )
+    ap.add_argument(
+        "--llm-fallback",
+        action="store_true",
+        help="For messages the regex extractor can't confidently parse, ask the "
+        "Anthropic API to extract roles instead (requires ANTHROPIC_API_KEY in "
+        ".env; results are cached per message so repeat runs don't re-bill it)",
+    )
+    ap.add_argument(
+        "--llm-model",
+        default=DEFAULT_LLM_MODEL,
+        help=f"Anthropic model id/alias to use for --llm-fallback (default: {DEFAULT_LLM_MODEL})",
+    )
     ap.add_argument("--json", action="store_true", help="Emit the full summary as JSON instead of a report")
     args = ap.parse_args(argv)
 
@@ -126,7 +144,13 @@ def main(argv: list[str] | None = None) -> int:
             print("No messages matched the query.", file=sys.stderr)
             return 0
 
-    summary = run_pipeline(messages, db_path=args.db, resolve_full_jd=not args.offline)
+    summary = run_pipeline(
+        messages,
+        db_path=args.db,
+        resolve_full_jd=not args.offline,
+        use_llm_fallback=args.llm_fallback,
+        llm_model=args.llm_model,
+    )
 
     if args.json:
         print(
@@ -138,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
                     "leads": summary.leads,
                     "outreach_needs_reply": summary.outreach_needs_reply,
                     "needs_review": summary.needs_review,
+                    "llm_fallback_used": summary.llm_fallback_used,
+                    "llm_fallback_rescued": summary.llm_fallback_rescued,
                 },
                 indent=2,
             )

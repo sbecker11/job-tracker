@@ -39,11 +39,14 @@ recruiting Gmail inbox
 |---|---|
 | `src/job_tracker/ats/jd_resolver.py` | Public ATS board lookup (Greenhouse, Lever, Ashby, SmartRecruiters) |
 | `src/job_tracker/email/` | Gmail reader + heuristic classifier |
-| `src/job_tracker/pipeline/extract.py` | Fan-out: (company, title) roles from SINGLE_JD / MULTI_JD_IN_BODY messages |
+| `src/job_tracker/pipeline/extract.py` | Fan-out: (company, title) roles from SINGLE_JD / MULTI_JD_IN_BODY messages (regex-based, first pass) |
+| `src/job_tracker/pipeline/llm_extract.py` | Opt-in LLM extraction fallback (Anthropic API) for digests the regex pass can't confidently parse |
 | `src/job_tracker/scoring/scorer.py` | Dealbreaker sweep + skills alignment match % (CLAUDE.md §10, keyword heuristic v1) |
+| `src/job_tracker/pipeline/llm_apply.py` | LLM JD evaluation (CLAUDE.md §10 framework) + résumé/cover-letter generation (Anthropic API), with token/time/cost tracking per call |
 | `src/job_tracker/pipeline/store.py` | SQLite dedup store (`var/leads.db`, gitignored) |
 | `src/job_tracker/pipeline/run.py` | Orchestrator: classify → extract → resolve → score → store |
 | `src/job_tracker/cli/list_leads.py` | Review/export/update stored leads without re-running the pipeline |
+| `src/job_tracker/cli/apply_package.py` | Evaluate one stored lead + generate résumé/cover letter on a pursue verdict (`apply-package`) |
 | `config/framework.yaml` | Dealbreakers + skills vocabulary, transcribed from `~/Wisdom/CLAUDE.md` |
 
 ## Setup
@@ -54,6 +57,16 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 pip install -e ".[dev]"
+```
+
+Optional: copy `.env.example` to `.env` and fill in `ANTHROPIC_API_KEY` if you
+plan to use `--llm-fallback` (see below). `.env` is loaded automatically at
+startup (via `python-dotenv`, wired in `job_tracker/__init__.py`) and is
+git-ignored.
+
+```bash
+cp .env.example .env
+# then edit .env and paste in your key
 ```
 
 ## Gmail setup (one-time)
@@ -153,6 +166,47 @@ line, which is what makes the following digest shapes parseable at all:
   routes it to `EXTRACTION NEEDS REVIEW`, grouped by source email with a
   few sample titles shown inline (`--json` has the full per-listing list)
   — enough to skim and manually pursue anything interesting.
+
+**LLM extraction fallback (opt-in, `--llm-fallback`):** new digest shapes
+keep showing up as the backlog gets processed, and hand-writing a new regex
+parser for every sender's HTML layout doesn't scale. Rather than a
+multi-agent system (overkill here — there's one job: turn one email into a
+list of (company, title) pairs), `--llm-fallback` adds a single LLM call as
+a second pass, used **only** for messages the regex pass in
+`pipeline/extract.py` couldn't confidently finish (i.e. it found nothing, or
+every candidate role is missing a company or title):
+
+```bash
+# Requires ANTHROPIC_API_KEY in .env (see Setup above)
+python scripts/run_pipeline.py --dry-run --newer-than 30 --llm-fallback
+
+# Override the model (defaults to claude-haiku-4-5 — fast + cheap)
+python scripts/run_pipeline.py --dry-run --llm-fallback --llm-model claude-sonnet-5
+```
+
+How it stays cheap and safe:
+- **One call per message, not per role** — a single digest can leave a dozen
+  incomplete roles behind after the regex pass; the LLM re-reads the whole
+  message once and returns every listing in one shot, rather than being
+  called once per leftover role.
+- **Cached per Gmail message id** (`llm_extraction_cache` table in
+  `var/leads.db`) — re-running the pipeline over the same backlog, e.g. after
+  a crash or to pick up newly-arrived mail, never re-bills a message it has
+  already sent to the API, including messages where the honest answer was
+  "no real postings here."
+- **Strict no-fabrication prompt** — the model is told never to invent a
+  company or title, and never to attribute a listing to the job board /
+  ATS platform that sent the email (mirroring the `_JOB_BOARD_DOMAINS` /
+  `_JOB_BOARD_NAMES` denylist the regex pass already uses). An empty or
+  partial result is always preferred over a guess; a genuinely ambiguous
+  listing still lands in `EXTRACTION NEEDS REVIEW` afterward, same as today.
+- **Fails soft** — a network error, missing/invalid API key, or unparseable
+  response is logged and treated as "no roles found" rather than crashing
+  the run; the message falls back to the normal `EXTRACTION NEEDS REVIEW`
+  bucket. A summary line reports how many messages triggered the fallback
+  and how many of those it actually rescued.
+- **Off by default** — plain `run-pipeline` (no flag) behaves exactly as
+  before; this is purely additive.
 
 **Tuning the framework:** edit `config/framework.yaml` directly — dealbreakers,
 skills vocabulary/weights, and the `pursue_min_pct` / `review_min_pct`

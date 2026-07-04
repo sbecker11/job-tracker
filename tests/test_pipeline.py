@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from job_tracker.email.models import EmailMessage
+from job_tracker.email.models import EmailMessage, ExtractedRole
 from job_tracker.pipeline.run import run_pipeline
 from job_tracker.pipeline.store import connect, list_leads
 
@@ -89,3 +89,49 @@ def test_pipeline_reuses_postings_across_roles_from_same_company(db_path: Path, 
 
     startupco_calls = [c for c in calls if c.lower() == "startupco"]
     assert len(startupco_calls) == 1, f"expected 1 gather_postings call for StartupCo, got {len(startupco_calls)}"
+
+
+def test_llm_fallback_is_off_by_default(db_path: Path):
+    summary = run_pipeline(load_all_fixtures(), db_path=db_path, resolve_full_jd=False)
+    assert summary.llm_fallback_used == 0
+    assert summary.llm_fallback_rescued == 0
+
+
+def test_llm_fallback_rescues_a_message_the_regex_pass_couldnt_finish(db_path: Path, monkeypatch):
+    """The Ref-no web-aggregation digest fixture leaves company blank on every
+    listing (ambiguous by design — see test_extract.py); with --llm-fallback
+    on, a (mocked) LLM call should be able to complete it instead."""
+
+    def _fake_llm(conn, message, *, model=None, client=None):
+        if message.id != "fixture-ref-no-web-aggregation-digest":
+            return []
+        return [
+            ExtractedRole(
+                company="Example Co",
+                title="Senior Full Stack Engineer",
+                source="llm_fallback",
+                confidence=0.8,
+            )
+        ]
+
+    monkeypatch.setattr("job_tracker.pipeline.run.extract_roles_llm_cached", _fake_llm)
+    summary = run_pipeline(
+        load_all_fixtures(), db_path=db_path, resolve_full_jd=False, use_llm_fallback=True
+    )
+
+    assert summary.llm_fallback_used >= 1
+    assert summary.llm_fallback_rescued == 1
+    assert any(lead["company"] == "Example Co" for lead in summary.leads)
+
+
+def test_llm_fallback_not_invoked_for_messages_regex_already_handled(db_path: Path, monkeypatch):
+    calls = []
+
+    def _fake_llm(conn, message, *, model=None, client=None):
+        calls.append(message.id)
+        return []
+
+    monkeypatch.setattr("job_tracker.pipeline.run.extract_roles_llm_cached", _fake_llm)
+    run_pipeline(load_all_fixtures(), db_path=db_path, resolve_full_jd=False, use_llm_fallback=True)
+
+    assert "fixture-stripe-single-jd" not in calls
