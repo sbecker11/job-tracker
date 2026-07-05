@@ -14,37 +14,69 @@ from job_tracker.email.models import EmailMessage
 from job_tracker.htmltext import html_to_text
 
 GMAIL_SCOPES = ("https://www.googleapis.com/auth/gmail.readonly",)
+# Write-capable scope, used only by the recruiter-inbox triage flow
+# (pipeline/triage.py, scripts/triage_recruiter_inbox.py) to relabel and
+# archive messages on the default recruiting-funnel account. Kept as a
+# separate scope/token pair from GMAIL_SCOPES above rather than upgrading
+# the existing readonly token in place, so every other command in this repo
+# (run_pipeline.py, classify_inbox.py, etc.) keeps working unchanged with
+# its narrower, already-granted readonly token.
+GMAIL_SCOPES_MODIFY = ("https://www.googleapis.com/auth/gmail.modify",)
 DEFAULT_QUERY = "is:unread in:inbox"
 CONFIG_DIR = Path.home() / ".config" / "job-tracker"
+
+# Additional named accounts this reader can pull from, beyond the default
+# recruiting-funnel account above. Each gets its own credentials/token pair
+# under CONFIG_DIR/<account>/, and its own one-time OAuth consent — job-
+# tracker only ever requests read-only access, so it needs its own token
+# even for an account comms-migration's classifier already has (broader)
+# gmail.modify access to.
+#
+# `personal_hub` (scbboston@gmail.com) exists to close a gap: recruiter/job
+# mail sometimes lands there instead of the recruiting funnel. comms-
+# migration's classifier labels it `Category/recruiter_job` there but never
+# moves it; pointing job-tracker at this account with
+# `--query "label:Category/recruiter_job is:unread"` lets it pick up exactly
+# that pre-filtered set through the normal pipeline, without ever touching
+# the rest of the personal inbox.
+KNOWN_ACCOUNTS = ("personal_hub",)
 
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-def default_credentials_path() -> Path:
+def _account_config_dir(account: str | None) -> Path:
+    return CONFIG_DIR / account if account else CONFIG_DIR
+
+
+def default_credentials_path(account: str | None = None) -> Path:
     env = os.environ.get("JOB_TRACKER_GMAIL_CREDENTIALS")
-    if env:
+    if env and not account:
         return Path(env).expanduser()
-    config_path = CONFIG_DIR / "credentials.json"
+    config_path = _account_config_dir(account) / "credentials.json"
     if config_path.is_file():
         return config_path
-    local = repo_root() / "credentials.json"
-    if local.is_file():
-        return local
+    if not account:
+        local = repo_root() / "credentials.json"
+        if local.is_file():
+            return local
     return config_path
 
 
-def default_token_path() -> Path:
-    env = os.environ.get("JOB_TRACKER_GMAIL_TOKEN")
-    if env:
+def default_token_path(account: str | None = None, *, writable: bool = False) -> Path:
+    env_var = "JOB_TRACKER_GMAIL_TOKEN_MODIFY" if writable else "JOB_TRACKER_GMAIL_TOKEN"
+    env = os.environ.get(env_var)
+    if env and not account:
         return Path(env).expanduser()
-    config_path = CONFIG_DIR / "token.json"
+    filename = "token_modify.json" if writable else "token.json"
+    config_path = _account_config_dir(account) / filename
     if config_path.is_file():
         return config_path
-    local = repo_root() / "token.json"
-    if local.is_file():
-        return local
+    if not account:
+        local = repo_root() / filename
+        if local.is_file():
+            return local
     return config_path
 
 
@@ -64,8 +96,18 @@ def _require_google_libs():
 def get_gmail_service(
     credentials_path: Path | None = None,
     token_path: Path | None = None,
+    *,
+    account: str | None = None,
+    scopes: tuple[str, ...] = GMAIL_SCOPES,
 ):
-    """Build an authenticated Gmail API client (opens browser on first run)."""
+    """Build an authenticated Gmail API client (opens browser on first run).
+
+    `scopes` defaults to read-only; pass `GMAIL_SCOPES_MODIFY` for the
+    triage flow's write access. Always pair a wider scope with its own
+    `token_path` (see `default_token_path(..., writable=True)`) — a token
+    cached under the old scope won't gain new permissions just because a
+    wider scope is requested here; Google will 403 the write call instead.
+    """
     _require_google_libs()
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
@@ -84,18 +126,56 @@ def get_gmail_service(
 
     creds = None
     if token_path.is_file():
-        creds = Credentials.from_authorized_user_file(str(token_path), GMAIL_SCOPES)
+        creds = Credentials.from_authorized_user_file(str(token_path), scopes)
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except Exception as exc:
+                # Most common cause while this OAuth app is in Google's
+                # "Testing" publishing status: refresh tokens for unverified
+                # apps hard-expire after 7 days, regardless of use. Fall
+                # through to a fresh interactive login instead of raising a
+                # confusing invalid_grant/RefreshError.
+                label = f"'{account}'" if account else "the recruiting funnel"
+                print(
+                    f"Cached Gmail token for {label} is no longer valid ({exc}). "
+                    "Re-opening browser for a fresh login — this is expected "
+                    "roughly weekly while this app is in Google's 'Testing' "
+                    "publishing status (unverified-app tokens expire after 7 "
+                    "days). Sign in as the same account you used before."
+                )
+                flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), scopes)
+                creds = flow.run_local_server(port=0)
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), GMAIL_SCOPES)
+            flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), scopes)
             creds = flow.run_local_server(port=0)
         token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(creds.to_json(), encoding="utf-8")
 
     return build("gmail", "v1", credentials=creds, cache_discovery=False)
+
+
+def get_gmail_service_writable(
+    credentials_path: Path | None = None,
+    token_path: Path | None = None,
+    *,
+    account: str | None = None,
+):
+    """Build a Gmail client with `gmail.modify` (read/write) access.
+
+    Used only by the recruiter-inbox triage flow to relabel and archive
+    messages. Reuses the same OAuth client (`credentials.json`) as the
+    read-only flows, but a separate cached token (`token_modify.json`) and
+    its own one-time consent screen, since a write scope needs explicit
+    user approval a readonly token never got.
+    """
+    credentials_path = credentials_path or default_credentials_path(account)
+    token_path = token_path or default_token_path(account, writable=True)
+    return get_gmail_service(
+        credentials_path, token_path, account=account, scopes=GMAIL_SCOPES_MODIFY
+    )
 
 
 def _header_map(payload: dict[str, Any]) -> dict[str, str]:
@@ -220,9 +300,18 @@ def fetch_unread(
     newer_than_days: int | None = None,
     credentials_path: Path | None = None,
     token_path: Path | None = None,
+    account: str | None = None,
 ) -> list[EmailMessage]:
-    """Fetch unread inbox messages as EmailMessage objects."""
-    service = get_gmail_service(credentials_path, token_path)
+    """Fetch unread inbox messages as EmailMessage objects.
+
+    `account`, when set, reads from a named account registered in
+    KNOWN_ACCOUNTS instead of the default recruiting-funnel account
+    (credentials/token resolved from CONFIG_DIR/<account>/ unless overridden
+    by credentials_path/token_path).
+    """
+    credentials_path = credentials_path or default_credentials_path(account)
+    token_path = token_path or default_token_path(account)
+    service = get_gmail_service(credentials_path, token_path, account=account)
     ids = list_message_ids(
         service,
         query=query,
@@ -237,6 +326,9 @@ def fetch_message_by_id(
     *,
     credentials_path: Path | None = None,
     token_path: Path | None = None,
+    account: str | None = None,
 ) -> EmailMessage:
-    service = get_gmail_service(credentials_path, token_path)
+    credentials_path = credentials_path or default_credentials_path(account)
+    token_path = token_path or default_token_path(account)
+    service = get_gmail_service(credentials_path, token_path, account=account)
     return fetch_message(service, message_id)

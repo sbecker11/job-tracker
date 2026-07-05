@@ -181,22 +181,13 @@ def test_check_house_rules_flags_banned_term():
     assert any("Cambria" in w for w in warnings)
 
 
-def test_check_house_rules_flags_religious_mention_for_non_church_employer():
+def test_check_house_rules_flags_compensation_figure():
     content = {
         "resume": {},
-        "cover_letter": {"paragraphs": ["I am a member of The Church of Jesus Christ of Latter-day Saints."]},
+        "cover_letter": {"paragraphs": ["I target $90/hr on W2, roughly $105/hr on C2C."]},
     }
     warnings = llm_apply._check_house_rules(content, company="Bellese")
-    assert any("religious affiliation" in w for w in warnings)
-
-
-def test_check_house_rules_allows_religious_mention_for_church_employer():
-    content = {
-        "resume": {},
-        "cover_letter": {"paragraphs": ["I am a member of The Church of Jesus Christ of Latter-day Saints."]},
-    }
-    warnings = llm_apply._check_house_rules(content, company="The Church of Jesus Christ of Latter-day Saints")
-    assert not any("religious affiliation" in w for w in warnings)
+    assert any("compensation" in w for w in warnings)
 
 
 def test_check_house_rules_flags_work_authorization_statement():

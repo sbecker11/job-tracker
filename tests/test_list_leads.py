@@ -77,12 +77,13 @@ def test_list_leads_csv_export(seeded_db: Path, tmp_path: Path):
 
 
 def test_list_leads_set_status(seeded_db: Path):
-    rc = list_leads_main(["--db", str(seeded_db), "--verdict", "pursue", "--set-status", "pursuing"])
+    rc = list_leads_main(["--db", str(seeded_db), "--verdict", "pursue", "--set-status", "approved"])
     assert rc == 0
 
     conn = connect(seeded_db)
-    row = conn.execute("SELECT status FROM job_leads WHERE company = 'Stripe'").fetchone()
-    assert row["status"] == "pursuing"
+    row = conn.execute("SELECT status, approved_at FROM job_leads WHERE company = 'Stripe'").fetchone()
+    assert row["status"] == "approved"
+    assert row["approved_at"] is not None
     other = conn.execute("SELECT status FROM job_leads WHERE company = 'BigCorp'").fetchone()
     assert other["status"] == "new"
     conn.close()

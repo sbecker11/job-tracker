@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import base64
 
-from job_tracker.email.gmail_reader import build_query, parse_gmail_message
+from job_tracker.email.gmail_reader import (
+    CONFIG_DIR,
+    build_query,
+    default_credentials_path,
+    default_token_path,
+    parse_gmail_message,
+)
 
 
 def _b64(text: str) -> str:
@@ -64,6 +70,30 @@ def test_parse_html_fallback_when_no_plain():
 
 def test_build_query_appends_newer_than():
     assert build_query("is:unread in:inbox", newer_than_days=7) == "is:unread in:inbox newer_than:7d"
+
+
+def test_default_credentials_path_no_account_uses_config_root(monkeypatch):
+    monkeypatch.delenv("JOB_TRACKER_GMAIL_CREDENTIALS", raising=False)
+    assert default_credentials_path() == CONFIG_DIR / "credentials.json"
+
+
+def test_default_credentials_path_with_account_uses_subdirectory(monkeypatch):
+    monkeypatch.delenv("JOB_TRACKER_GMAIL_CREDENTIALS", raising=False)
+    assert default_credentials_path("personal_hub") == CONFIG_DIR / "personal_hub" / "credentials.json"
+
+
+def test_default_token_path_with_account_uses_subdirectory(monkeypatch):
+    monkeypatch.delenv("JOB_TRACKER_GMAIL_TOKEN", raising=False)
+    assert default_token_path("personal_hub") == CONFIG_DIR / "personal_hub" / "token.json"
+
+
+def test_env_override_ignored_when_account_is_set(monkeypatch):
+    # The env var override is only for the default (no-account) recruiting
+    # funnel path — an explicit account must not be silently redirected by a
+    # leftover env var meant for the default account.
+    monkeypatch.setenv("JOB_TRACKER_GMAIL_CREDENTIALS", "/tmp/should-not-be-used.json")
+    assert default_credentials_path("personal_hub") == CONFIG_DIR / "personal_hub" / "credentials.json"
+    monkeypatch.delenv("JOB_TRACKER_GMAIL_CREDENTIALS", raising=False)
 
 
 def test_html_fallback_strips_style_and_script_blocks():

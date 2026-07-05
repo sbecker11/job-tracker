@@ -33,7 +33,7 @@ from docx.shared import Pt, RGBColor
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = os.environ.get("JOB_TRACKER_APPLY_MODEL", "claude-sonnet-4-5")
+DEFAULT_MODEL = os.environ.get("JOB_TRACKER_APPLY_MODEL", "claude-sonnet-5")
 
 # USD per million tokens: (input, output). Source: platform.claude.com/docs/en/about-claude/pricing
 # (checked 2026-07-03). Sonnet 5 is on introductory pricing through 2026-08-31, then $3/$15.
@@ -63,17 +63,25 @@ GITHUB_COLOR_HEX = "555555"
 # exactly the kind of thing worth a belt-and-suspenders check.
 _BANNED_TERMS = ["Spexture LLC", "sub-100ms response", "Cline", "Member Nav", "Cambria"]
 
-# CLAUDE.md §4 house rule #11 scopes the LDS mention to actual "Church of
-# Jesus Christ" employers only. §11 "Generation Workflow" separately bans any
-# work-authorization statement outright. Both are natural-language rules an
-# LLM can quietly overstep (observed in testing: it added an LDS aside and a
-# citizenship/clearance statement to a CMS-contractor cover letter that
-# wasn't a Church role), so they get a regex safety net on top of the prompt.
-_RELIGIOUS_MENTION_RE = re.compile(r"latter-day saints|lds church", re.IGNORECASE)
+# CLAUDE.md §4 house rule #11 bans any work-authorization statement outright.
+# This is a natural-language rule an LLM can quietly overstep (observed in
+# testing: it added a citizenship/clearance statement to a cover letter for
+# a role that didn't ask for one), so it gets a regex safety net on top of
+# the prompt.
 _WORK_AUTH_RE = re.compile(
     r"\bUS citizen(ship)?\b|\bgreen card\b|authorized to work|work authorization|"
     r"eligible for (a )?(public trust|security clearance|clearance)|"
     r"sponsorship (is )?(not )?(required|needed|available)",
+    re.IGNORECASE,
+)
+# CLAUDE.md §4 house rule #12 (added 2026-07-05 after a real leak was found in
+# the corpus review: a cover letter compared a W2 rate against an equivalent
+# C2C rate). No dollar figure, hourly rate, or salary range belongs in either
+# deliverable — compensation is a live conversation, never written down here.
+_COMP_FIGURE_RE = re.compile(
+    r"\$\s?\d[\d,.]*\s*(?:/\s*hr|per\s*hour|/\s*hour|k\b)|"
+    r"\b\d[\d,.]*\s*(?:k|K)\s*(?:/\s*yr|per\s*year|base|salary)|"
+    r"\bhourly rate\b|\bsalary range\b|\bcompensation range\b",
     re.IGNORECASE,
 )
 
@@ -287,10 +295,6 @@ Conventions" content rules) — especially:
 any kind — this includes citizenship, residency, green-card, sponsorship, or security-clearance-eligibility \
 statements, EVEN IF the job description requires them or mentions clearance/citizenship requirements. Simply \
 omit the topic entirely; do not reassure the reader about it.
-- The candidate profile's mention of Church of Jesus Christ of Latter-day Saints membership is relevant ONLY \
-if the employer in this job description literally IS "The Church of Jesus Christ of Latter-day Saints" (or an \
-explicit subsidiary of it). For every other employer — including healthcare, government, and "mission-driven" \
-roles — do not mention religious affiliation at all, even as a "cultural fit" aside.
 - Do NOT include years on any degree, patent, or certification.
 - Tailor bullets/skills selection to this specific JD by choosing from the candidate's real portfolio \
 projects and technical anchors — pick what's actually relevant, don't list everything.
@@ -370,8 +374,9 @@ everything else exactly as-is:
 
 Specifically: remove any sentence or clause about citizenship, residency, green card, work authorization, or \
 security-clearance eligibility (do not replace it with anything, just remove it and smooth the surrounding \
-sentence); and remove any mention of religious affiliation unless the employer is literally "The Church of \
-Jesus Christ of Latter-day Saints".
+sentence); and remove any dollar figure, hourly rate, salary range, or compensation comparison (e.g. a \
+W2-vs-C2C rate comparison) — again just remove it and smooth the surrounding sentence, don't replace it \
+with a vaguer restatement of the same idea.
 
 Respond with ONLY the corrected raw JSON object, same schema and keys, no markdown fences, no prose."""
 
@@ -397,17 +402,17 @@ def _check_house_rules(content: dict, *, company: str) -> list[str]:
     text = json.dumps(content)
     warnings = [f"banned term found: {term!r}" for term in _BANNED_TERMS if term.lower() in text.lower()]
 
-    if _RELIGIOUS_MENTION_RE.search(text) and "church of jesus christ" not in company.lower():
-        warnings.append(
-            "religious affiliation (Latter-day Saints) mentioned for a non-Church employer — "
-            "CLAUDE.md scopes this to actual Church of Jesus Christ roles only; remove before sending"
-        )
-
     cover_text = json.dumps(content.get("cover_letter") or {})
     if _WORK_AUTH_RE.search(cover_text):
         warnings.append(
             "possible work-authorization/citizenship/clearance statement found in cover letter — "
             "CLAUDE.md bans these outright; remove before sending"
+        )
+
+    if _COMP_FIGURE_RE.search(text):
+        warnings.append(
+            "possible compensation figure/rate/range found — CLAUDE.md §4 rule 12 bans these outright "
+            "(compensation is a live conversation, never written into the package); remove before sending"
         )
 
     return warnings

@@ -48,7 +48,7 @@ class PipelineSummary:
         return [lead for lead in self.leads if lead["verdict"] == "pass"]
 
 
-def _resolve_jd_text(
+def resolve_jd_text(
     company: str,
     title: str,
     *,
@@ -155,7 +155,7 @@ def run_pipeline(
                 jd_resolved = False
                 apply_url = role.apply_url
                 if resolve_full_jd:
-                    jd_text, jd_resolved, resolved_url = _resolve_jd_text(
+                    jd_text, jd_resolved, resolved_url = resolve_jd_text(
                         role.company, role.title, verbose=ats_verbose, postings_cache=postings_cache
                     )
                     apply_url = apply_url or resolved_url

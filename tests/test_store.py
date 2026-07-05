@@ -5,8 +5,17 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from job_tracker.pipeline.models import JobLead
-from job_tracker.pipeline.store import _SCHEMA, connect, upsert_lead
+from job_tracker.pipeline.store import (
+    _SCHEMA,
+    advance_status,
+    connect,
+    is_message_processed,
+    record_message_processed,
+    upsert_lead,
+)
 
 
 def test_jd_text_persists_on_insert(tmp_path: Path):
@@ -76,7 +85,7 @@ def test_jd_text_preserved_once_status_is_no_longer_new(tmp_path: Path):
             jd_text="Original JD text the user already reviewed.",
         ),
     )
-    conn.execute("UPDATE job_leads SET status = 'pursuing' WHERE company = 'Acme'")
+    conn.execute("UPDATE job_leads SET status = 'approved' WHERE company = 'Acme'")
     conn.commit()
 
     # A later re-send of the same digest must not silently overwrite the JD
@@ -93,7 +102,67 @@ def test_jd_text_preserved_once_status_is_no_longer_new(tmp_path: Path):
     )
     row = conn.execute("SELECT jd_text, status FROM job_leads WHERE company='Acme'").fetchone()
     assert row["jd_text"] == "Original JD text the user already reviewed."
-    assert row["status"] == "pursuing"
+    assert row["status"] == "approved"
+    conn.close()
+
+
+def test_advance_status_stamps_matching_date_column(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(company="Acme", title="Engineer", source_message_id="m1", source_label="single-jd")
+    upsert_lead(conn, lead)
+
+    advance_status(conn, lead.normalized_key, "approved", when="2026-07-01T00:00:00+00:00")
+    row = conn.execute(
+        "SELECT status, approved_at, package_generated_at FROM job_leads WHERE normalized_key = ?",
+        (lead.normalized_key,),
+    ).fetchone()
+    assert row["status"] == "approved"
+    assert row["approved_at"] == "2026-07-01T00:00:00+00:00"
+    assert row["package_generated_at"] is None
+    conn.close()
+
+
+def test_advance_status_never_overwrites_an_already_stamped_stage(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(company="Acme", title="Engineer", source_message_id="m1", source_label="single-jd")
+    upsert_lead(conn, lead)
+
+    advance_status(conn, lead.normalized_key, "applied", when="2026-07-01T00:00:00+00:00")
+    advance_status(conn, lead.normalized_key, "applied", when="2026-07-15T00:00:00+00:00")
+    row = conn.execute(
+        "SELECT applied_at FROM job_leads WHERE normalized_key = ?", (lead.normalized_key,)
+    ).fetchone()
+    assert row["applied_at"] == "2026-07-01T00:00:00+00:00"
+    conn.close()
+
+
+def test_advance_status_rejects_unknown_stage(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(company="Acme", title="Engineer", source_message_id="m1", source_label="single-jd")
+    upsert_lead(conn, lead)
+    with pytest.raises(ValueError):
+        advance_status(conn, lead.normalized_key, "not-a-real-stage")
+    conn.close()
+
+
+def test_processed_messages_round_trip(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    assert is_message_processed(conn, "msg-1") is False
+
+    record_message_processed(
+        conn,
+        "msg-1",
+        outcome="ACCEPT",
+        subject="Software Engineer @ Acme",
+        from_address="noreply@greenhouse.io",
+        lead_keys=["acme::software engineer"],
+        label_applied="JobTracker/ACCEPT",
+        archived=True,
+    )
+    assert is_message_processed(conn, "msg-1") is True
+    row = conn.execute("SELECT outcome, archived FROM processed_messages WHERE message_id = 'msg-1'").fetchone()
+    assert row["outcome"] == "ACCEPT"
+    assert row["archived"] == 1
     conn.close()
 
 

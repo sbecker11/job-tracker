@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from job_tracker.email.gmail_reader import fetch_message_by_id, fetch_unread
+from job_tracker.email.gmail_reader import KNOWN_ACCOUNTS, fetch_message_by_id, fetch_unread
 from job_tracker.email.models import EmailMessage
 from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_MODEL
 from job_tracker.pipeline.run import DEFAULT_DB_PATH, run_pipeline
@@ -96,6 +96,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--newer-than", type=int, metavar="DAYS")
     ap.add_argument("--credentials", type=Path)
     ap.add_argument("--token", type=Path)
+    ap.add_argument(
+        "--account",
+        choices=KNOWN_ACCOUNTS,
+        help="Read from a named account other than the default recruiting funnel "
+        "(credentials/token resolved from ~/.config/job-tracker/<account>/ unless "
+        "--credentials/--token override). E.g. --account personal_hub "
+        "--query 'label:Category/recruiter_job is:unread' to pick up recruiter mail "
+        "comms-migration's classifier flagged on scbboston@gmail.com.",
+    )
     ap.add_argument("--db", type=Path, default=DEFAULT_DB_PATH, help=f"Leads DB path (default: {DEFAULT_DB_PATH})")
     ap.add_argument(
         "--offline",
@@ -128,7 +137,10 @@ def main(argv: list[str] | None = None) -> int:
     elif args.message_id:
         messages = [
             fetch_message_by_id(
-                args.message_id, credentials_path=args.credentials, token_path=args.token
+                args.message_id,
+                credentials_path=args.credentials,
+                token_path=args.token,
+                account=args.account,
             )
         ]
     else:
@@ -139,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
             newer_than_days=args.newer_than,
             credentials_path=args.credentials,
             token_path=args.token,
+            account=args.account,
         )
         if not messages:
             print("No messages matched the query.", file=sys.stderr)

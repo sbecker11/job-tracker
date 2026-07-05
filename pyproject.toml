@@ -25,6 +25,8 @@ classify-inbox = "job_tracker.cli.classify_inbox:main"
 run-pipeline = "job_tracker.cli.run_pipeline:main"
 list-leads = "job_tracker.cli.list_leads:main"
 apply-package = "job_tracker.cli.apply_package:main"
+evaluate-backlog = "job_tracker.cli.evaluate_backlog:main"
+triage-recruiter-inbox = "job_tracker.cli.triage_recruiter_inbox:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]

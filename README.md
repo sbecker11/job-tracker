@@ -2,6 +2,10 @@
 
 Job-search **automation pipeline** for Shawn Becker's recruiting funnel.
 
+> **Just want to run it?** See [`PRIMER.md`](PRIMER.md) for the end-to-end
+> command sequence: inbox → scored leads → targeted résumé/cover-letter
+> packages. Everything below is the fuller reference.
+
 **Routing truth** (where mail goes) lives in [comms-migration](https://github.com/sbecker11/comms-migration) — see [`routing-inventory.md`](https://github.com/sbecker11/comms-migration/blob/main/routing-inventory.md) for the four-into-one forward into `shawnbecker.recruiting@gmail.com`. **Processing** (what happens to that mail) lives here.
 
 ## Relationship to `comms-migration`
@@ -47,7 +51,10 @@ recruiting Gmail inbox
 | `src/job_tracker/pipeline/run.py` | Orchestrator: classify → extract → resolve → score → store |
 | `src/job_tracker/cli/list_leads.py` | Review/export/update stored leads without re-running the pipeline |
 | `src/job_tracker/cli/apply_package.py` | Evaluate one stored lead + generate résumé/cover letter on a pursue verdict (`apply-package`) |
-| `config/framework.yaml` | Dealbreakers + skills vocabulary, transcribed from `~/Wisdom/CLAUDE.md` |
+| `src/job_tracker/pipeline/triage.py` | Classify → extract → resolve → LLM-evaluate (+ auto-generate on pursue) for one recruiter-inbox message, deciding an ACCEPT/DENY/NEEDS_REVIEW outcome — never touches Gmail or the DB itself |
+| `src/job_tracker/email/gmail_writer.py` | The only place in this repo that writes to Gmail — labels a message `JobTracker/ACCEPT\|DENY\|NEEDS_REVIEW` and archives it |
+| `src/job_tracker/cli/triage_recruiter_inbox.py` | Runs `pipeline/triage.py` over `Category/recruiter_job` inbox mail, persists leads + the message outcome, and relabels/archives via `gmail_writer.py` (`triage-recruiter-inbox`) |
+| `config/framework.yaml` | Dealbreakers + skills vocabulary, transcribed from `~/CLAUDE.md` |
 
 ## Setup
 
@@ -90,6 +97,114 @@ Credentials live **outside the repo** at `~/.config/job-tracker/` (never pushed 
    source ~/.config/job-tracker/env
    ```
 7. First fetch opens a browser; token caches to `~/.config/job-tracker/token.json`.
+
+### Optional: also read `scbboston@gmail.com` (personal hub)
+
+Recruiter/job mail sometimes lands in the personal hub instead of the
+recruiting funnel. [`comms-migration`](https://github.com/sbecker11/comms-migration)'s
+`classifier/` labels that mail `Category/recruiter_job` there and archives
+it out of the inbox (as of 2026-07-04) — this repo polls by label, not
+inbox location (`is:unread` with no `in:inbox`), so archiving on the
+comms-migration side never hides anything from this pipeline. It picks up
+the exact same classify → extract → resolve → score → store pipeline
+without ever touching the rest of your personal inbox, and with no manual
+forwarding step.
+
+This needs its own one-time OAuth consent for `scbboston@gmail.com`
+(job-tracker only ever requests read-only access, so it can't reuse
+comms-migration's broader `gmail.modify` token even for the same account):
+
+```bash
+mkdir -p ~/.config/job-tracker/personal_hub
+cp ~/Downloads/client_secret_*.json ~/.config/job-tracker/personal_hub/credentials.json
+# First run opens a browser — sign in as scbboston@gmail.com.
+python scripts/run_pipeline.py --dry-run --account personal_hub \
+  --query "label:Category/recruiter_job is:unread" --limit 20
+```
+
+Run comms-migration's classifier first (or on a schedule) so the label
+exists before job-tracker polls it — this repo never applies that label
+itself.
+
+### Re-authenticating when a login expires (expect this ~weekly)
+
+This OAuth app is in Google's **"Testing" publishing status** (unverified —
+that's the "Google hasn't verified this app" screen you see on every login).
+Google hard-expires refresh tokens issued to Testing-status apps **after 7
+days, regardless of use**. This is not a bug and not specific to one
+account — every account authenticated against this app (recruiting funnel,
+`personal_hub`, or any future one) will need to be re-authenticated on this
+cadence until/unless the app is moved to "In production" status.
+
+**You don't need to do anything manually to prepare for this.** When a
+cached token has expired, the next `run_pipeline.py` (or any Gmail-backed)
+command will print something like:
+
+```
+Cached Gmail token for 'personal_hub' is no longer valid (...). Re-opening
+browser for a fresh login — this is expected roughly weekly while this app
+is in Google's 'Testing' publishing status ...
+```
+
+and a browser window opens automatically for a fresh login — same as the
+very first time you authenticated that account. Sign in as the **same**
+Gmail account named in the message, click through the "unverified app"
+warning the same way you did originally, approve access, and the command
+continues normally. There's no need to delete `token.json` by hand first;
+the code detects the failed refresh and re-opens the login flow for you.
+
+### Write access for the triage flow (`triage_recruiter_inbox.py` only)
+
+Every command above is read-only. `triage_recruiter_inbox.py` is the one
+exception — it relabels (`JobTracker/ACCEPT|DENY|NEEDS_REVIEW`) and archives
+messages on the default recruiting-funnel account, which needs the broader
+`gmail.modify` scope. This is a **separate scope and a separate cached
+token** (`token_modify.json`, next to the existing `token.json`) — it reuses
+the same `credentials.json` OAuth client, but needs its own one-time consent
+screen the first time you run the triage CLI without `--dry-run`, since a
+readonly token never gains write permission just because a wider scope is
+requested later. `--dry-run` (scoring only, no Gmail mutation) keeps using
+the existing readonly token and needs no new consent.
+
+## Triage the recruiter inbox (score, auto-generate, relabel + archive)
+
+```bash
+# Preview: LLM-score every unlabeled Category/recruiter_job message, generate
+# packages for pursue verdicts, but never touch Gmail or the DB
+python scripts/triage_recruiter_inbox.py --dry-run --limit 10
+
+# For real: also relabels JobTracker/ACCEPT|DENY|NEEDS_REVIEW and archives
+# (first run without --dry-run opens the gmail.modify consent screen above)
+python scripts/triage_recruiter_inbox.py --limit 10
+
+# Score only, never spend on résumé/cover-letter generation even on a pursue verdict
+python scripts/triage_recruiter_inbox.py --no-generate
+```
+
+- Only looks at mail comms-migration has already labeled
+  `Category/recruiter_job` on the recruiting-funnel inbox, and skips
+  anything already triaged in a prior run (tracked in `processed_messages`
+  and by the `JobTracker/*` label itself — never double-billed, never
+  double-labeled).
+- Always uses the LLM Match Framework (`pipeline/llm_apply.py`, CLAUDE.md
+  §10) to score, never the free keyword scorer — the whole point is a
+  same-session decision confident enough to actually relabel and archive
+  the source email.
+- **ACCEPT** (at least one extracted role scored "pursue"): generates a
+  tailored résumé + cover letter automatically (unless `--no-generate`),
+  advances the lead to `package_generated` (or `approved` with
+  `--no-generate`), and archives the message under `JobTracker/ACCEPT`.
+- **DENY** (classified noise/rejection, or every extracted role scored
+  "pass"): advances the lead to `passed` and archives under
+  `JobTracker/DENY` — no Anthropic spend beyond the one evaluate call per
+  role.
+- **NEEDS_REVIEW** (recruiter outreach with no JD to score, an
+  unparseable/incomplete extraction, or a "review" verdict): archived under
+  `JobTracker/NEEDS_REVIEW` for a human look; nothing in `job_leads`
+  auto-advances past `new`.
+- From here, real-world progress (`applied`, `interviewing`, `offered`,
+  `accepted`, `started`) is reported by hand — see `list_leads.py
+  --set-status` above.
 
 ## Classify recruiting inbox
 
@@ -247,8 +362,10 @@ python scripts/list_leads.py --company "Acme" --title "Software Engineer" --show
 # Export everything to CSV for a spreadsheet pass
 python scripts/list_leads.py --csv ~/Desktop/job_leads.csv
 
-# Mark leads you've decided to pursue so future runs don't re-suggest them the same way
-python scripts/list_leads.py --verdict pursue --set-status pursuing
+# Advance leads through their lifecycle (models.LEAD_STAGES) as real-world progress happens
+python scripts/list_leads.py --verdict pursue --set-status approved
+python scripts/list_leads.py --company "Acme" --title "Software Engineer" --set-status applied --on 2026-07-10
+python scripts/list_leads.py --company "Acme" --title "Software Engineer" --set-status interviewing
 ```
 
 **Stored JD text:** each lead's `jd_text` column keeps the full description
@@ -259,10 +376,21 @@ anything. It's kept as plain SQLite `TEXT` in the same row as everything
 else (no separate file store); the text is stored with its original
 paragraph/bullet-list structure intact rather than collapsed to one line,
 since a JD is semi-structured (headers, responsibilities, requirements), not
-a flat blob. Once a lead's `status` moves off `new` (e.g. to `pursuing`),
+a flat blob. Once a lead's `status` moves off `new` (e.g. to `approved`),
 `jd_text` — like the rest of the scoring fields — stops being overwritten by
 later re-sends of the same digest, so it won't quietly change out from under
 you after you've started using it.
+
+**Lifecycle stages (`models.LEAD_STAGES`):** `new` (unprocessed) → `approved`
+(triage said pursue) → `package_generated` (résumé + cover letter rendered)
+→ `applied` → `following_up` → `interviewing` → `offered` → `accepted` →
+`started`, with `passed` as the off-ramp at any point. The triage flow
+(below) stamps `approved`/`package_generated`/`passed` automatically;
+everything from `applied` onward is real-world progress you report by hand
+with `list_leads.py --set-status <stage> [--on <date>]`. Each stage past
+`new` has its own `<stage>_at` timestamp column (e.g. `applied_at`), stamped
+once and never overwritten by a later re-run, so the DB keeps a timeline —
+not just a current state.
 
 Leads persist in `var/leads.db` (gitignored — personal data) across runs, so
 you can classify a batch, step away, and come back to review with
