@@ -747,17 +747,27 @@ def generate_package(
     model: str = DEFAULT_MODEL,
     client=None,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
+    force: bool = False,
 ) -> PackageResult:
     """Evaluate a lead (always saving the JD text + LLM review into that
-    job's folder — see `_job_folder`) and, only on a "pursue" verdict,
-    additionally generate + save a tailored résumé and cover letter into the
-    same folder. Returns the evaluation either way — CLAUDE.md's "on a
-    dealbreaker or pass, report the mismatch and stop" only means "don't
-    generate a résumé/cover letter", not "don't write down the review"."""
+    job's folder — see `_job_folder`) and, on a "pursue" verdict (or any
+    verdict when `force=True`), additionally generate + save a tailored
+    résumé and cover letter into the same folder. Returns the evaluation
+    either way — CLAUDE.md's "on a dealbreaker or pass, report the mismatch
+    and stop" only means "don't generate a résumé/cover letter", not "don't
+    write down the review".
+
+    `force` exists for the human-already-decided case (e.g. a "review"
+    verdict driven by missing/unwritten JD specifics rather than an actual
+    dealbreaker, and the candidate already told the recruiter/hiring contact
+    they'd send a résumé) — it does NOT bypass `_check_house_rules`, so
+    banned content (comp figures, work-auth statements, etc.) is still
+    caught and repaired the same as any other generated package.
+    """
     evaluation = evaluate_lead(jd_text, company=company, title=title, model=model, client=client)
     jd_path = render_job_description(jd_text, company=company, title=title, out_dir=output_root)
     review_path = render_jd_review_docx(evaluation, company=company, title=title, out_dir=output_root)
-    if evaluation.verdict != "pursue":
+    if evaluation.verdict != "pursue" and not force:
         return PackageResult(evaluation=evaluation, jd_path=jd_path, review_path=review_path)
 
     content, generate_calls = _generate_content(jd_text, company=company, title=title, model=model, client=client)

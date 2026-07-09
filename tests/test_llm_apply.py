@@ -272,6 +272,30 @@ def test_generate_package_skips_generation_when_verdict_is_not_pursue(tmp_path):
     assert "Angular required" in review_text
 
 
+def test_generate_package_force_generates_despite_non_pursue_verdict(tmp_path):
+    client = _FakeClient(
+        responses=[
+            (_EVAL_PAYLOAD_PASS, 900, 150),
+            (json.dumps(_CLEAN_CONTENT), 2000, 3000),
+        ]
+    )
+    result = llm_apply.generate_package(
+        "JD text",
+        company="Acme",
+        title="Engineer",
+        model="claude-haiku-4-5",
+        client=client,
+        output_root=tmp_path,
+        force=True,
+    )
+
+    assert result.evaluation.verdict == "pass"
+    assert result.resume_path is not None and result.resume_path.exists()
+    assert result.cover_letter_path is not None and result.cover_letter_path.exists()
+    assert result.generate_metrics is not None
+    assert len(client.calls) == 2  # evaluate + generate, unlike the non-forced case
+
+
 def test_generate_package_full_flow_saves_docx_and_aggregates_metrics(tmp_path):
     client = _FakeClient(
         responses=[

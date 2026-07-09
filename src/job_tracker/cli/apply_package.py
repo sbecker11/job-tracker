@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 from job_tracker.pipeline.llm_apply import DEFAULT_MODEL, DEFAULT_OUTPUT_ROOT, generate_package, render_jd_review
-from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect
+from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect, update_llm_evaluation
 
 
 def _find_lead(conn, company: str, title: str) -> dict | None:
@@ -85,6 +85,14 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="If given and a matching company/title line exists, update it with the result",
     )
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="Generate the résumé + cover letter even if the verdict isn't 'pursue' — for when you've "
+        "already decided to apply (e.g. after a call) and the verdict is just 'review' for lack of a "
+        "written JD, not an actual dealbreaker. House-rule checks (no comp figures, no work-auth "
+        "statements, etc.) still run on the generated content either way.",
+    )
     ap.add_argument("--json", action="store_true", help="Print the full result as JSON")
     args = ap.parse_args(argv)
 
@@ -108,7 +116,12 @@ def main(argv: list[str] | None = None) -> int:
         title=args.title,
         model=args.model,
         output_root=args.output_root,
+        force=args.force,
     )
+
+    conn = connect(args.db)
+    update_llm_evaluation(conn, lead["normalized_key"], result.evaluation)
+    conn.close()
 
     if args.comparison_jsonl:
         found = _update_comparison_jsonl(
@@ -174,7 +187,9 @@ def main(argv: list[str] | None = None) -> int:
             f"{em.elapsed_s:.1f}s, {_fmt_cost(em.cost_usd)}"
         )
 
-    if result.evaluation.verdict == "pursue":
+    if result.resume_path is not None:
+        if result.evaluation.verdict != "pursue":
+            print(f"\n(verdict was '{result.evaluation.verdict}', not 'pursue' — generated anyway via --force)")
         print(f"\nRésumé saved to:       {result.resume_path}")
         print(f"Cover letter saved to: {result.cover_letter_path}")
         gm = result.generate_metrics
@@ -190,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
         if result.warnings:
             print(f"\n⚠ WARNING — house-rule issues found in generated content: {result.warnings}")
     else:
-        print("\nNo package generated (verdict was not 'pursue').")
+        print("\nNo package generated (verdict was not 'pursue'; pass --force to override).")
 
     return 0
 
