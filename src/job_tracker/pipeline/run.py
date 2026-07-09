@@ -159,6 +159,12 @@ def run_pipeline(
                         role.company, role.title, verbose=ats_verbose, postings_cache=postings_cache
                     )
                     apply_url = apply_url or resolved_url
+                # See the matching comment in pipeline/triage.py: prefer the
+                # role's own isolated text over the whole digest email.
+                used_role_snippet = False
+                if not jd_text and role.snippet:
+                    jd_text = role.snippet
+                    used_role_snippet = True
                 if not jd_text:
                     jd_text = message.combined_text
 
@@ -172,7 +178,9 @@ def run_pipeline(
                     apply_url=apply_url,
                     extraction_confidence=role.confidence,
                     jd_resolved=jd_resolved,
-                    jd_source="ats_api" if jd_resolved else "email_body",
+                    jd_source=(
+                        "ats_api" if jd_resolved else "digest_snippet" if used_role_snippet else "email_body"
+                    ),
                     jd_text=jd_text,
                     match_pct=score.match_pct,
                     matched_skills=score.matched_skills,

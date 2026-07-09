@@ -60,7 +60,7 @@ class _FakeClient:
 def _eval_payload(verdict: str, match_pct: float = 50) -> str:
     return json.dumps(
         {
-            "dealbreaker_notes": [],
+            "dealbreaker_checks": [],
             "skills_alignment": [],
             "match_pct": match_pct,
             "verdict": verdict,
@@ -131,19 +131,23 @@ def _outreach_message() -> EmailMessage:
 
 def test_noise_message_denied_without_llm_call():
     result = triage.triage_message(_noise_message(), client=_FakeClient())
-    assert result.outcome == triage.DENY
+    assert result.outcome == triage.SKIP
     assert result.roles == []
+    # Correctly identified as not job content — nothing was ever there to extract.
+    assert result.extraction_complete is True
 
 
 def test_rejection_message_denied_without_llm_call():
     result = triage.triage_message(_rejection_message(), client=_FakeClient())
-    assert result.outcome == triage.DENY
+    assert result.outcome == triage.SKIP
 
 
 def test_recruiter_outreach_needs_review_without_llm_call():
     result = triage.triage_message(_outreach_message(), client=_FakeClient())
     assert result.outcome == triage.NEEDS_REVIEW
     assert result.classifier_label == "recruiter-outreach"
+    # No JD to score by design — extraction was never even attempted.
+    assert result.extraction_complete is False
 
 
 # --- single-JD -> LLM evaluate (+ generate) ----------------------------------
@@ -157,7 +161,7 @@ def test_single_jd_pursue_verdict_accepts_and_generates(tmp_path):
         output_root=tmp_path,
         client=client,
     )
-    assert result.outcome == triage.ACCEPT
+    assert result.outcome == triage.PURSUE
     assert len(result.roles) == 1
     role = result.roles[0]
     assert role.lead.company == "Acme"
@@ -174,7 +178,7 @@ def test_single_jd_pass_verdict_denies_and_skips_generation(tmp_path):
         output_root=tmp_path,
         client=client,
     )
-    assert result.outcome == triage.DENY
+    assert result.outcome == triage.SKIP
     assert result.roles[0].package.resume_path is None
     assert len(client.calls) == 1  # evaluate only, no generate call spent
 
@@ -199,7 +203,7 @@ def test_no_generate_flag_never_spends_on_generation_even_when_pursue(tmp_path):
         output_root=tmp_path,
         client=client,
     )
-    assert result.outcome == triage.ACCEPT
+    assert result.outcome == triage.PURSUE
     assert result.roles[0].package.resume_path is None
     assert len(client.calls) == 1
 
@@ -213,6 +217,164 @@ def test_extraction_failure_needs_review_without_llm_call():
     )
     result = triage.triage_message(message, client=_FakeClient())
     # No ATS link/company signal for the regex extractor to latch onto.
-    assert result.outcome in (triage.NEEDS_REVIEW, triage.DENY)
+    assert result.outcome in (triage.NEEDS_REVIEW, triage.SKIP)
     if result.outcome == triage.NEEDS_REVIEW:
         assert result.roles == []
+
+
+# --- multi-JD-in-body: per-role snippet isolation ---------------------------
+
+
+def _multi_jd_message(**overrides) -> EmailMessage:
+    fields = dict(
+        id="msg-multi",
+        from_address="careers@startup.example",
+        subject="We're hiring — open roles at StartupCo",
+        snippet="Multiple engineering openings",
+        body_plain=(
+            "Hi Shawn,\n\nStartupCo has several open roles:\n\n"
+            "- Senior Software Engineer — Python and distributed systems\n"
+            "- Full Stack Engineer — must be onsite 5 days a week\n\n"
+            "Apply:\nhttps://jobs.lever.co/startupco/senior-backend\n"
+            "https://jobs.lever.co/startupco/fullstack\n\nThanks,\nStartupCo People Team"
+        ),
+    )
+    fields.update(overrides)
+    return EmailMessage(**fields)
+
+
+def test_multi_jd_roles_scored_against_own_snippet_not_whole_digest(tmp_path):
+    """Regression (2026-07-07): before ExtractedRole.snippet existed, every
+    role fanned out of a digest whose ATS lookup failed was scored against
+    `message.combined_text` — i.e. the ENTIRE digest, including sibling
+    roles' requirements. Here, the "Full Stack Engineer" bullet's "onsite 5
+    days a week" language must never leak into the "Senior Software
+    Engineer" role's jd_text (and vice versa for "distributed systems")."""
+    client = _FakeClient(
+        responses=[
+            (_eval_payload("review", 50), 900, 200),
+            (_eval_payload("review", 50), 900, 200),
+        ]
+    )
+    result = triage.triage_message(
+        _multi_jd_message(),
+        resolve_full_jd=False,
+        generate=False,
+        output_root=tmp_path,
+        client=client,
+    )
+    by_title = {r.lead.title: r.lead for r in result.roles}
+    senior_lead = by_title["Senior Software Engineer"]
+    fullstack_lead = by_title["Full Stack Engineer"]
+
+    assert "distributed systems" in senior_lead.jd_text
+    assert "onsite" not in senior_lead.jd_text
+    assert "onsite" in fullstack_lead.jd_text
+    assert "distributed systems" not in fullstack_lead.jd_text
+    assert senior_lead.jd_source == "digest_snippet"
+    assert fullstack_lead.jd_source == "digest_snippet"
+
+
+# --- link-only-digest extraction fallback (opt-in) --------------------------
+
+
+def _digest_message(**overrides) -> EmailMessage:
+    fields = dict(
+        id="msg-digest",
+        from_address="jobs@my.theladders.com",
+        subject="New Jobs Posted: Apply before others do",
+        body_plain=(
+            "Jobs Posted in the Last 24 Hours\n\n"
+            "Software Development Manager - Merge Hemo\n$155K - $232K* | Remote\n"
+            "https://my.theladders.com/apply/1\n\n"
+            "Core Engineering - Hands-on Engineer Leader\n$150K - $200K* | Salt Lake City, UT\n"
+            "https://my.theladders.com/apply/2\n"
+        ),
+    )
+    fields.update(overrides)
+    return EmailMessage(**fields)
+
+
+def _extract_payload(items: list[dict]) -> str:
+    return json.dumps(items)
+
+
+def test_link_only_digest_without_fallback_needs_review_no_extraction_call():
+    result = triage.triage_message(_digest_message(), client=_FakeClient())
+    assert result.classifier_label == "link-only-digest"
+    assert result.outcome == triage.NEEDS_REVIEW
+    assert result.roles == []
+    assert result.extraction_complete is False
+
+
+def test_link_only_digest_with_llm_fallback_extracts_and_scores_roles(tmp_path):
+    extract_client = _FakeClient(
+        responses=[
+            _extract_payload(
+                [
+                    {"company": "Merge Hemo", "title": "Software Development Manager", "confidence": 0.9},
+                    {"company": "Goldman Sachs", "title": "Core Engineering Leader", "confidence": 0.8},
+                ]
+            )
+        ]
+    )
+    eval_client = _FakeClient(
+        responses=[_eval_payload("review", 40), _eval_payload("pursue", 85), _GENERATE_PAYLOAD]
+    )
+    result = triage.triage_message(
+        _digest_message(),
+        resolve_full_jd=False,
+        output_root=tmp_path,
+        client=eval_client,
+        use_llm_extraction_fallback=True,
+        llm_extract_client=extract_client,
+    )
+    assert result.classifier_label == "link-only-digest"
+    assert len(result.roles) == 2
+    assert {r.lead.company for r in result.roles} == {"Merge Hemo", "Goldman Sachs"}
+    assert result.outcome == triage.PURSUE  # at least one role scored "pursue"
+    # Found fewer roles than the cap — no truncation, nothing left on the table.
+    assert result.extraction_complete is True
+
+
+def test_link_only_digest_llm_fallback_finds_nothing_still_needs_review():
+    extract_client = _FakeClient(responses=[_extract_payload([])])
+    result = triage.triage_message(
+        _digest_message(),
+        client=_FakeClient(),
+        use_llm_extraction_fallback=True,
+        llm_extract_client=extract_client,
+    )
+    assert result.outcome == triage.NEEDS_REVIEW
+    assert result.roles == []
+    assert result.extraction_complete is False
+
+
+def test_link_only_digest_fallback_caps_roles_evaluated_by_confidence(tmp_path):
+    extract_client = _FakeClient(
+        responses=[
+            _extract_payload(
+                [
+                    {"company": "LowCo", "title": "Engineer A", "confidence": 0.3},
+                    {"company": "HighCo", "title": "Engineer B", "confidence": 0.95},
+                    {"company": "MidCo", "title": "Engineer C", "confidence": 0.6},
+                ]
+            )
+        ]
+    )
+    eval_client = _FakeClient(responses=[_eval_payload("pass", 10)])
+    result = triage.triage_message(
+        _digest_message(),
+        resolve_full_jd=False,
+        output_root=tmp_path,
+        client=eval_client,
+        use_llm_extraction_fallback=True,
+        llm_extract_client=extract_client,
+        max_llm_extracted_roles=1,
+    )
+    # Only the single highest-confidence role should have been evaluated.
+    assert len(result.roles) == 1
+    assert result.roles[0].lead.company == "HighCo"
+    assert len(eval_client.calls) == 1
+    # 3 complete roles found but capped to 1 — there may be more left out.
+    assert result.extraction_complete is False

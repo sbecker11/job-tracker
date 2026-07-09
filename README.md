@@ -51,10 +51,12 @@ recruiting Gmail inbox
 | `src/job_tracker/pipeline/run.py` | Orchestrator: classify → extract → resolve → score → store |
 | `src/job_tracker/cli/list_leads.py` | Review/export/update stored leads without re-running the pipeline |
 | `src/job_tracker/cli/apply_package.py` | Evaluate one stored lead + generate résumé/cover letter on a pursue verdict (`apply-package`) |
-| `src/job_tracker/pipeline/triage.py` | Classify → extract → resolve → LLM-evaluate (+ auto-generate on pursue) for one recruiter-inbox message, deciding an ACCEPT/DENY/NEEDS_REVIEW outcome — never touches Gmail or the DB itself |
-| `src/job_tracker/email/gmail_writer.py` | The only place in this repo that writes to Gmail — labels a message `JobTracker/ACCEPT\|DENY\|NEEDS_REVIEW` and archives it |
+| `src/job_tracker/pipeline/triage.py` | Classify → extract → resolve → LLM-evaluate (+ auto-generate on pursue) for one recruiter-inbox message, deciding a PURSUE/SKIP/NEEDS_REVIEW outcome — never touches Gmail or the DB itself |
+| `src/job_tracker/email/gmail_writer.py` | The only place in this repo that writes to Gmail — labels a message `JobTracker/PURSUE\|SKIP\|NEEDS_REVIEW` and archives it |
 | `src/job_tracker/cli/triage_recruiter_inbox.py` | Runs `pipeline/triage.py` over `Category/recruiter_job` inbox mail, persists leads + the message outcome, and relabels/archives via `gmail_writer.py` (`triage-recruiter-inbox`) |
 | `config/framework.yaml` | Dealbreakers + skills vocabulary, transcribed from `~/CLAUDE.md` |
+| `docs/JOB_CRM_VISION.md` | Design doc: Job as a first-class object — contacts, conversations, documents, meetings, offers, and the 5 use cases (dedupe alerts, follow-ups, offer comparison, market-withdrawal notice) this is building toward |
+| `docs/CATEGORY_HANDLER_EXTENSIBILITY.md` | Design doc: how the classify → decide → label/archive pattern generalizes beyond `recruiter_job` to future comms-migration categories |
 
 ## Setup
 
@@ -156,7 +158,7 @@ the code detects the failed refresh and re-opens the login flow for you.
 ### Write access for the triage flow (`triage_recruiter_inbox.py` only)
 
 Every command above is read-only. `triage_recruiter_inbox.py` is the one
-exception — it relabels (`JobTracker/ACCEPT|DENY|NEEDS_REVIEW`) and archives
+exception — it relabels (`JobTracker/PURSUE|SKIP|NEEDS_REVIEW`) and archives
 messages on the default recruiting-funnel account, which needs the broader
 `gmail.modify` scope. This is a **separate scope and a separate cached
 token** (`token_modify.json`, next to the existing `token.json`) — it reuses
@@ -173,7 +175,7 @@ the existing readonly token and needs no new consent.
 # packages for pursue verdicts, but never touch Gmail or the DB
 python scripts/triage_recruiter_inbox.py --dry-run --limit 10
 
-# For real: also relabels JobTracker/ACCEPT|DENY|NEEDS_REVIEW and archives
+# For real: also relabels JobTracker/PURSUE|SKIP|NEEDS_REVIEW and archives
 # (first run without --dry-run opens the gmail.modify consent screen above)
 python scripts/triage_recruiter_inbox.py --limit 10
 
@@ -190,13 +192,13 @@ python scripts/triage_recruiter_inbox.py --no-generate
   §10) to score, never the free keyword scorer — the whole point is a
   same-session decision confident enough to actually relabel and archive
   the source email.
-- **ACCEPT** (at least one extracted role scored "pursue"): generates a
+- **PURSUE** (at least one extracted role scored "pursue"): generates a
   tailored résumé + cover letter automatically (unless `--no-generate`),
-  advances the lead to `package_generated` (or `approved` with
-  `--no-generate`), and archives the message under `JobTracker/ACCEPT`.
-- **DENY** (classified noise/rejection, or every extracted role scored
-  "pass"): advances the lead to `passed` and archives under
-  `JobTracker/DENY` — no Anthropic spend beyond the one evaluate call per
+  advances the lead to `package_generated` (or `pursued` with
+  `--no-generate`), and archives the message under `JobTracker/PURSUE`.
+- **SKIP** (classified noise/rejection, or every extracted role scored
+  "pass"): advances the lead to `skipped` and archives under
+  `JobTracker/SKIP` — no Anthropic spend beyond the one evaluate call per
   role.
 - **NEEDS_REVIEW** (recruiter outreach with no JD to score, an
   unparseable/incomplete extraction, or a "review" verdict): archived under
@@ -325,7 +327,7 @@ How it stays cheap and safe:
 
 **Tuning the framework:** edit `config/framework.yaml` directly — dealbreakers,
 skills vocabulary/weights, and the `pursue_min_pct` / `review_min_pct`
-thresholds are all data, not code. Keep it in sync with `~/Wisdom/CLAUDE.md`
+thresholds are all data, not code. Keep it in sync with `~/CLAUDE.md`
 §3 (dealbreakers) and §8–9 (skills) when those change.
 
 **Limitation (by design, v1):** matching is keyword-based, not an LLM read of
@@ -363,7 +365,7 @@ python scripts/list_leads.py --company "Acme" --title "Software Engineer" --show
 python scripts/list_leads.py --csv ~/Desktop/job_leads.csv
 
 # Advance leads through their lifecycle (models.LEAD_STAGES) as real-world progress happens
-python scripts/list_leads.py --verdict pursue --set-status approved
+python scripts/list_leads.py --verdict pursue --set-status pursued
 python scripts/list_leads.py --company "Acme" --title "Software Engineer" --set-status applied --on 2026-07-10
 python scripts/list_leads.py --company "Acme" --title "Software Engineer" --set-status interviewing
 ```
@@ -376,16 +378,16 @@ anything. It's kept as plain SQLite `TEXT` in the same row as everything
 else (no separate file store); the text is stored with its original
 paragraph/bullet-list structure intact rather than collapsed to one line,
 since a JD is semi-structured (headers, responsibilities, requirements), not
-a flat blob. Once a lead's `status` moves off `new` (e.g. to `approved`),
+a flat blob. Once a lead's `status` moves off `new` (e.g. to `pursued`),
 `jd_text` — like the rest of the scoring fields — stops being overwritten by
 later re-sends of the same digest, so it won't quietly change out from under
 you after you've started using it.
 
-**Lifecycle stages (`models.LEAD_STAGES`):** `new` (unprocessed) → `approved`
+**Lifecycle stages (`models.LEAD_STAGES`):** `new` (unprocessed) → `pursued`
 (triage said pursue) → `package_generated` (résumé + cover letter rendered)
 → `applied` → `following_up` → `interviewing` → `offered` → `accepted` →
-`started`, with `passed` as the off-ramp at any point. The triage flow
-(below) stamps `approved`/`package_generated`/`passed` automatically;
+`started`, with `skipped` as the off-ramp at any point. The triage flow
+(below) stamps `pursued`/`package_generated`/`skipped` automatically;
 everything from `applied` onward is real-world progress you report by hand
 with `list_leads.py --set-status <stage> [--on <date>]`. Each stage past
 `new` has its own `<stage>_at` timestamp column (e.g. `applied_at`), stamped
@@ -395,6 +397,39 @@ not just a current state.
 Leads persist in `var/leads.db` (gitignored — personal data) across runs, so
 you can classify a batch, step away, and come back to review with
 `list_leads.py` without touching the network again.
+
+## Job CRM foundation (contacts, conversations, documents, meetings, offers)
+
+Full design/use cases: `docs/JOB_CRM_VISION.md`. Summary of what's built so
+far — `var/leads.db` now has five join tables hanging off a job's
+`normalized_key` (`pipeline/store.py`), each with its own dataclass in
+`pipeline/models.py`:
+
+| Table | Dataclass | Answers |
+|---|---|---|
+| `job_contacts` | `JobContact` | Who's involved (recruiter/hiring manager/referral). Dedupes on email within a job. |
+| `job_conversations` | `JobConversation` | What was said, when, by which contact. `latest_conversation_at()` backs the (not-yet-built) follow-up nudge report. |
+| `job_documents` | `JobDocument` | JD snapshot, résumé, cover letter, RTR, availability sent — versioned per `doc_type`, auto-incrementing. |
+| `job_meetings` | `JobMeeting` | Scheduled/completed interviews, linked to a contact. |
+| `job_offers` | `JobOffer` | Comp/benefits/deadline per job, for side-by-side comparison across jobs in `offered` status. |
+
+`triage_recruiter_inbox.py` now records a `JobContact` + `JobConversation`
+for every message it triages, and calls `find_matching_job()` before doing
+so: if a new (company, title) fuzzy-matches an *existing* job well enough
+(`find_matching_job` / `find_similar_jobs` in `pipeline/store.py`, same
+`SequenceMatcher`-based approach `contacts/store.py` uses for organization
+dedup — ratio ≥ 0.92 auto-merges, 0.75–0.92 is logged as a candidate but not
+merged), the new contact/conversation attaches to the existing job instead
+of only living under a separate lead — this is the "multiple recruiters
+pitching the same role" detection from `JOB_CRM_VISION.md` UC-2. `job_leads`
+rows themselves are unaffected by this fuzzy match; only the contact/
+conversation linkage uses it, so JD text/scoring never gets silently merged
+between two postings that just have similar titles.
+
+Not yet built (see `JOB_CRM_VISION.md` §5 open questions and the use cases
+without a CLI yet): manual (non-email) job creation, follow-up nudge
+reports, offer-comparison reports, market-withdrawal drafting, and
+transition-validation on `advance_status`.
 
 ## Limits
 

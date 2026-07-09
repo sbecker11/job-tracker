@@ -1,4 +1,4 @@
-# JD Match Framework — transcribed from ~/Wisdom/CLAUDE.md (Sections 1-3, 8-9).
+# JD Match Framework — transcribed from ~/CLAUDE.md (Sections 1-3, 8-9).
 # Used by src/job_tracker/scoring/scorer.py to run the dealbreaker sweep and
 # skills-alignment match % before a lead is surfaced as pursue/review/pass.
 #
@@ -7,7 +7,7 @@
 # silently dropped, since a human still makes the final call (per CLAUDE.md's
 # human-in-the-loop rule for recruiter/client-facing decisions).
 #
-# Keep this file in sync with ~/Wisdom/CLAUDE.md when that file changes.
+# Keep this file in sync with ~/CLAUDE.md when that file changes.
 
 candidate:
   name: "Shawn Becker"
@@ -52,6 +52,40 @@ dealbreakers:
     keywords: ["\\.net\\b", "c#", "asp\\.net"]
     min_hits: 1
     verdict: "Dealbreaker if load-bearing"
+  - id: onsite_only
+    label: "Onsite-only, not in/near Lehi, UT"
+    # Added 2026-07-06 after a Des Moines, IA "(Onsite)" role slipped
+    # through. Deliberately targets unambiguous mandatory-onsite phrasing
+    # (including the "(Onsite)" title/subject tag job boards use, same
+    # convention as "(Remote)"/"(Hybrid)") rather than the bare word
+    # "onsite" alone, which also shows up in flexible/hybrid JDs ("mostly
+    # remote with occasional onsite team days") this candidate would still
+    # consider — see CLAUDE.md §3.
+    keywords:
+      - "\\(on-?site\\)"
+      - "100% onsite"
+      - "onsite only"
+      - "on-?site only"
+      - "must work onsite"
+      - "must be onsite"
+      - "based onsite"
+      - "no remote option"
+      - "not a remote (role|position)"
+      - "relocation required"
+      - "must relocate"
+      - "in-office five days"
+      - "5 days? (a week )?onsite"
+      # Broadened 2026-07-07 after a Torrance, CA role ("Expected onsite
+      # schedule is four days per week") slipped through — the old patterns
+      # only caught digit "5 days" phrasing, missing spelled-out numbers and
+      # the common 3-4 days/week near-mandatory-onsite shape. Deliberately
+      # starts at 3 (not 1-2), matching this dealbreaker's "onsite-only"
+      # framing rather than the flexible/occasional-onsite hybrid setups
+      # CLAUDE.md says are still worth considering.
+      - "(\\b3\\b|\\b4\\b|\\b5\\b|three|four|five)\\+?\\s*days?\\s*(a|per|/)\\s*week[^.]{0,60}(on-?site|in-office|in office)"
+      - "(on-?site|in-office|in office)[^.]{0,60}(\\b3\\b|\\b4\\b|\\b5\\b|three|four|five)\\+?\\s*days?\\s*(a|per|/)\\s*week"
+    min_hits: 1
+    verdict: "Dealbreaker — onsite-only, not in/near Lehi, UT"
 
 # Explicitly NOT a dealbreaker (CLAUDE.md §3) — never flagged.
 not_dealbreakers:

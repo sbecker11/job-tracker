@@ -1,6 +1,6 @@
 """Triage a single recruiter-inbox message end to end: classify -> extract ->
 resolve JD -> LLM evaluate (+ auto-generate a résumé/cover letter on a
-"pursue" verdict) -> decide a message-level ACCEPT / DENY / NEEDS_REVIEW
+"pursue" verdict) -> decide a message-level PURSUE / SKIP / NEEDS_REVIEW
 outcome.
 
 Deliberately a different code path from `pipeline/run.py` (classify ->
@@ -12,9 +12,12 @@ to actually relabel and archive the source email — and CLAUDE.md's JD
 Match Framework, not the keyword heuristic, is what that confidence should
 be based on.
 
-This module only decides; it never touches Gmail or the DB itself — see
-`scripts/triage_recruiter_inbox.py` for the caller that persists leads,
-records the message outcome, and applies the Gmail label/archive.
+This module only decides; it never touches Gmail, and never persists leads
+or message outcomes itself — see `scripts/triage_recruiter_inbox.py` for the
+caller that does that and applies the Gmail label/archive. The one exception
+is `conn`, optionally passed through to `pipeline/llm_extract.py`'s
+`llm_extraction_cache` table (see `use_llm_extraction_fallback` below) so a
+digest's extraction isn't re-billed on every `--force` re-triage.
 """
 
 from __future__ import annotations
@@ -24,23 +27,40 @@ from pathlib import Path
 
 from job_tracker.email.classifier import classify
 from job_tracker.email.labels import Label
-from job_tracker.email.models import EmailMessage
+from job_tracker.email.models import EmailMessage, ExtractedRole
 from job_tracker.pipeline.extract import extract_roles
 from job_tracker.pipeline.llm_apply import DEFAULT_MODEL, DEFAULT_OUTPUT_ROOT, PackageResult, generate_package
+from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_EXTRACT_MODEL
+from job_tracker.pipeline.llm_extract import extract_roles_llm, extract_roles_llm_cached
 from job_tracker.pipeline.models import JobLead
 from job_tracker.pipeline.run import resolve_jd_text
 
-ACCEPT = "ACCEPT"
-DENY = "DENY"
+# Renamed 2026-07-07 (were ACCEPT/DENY) to match the LLM Match Framework's
+# own verdict language (evaluate_lead()'s "pursue"/"pass"/"review") — see
+# gmail_writer.PURSUE_LABEL/SKIP_LABEL for the corresponding Gmail labels.
+PURSUE = "PURSUE"
+SKIP = "SKIP"
 NEEDS_REVIEW = "NEEDS_REVIEW"
 
+# A digest can list dozens of postings; evaluating every one through the full
+# LLM Match Framework (Sonnet, one call per role) would multiply cost for a
+# single email. Cap to the top N by extraction confidence — plenty to surface
+# anything worth pursuing without unbounded spend on one message.
+DEFAULT_MAX_LLM_EXTRACTED_ROLES = 8
+
 # Messages job-tracker's own classifier is confident carry no pursuable job
-# get DENY without spending on an LLM call at all.
-_DENY_LABELS = {Label.NOISE, Label.REJECTION}
-# Everything else ambiguous (a digest our classifier didn't expect on this
-# curated account, or outreach with no JD to score) goes to NEEDS_REVIEW
-# rather than being silently discarded either way.
-_NEEDS_REVIEW_LABELS = {Label.LINK_ONLY_DIGEST, Label.RECRUITER_OUTREACH}
+# get SKIP without spending on an LLM call at all.
+_SKIP_LABELS = {Label.NOISE, Label.REJECTION}
+# RECRUITER_OUTREACH has no JD to score by design (personalized outreach
+# text, not a posting) — always NEEDS_REVIEW, never worth an extraction
+# attempt. LINK_ONLY_DIGEST used to be here too (see
+# `_extract_roles_with_fallback` below for why it no longer short-circuits).
+_NEEDS_REVIEW_LABELS = {Label.RECRUITER_OUTREACH}
+# Labels `pipeline/extract.py`'s regex pass can meaningfully extract from.
+# LINK_ONLY_DIGEST is deliberately excluded there (see its docstring) — for
+# that label, the LLM extraction fallback (opt-in) is the ONLY way to get
+# roles out; there is no regex pass to even try.
+_REGEX_EXTRACTABLE_LABELS = {Label.SINGLE_JD, Label.MULTI_JD_IN_BODY}
 
 
 @dataclass
@@ -54,11 +74,64 @@ class MessageTriageResult:
     message_id: str
     subject: str
     from_address: str
-    outcome: str  # ACCEPT | DENY | NEEDS_REVIEW
+    outcome: str  # PURSUE | SKIP | NEEDS_REVIEW
     reason: str
     classifier_label: str
     roles: list[RoleOutcome] = field(default_factory=list)
     extraction_issue: str = ""
+    # Whether extraction is judged to have found everything there was to
+    # find (or correctly determined there was nothing to find), as opposed
+    # to "gave up" / "might be more beyond what we pulled out". Only
+    # meaningfully consulted by callers for messages that ALSO carry a raw,
+    # non-job-tracker Gmail label like the recruiting account's "Job-Digests"
+    # filter label (see scripts/triage_recruiter_inbox.py) — for those, an
+    # incomplete extraction should leave the source message visible in the
+    # inbox rather than filing it away as if it were fully handled. True by
+    # default since it's irrelevant for any message without such a label.
+    extraction_complete: bool = True
+
+
+def _extract_roles_with_fallback(
+    message: EmailMessage,
+    label: Label,
+    *,
+    use_llm_extraction_fallback: bool,
+    llm_extraction_model: str,
+    max_llm_extracted_roles: int,
+    conn=None,
+    llm_extract_client=None,
+) -> tuple[list[ExtractedRole], str, bool]:
+    """Regex extraction first (free), LLM extraction fallback second (opt-in,
+    cheap Haiku, cached by message_id) — mirrors `pipeline/run.py`'s
+    `use_llm_fallback` behavior, but also covers LINK_ONLY_DIGEST, which
+    `pipeline/extract.py`'s regex pass never attempts at all (there's no
+    regex shape general enough for arbitrary digest layouts).
+
+    Returns (roles, extraction_source, truncated) where extraction_source is
+    "regex", "llm", or "none" (nothing found either way) — used for the
+    triage reason string so it's clear which path produced (or failed to
+    produce) a result — and `truncated` is True only when the LLM fallback
+    found MORE complete roles than `max_llm_extracted_roles` and had to cut
+    the list down, i.e. there's a real chance this digest had roles left on
+    the table rather than genuinely containing only what got returned.
+    """
+    roles: list[ExtractedRole] = extract_roles(message, label) if label in _REGEX_EXTRACTABLE_LABELS else []
+    regex_found_complete = any(r.company and r.title for r in roles)
+    if regex_found_complete or not use_llm_extraction_fallback:
+        return roles, ("regex" if regex_found_complete else "none"), False
+
+    if conn is not None:
+        llm_roles = extract_roles_llm_cached(conn, message, model=llm_extraction_model, client=llm_extract_client)
+    else:
+        llm_roles = extract_roles_llm(message, model=llm_extraction_model, client=llm_extract_client)
+
+    complete_llm_roles = [r for r in llm_roles if r.company and r.title]
+    if not complete_llm_roles:
+        return roles, "none", False
+
+    complete_llm_roles.sort(key=lambda r: r.confidence, reverse=True)
+    truncated = len(complete_llm_roles) > max_llm_extracted_roles
+    return complete_llm_roles[:max_llm_extracted_roles], "llm", truncated
 
 
 def _decide_outcome(role_outcomes: list[RoleOutcome]) -> tuple[str, str]:
@@ -66,10 +139,10 @@ def _decide_outcome(role_outcomes: list[RoleOutcome]) -> tuple[str, str]:
         return NEEDS_REVIEW, "no roles extracted"
     verdicts = {r.package.evaluation.verdict for r in role_outcomes}
     if "pursue" in verdicts:
-        return ACCEPT, "at least one role scored 'pursue'"
+        return PURSUE, "at least one role scored 'pursue'"
     if "review" in verdicts:
         return NEEDS_REVIEW, "at least one role scored 'review', none scored 'pursue'"
-    return DENY, "every role scored 'pass'"
+    return SKIP, "every role scored 'pass'"
 
 
 def triage_message(
@@ -82,6 +155,11 @@ def triage_message(
     ats_verbose: bool = False,
     postings_cache: dict[str, list] | None = None,
     client=None,
+    use_llm_extraction_fallback: bool = False,
+    llm_extraction_model: str = DEFAULT_LLM_EXTRACT_MODEL,
+    max_llm_extracted_roles: int = DEFAULT_MAX_LLM_EXTRACTED_ROLES,
+    conn=None,
+    llm_extract_client=None,
 ) -> MessageTriageResult:
     result = MessageTriageResult(
         message_id=message.id,
@@ -95,21 +173,40 @@ def triage_message(
     classification = classify(message)
     result.classifier_label = classification.label.value
 
-    if classification.label in _DENY_LABELS:
-        result.outcome = DENY
+    if classification.label in _SKIP_LABELS:
+        result.outcome = SKIP
         result.reason = f"classified as {classification.label.value}: {'; '.join(classification.reasons)}"
+        # Correctly identified as not job content at all — there was never
+        # anything to extract, so this counts as "complete", not "gave up".
+        result.extraction_complete = True
         return result
 
     if classification.label in _NEEDS_REVIEW_LABELS:
         result.outcome = NEEDS_REVIEW
         result.reason = f"classified as {classification.label.value} — needs a human look, not an auto-decision"
+        # No JD to score by design — extraction was never even attempted.
+        result.extraction_complete = False
         return result
 
-    roles = extract_roles(message, classification.label)
+    roles, extraction_source, extraction_truncated = _extract_roles_with_fallback(
+        message,
+        classification.label,
+        use_llm_extraction_fallback=use_llm_extraction_fallback,
+        llm_extraction_model=llm_extraction_model,
+        max_llm_extracted_roles=max_llm_extracted_roles,
+        conn=conn,
+        llm_extract_client=llm_extract_client,
+    )
     complete_roles = [r for r in roles if r.company and r.title]
     if not complete_roles:
         result.outcome = NEEDS_REVIEW
-        result.extraction_issue = "no roles extracted" if not roles else "incomplete extraction (missing company or title)"
+        result.extraction_complete = False
+        if classification.label is Label.LINK_ONLY_DIGEST and extraction_source == "none" and not use_llm_extraction_fallback:
+            result.extraction_issue = "classified as link-only-digest — needs a human look, not an auto-decision"
+        elif not roles:
+            result.extraction_issue = "no roles extracted"
+        else:
+            result.extraction_issue = "incomplete extraction (missing company or title)"
         result.reason = result.extraction_issue
         return result
 
@@ -122,6 +219,19 @@ def triage_message(
             )
         else:
             jd_resolved, resolved_url = False, ""
+        # Fixed 2026-07-07: prefer the role's own isolated text (a bullet
+        # line, a "more details"/"Ref no." chunk, or an LLM-extracted
+        # excerpt — see ExtractedRole.snippet) over the ENTIRE raw email
+        # before falling back to it. Without this, every role fanned out of
+        # a multi-job digest whose ATS lookup failed got scored against the
+        # whole digest — including every sibling listing's requirements —
+        # which was silently corrupting dealbreaker/skills matching (e.g. a
+        # role could "inherit" a dealbreaker keyword that only appeared in a
+        # different listing in the same email).
+        used_role_snippet = False
+        if not jd_text and role.snippet:
+            jd_text = role.snippet
+            used_role_snippet = True
         if not jd_text:
             jd_text = message.combined_text
 
@@ -135,7 +245,9 @@ def triage_message(
                 output_root=output_root,
             )
             if generate
-            else _evaluate_only(jd_text, company=role.company, title=role.title, model=model, client=client)
+            else _evaluate_only(
+                jd_text, company=role.company, title=role.title, model=model, client=client, output_root=output_root
+            )
         )
 
         lead = JobLead(
@@ -146,7 +258,9 @@ def triage_message(
             apply_url=role.apply_url or resolved_url,
             extraction_confidence=role.confidence,
             jd_resolved=jd_resolved,
-            jd_source="ats_api" if jd_resolved else "email_body",
+            jd_source=(
+                "ats_api" if jd_resolved else "digest_snippet" if used_role_snippet else "email_body"
+            ),
             jd_text=jd_text,
             verdict=package.evaluation.verdict,
             rationale=[package.evaluation.rationale] if package.evaluation.rationale else [],
@@ -155,13 +269,22 @@ def triage_message(
 
     result.roles = role_outcomes
     result.outcome, result.reason = _decide_outcome(role_outcomes)
+    # Roles were found and scored, but if the LLM extraction fallback hit its
+    # cap there may be more roles in the digest than we pulled out — not
+    # safe to treat as fully handled.
+    result.extraction_complete = not extraction_truncated
     return result
 
 
-def _evaluate_only(jd_text: str, *, company: str, title: str, model: str, client=None) -> PackageResult:
+def _evaluate_only(
+    jd_text: str, *, company: str, title: str, model: str, client=None, output_root: Path = DEFAULT_OUTPUT_ROOT
+) -> PackageResult:
     """`generate=False` path: score with the LLM but never spend on
-    generation, regardless of verdict — used by `--no-generate`."""
-    from job_tracker.pipeline.llm_apply import evaluate_lead
+    generation, regardless of verdict — used by `--no-generate`. Still saves
+    the (free, local) JD text + review, same as `generate_package()` does."""
+    from job_tracker.pipeline.llm_apply import evaluate_lead, render_job_description, render_jd_review_docx
 
     evaluation = evaluate_lead(jd_text, company=company, title=title, model=model, client=client)
-    return PackageResult(evaluation=evaluation)
+    jd_path = render_job_description(jd_text, company=company, title=title, out_dir=output_root)
+    review_path = render_jd_review_docx(evaluation, company=company, title=title, out_dir=output_root)
+    return PackageResult(evaluation=evaluation, jd_path=jd_path, review_path=review_path)

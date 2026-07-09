@@ -8,6 +8,7 @@ import json
 import sys
 from pathlib import Path
 
+from job_tracker.pipeline.llm_apply import EvaluationResult, render_jd_review
 from job_tracker.pipeline.models import LEAD_STAGES
 from job_tracker.pipeline.store import DEFAULT_DB_PATH, advance_status, connect, list_leads
 
@@ -18,6 +19,7 @@ _COLUMNS = [
     "verdict",
     "llm_match_pct",
     "llm_verdict",
+    "llm_job_summary",
     "llm_rationale",
     "status",
     "apply_url",
@@ -26,7 +28,7 @@ _COLUMNS = [
     "times_seen",
     "first_seen",
     "last_seen",
-    "approved_at",
+    "pursued_at",
     "package_generated_at",
     "applied_at",
     "following_up_at",
@@ -34,7 +36,7 @@ _COLUMNS = [
     "offered_at",
     "accepted_at",
     "started_at",
-    "passed_at",
+    "skipped_at",
     "jd_text",
 ]
 
@@ -45,7 +47,36 @@ def _row_to_dict(row) -> dict:
     d["rationale"] = json.loads(d.get("rationale") or "[]")
     d["llm_dealbreaker_notes"] = json.loads(d.get("llm_dealbreaker_notes") or "[]")
     d["llm_skills_alignment"] = json.loads(d.get("llm_skills_alignment") or "[]")
+    d["llm_flags"] = json.loads(d.get("llm_flags") or "[]")
+    d["llm_framing_guidance"] = json.loads(d.get("llm_framing_guidance") or "[]")
     return d
+
+
+def _coerce_legacy_notes(items: list, *, string_field: str) -> list[dict]:
+    """Leads evaluated before the 2026-07-07 richer-schema change stored
+    llm_dealbreaker_notes/llm_skills_alignment as flat lists of prose strings,
+    not {check/status/notes} or {requirement/evidence/strength} dicts —
+    render_jd_review()/_docx() index into them with `.get(...)` and crash on a
+    bare str. Wrap any legacy string entries into a minimal dict (all other
+    fields blank) so old leads still render instead of raising; dict entries
+    (the current schema) pass through untouched."""
+    return [item if isinstance(item, dict) else {string_field: item} for item in items]
+
+
+def _row_to_evaluation(r: dict) -> EvaluationResult:
+    """Reconstruct an EvaluationResult purely from stored DB columns, so the
+    full JD review can be re-rendered on demand (--show-review) without
+    needing to track the review .md file's path separately."""
+    return EvaluationResult(
+        verdict=r.get("llm_verdict") or "",
+        match_pct=r.get("llm_match_pct") or 0.0,
+        job_summary=r.get("llm_job_summary") or "",
+        dealbreaker_checks=_coerce_legacy_notes(r["llm_dealbreaker_notes"], string_field="notes"),
+        skills_alignment=_coerce_legacy_notes(r["llm_skills_alignment"], string_field="evidence"),
+        flags=r["llm_flags"],
+        rationale=r.get("llm_rationale") or "",
+        framing_guidance=r["llm_framing_guidance"],
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -62,6 +93,13 @@ def main(argv: list[str] | None = None) -> int:
         "--show-jd-text",
         action="store_true",
         help="Print the full stored JD text for each matching lead (best combined with --company/--title to narrow to one)",
+    )
+    ap.add_argument(
+        "--show-review",
+        action="store_true",
+        help="Print the full JD review (job summary, dealbreaker sweep, skills alignment, flags, "
+        "recommendation) for each matching lead — re-rendered from stored data, not re-evaluated "
+        "(best combined with --company/--title to narrow to one)",
     )
     ap.add_argument(
         "--set-status",
@@ -127,6 +165,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{r['title']} @ {r['company']}  [{r['jd_source'] or 'no jd text stored'}]")
             print("-" * 70)
             print(r.get("jd_text") or "(no JD text stored for this lead)")
+        return 0
+
+    if args.show_review:
+        for i, r in enumerate(rows):
+            if i:
+                print("\n" + "=" * 70 + "\n")
+            if not r.get("llm_verdict"):
+                print(f"{r['title']} @ {r['company']}  — not yet LLM-evaluated, no review available")
+                continue
+            print(render_jd_review(_row_to_evaluation(r), company=r["company"], title=r["title"]))
         return 0
 
     header = (

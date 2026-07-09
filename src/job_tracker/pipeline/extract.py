@@ -210,6 +210,10 @@ def _extract_job_matches_roles(text: str) -> list[ExtractedRole]:
                 title=title,
                 source="job_matches_digest",
                 confidence=0.6 if company else 0.35,
+                # Thin (title + location only — this digest shape carries no
+                # deeper per-listing description) but still strictly this
+                # listing's own text, never a sibling listing's.
+                snippet=m.group(0).strip(),
             )
         )
     return roles
@@ -240,6 +244,10 @@ def _extract_ref_no_digest_roles(text: str) -> list[ExtractedRole]:
                 title=title,
                 source="ref_no_digest",
                 confidence=0.35,
+                # The whole chunk between this listing's Ref no. markers —
+                # everything about THIS posting and nothing from its
+                # neighbors, unlike `message.combined_text`.
+                snippet="\n".join(lines),
             )
         )
     return roles
@@ -291,6 +299,9 @@ def _extract_more_details_digest_roles(text: str) -> list[ExtractedRole]:
                 title=title,
                 source="digest_listing",
                 confidence=0.55,
+                # The chunk between this listing's own "more details" marker
+                # and the previous one — isolates it from sibling listings.
+                snippet="\n".join(lines),
             )
         )
     return roles
@@ -365,6 +376,9 @@ def _extract_single_jd(message: EmailMessage) -> list[ExtractedRole]:
             apply_url=apply_url,
             source=source or "sender_domain",
             confidence=confidence,
+            # A SINGLE_JD message is, by definition, about exactly one job —
+            # no contamination risk in using the whole body as its snippet.
+            snippet=text,
         )
     ]
 
@@ -397,6 +411,10 @@ def _extract_multi_jd(message: EmailMessage) -> list[ExtractedRole]:
                 apply_url=apply_url,
                 source="bullet_line",
                 confidence=0.75 if company else 0.4,
+                # The bullet's own line (including any " — <blurb>" suffix
+                # `_clean_bullet_title` stripped for the title) — thin, but
+                # never a sibling bullet's content.
+                snippet=candidate_line,
             )
         )
 

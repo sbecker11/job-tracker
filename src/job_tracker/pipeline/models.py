@@ -14,11 +14,14 @@ def utc_now_iso() -> str:
 # (job_leads.status) holds one of these; each stage after "new" has a
 # matching `<stage>_at` timestamp column (see pipeline/store.py's
 # _STAGE_DATE_COLUMNS) so the DB keeps a timeline, not just a current state.
-# "passed" is the off-ramp — a lead we (or the LLM verdict) decided not to
-# pursue; it can happen at "new" or "approved" and is terminal either way.
+# "skipped" is the off-ramp — a lead we (or the LLM verdict) decided not to
+# pursue; it can happen at "new" or "pursued" and is terminal either way.
+# Renamed 2026-07-07 (were "approved"/"passed") to match the Gmail outcome
+# labels (gmail_writer.PURSUE_LABEL/SKIP_LABEL) and triage.py's PURSUE/SKIP
+# constants — see store.py's migration that renamed the DB columns/values.
 LEAD_STAGES: tuple[str, ...] = (
     "new",  # unprocessed
-    "approved",  # triage decided ACCEPT — worth pursuing, package not made yet
+    "pursued",  # triage decided PURSUE — worth pursuing, package not made yet
     "package_generated",  # résumé + cover letter rendered
     "applied",  # application submitted
     "following_up",  # followed up with a stakeholder (recruiter, hiring manager, etc.)
@@ -26,7 +29,7 @@ LEAD_STAGES: tuple[str, ...] = (
     "offered",  # an offer is on the table
     "accepted",  # offer accepted
     "started",  # start date reached
-    "passed",  # off-ramp: decided not to pursue (or rejected), can happen at any point
+    "skipped",  # off-ramp: decided not to pursue (or rejected), can happen at any point
 )
 
 
@@ -46,7 +49,7 @@ class JobLead:
     apply_url: str = ""
     extraction_confidence: float = 0.0
     jd_resolved: bool = False
-    jd_source: str = ""  # "ats_api" | "email_body" | ""
+    jd_source: str = ""  # "ats_api" | "digest_snippet" | "email_body" | ""
     jd_text: str = ""  # full JD body, whatever its source — kept for reference
     match_pct: float = 0.0
     matched_skills: list[str] = field(default_factory=list)
@@ -59,3 +62,85 @@ class JobLead:
     @property
     def normalized_key(self) -> str:
         return normalize_key(self.company, self.title)
+
+
+# --- Job CRM entities (docs/JOB_CRM_VISION.md) -----------------------------
+# These all hang off a JobLead's normalized_key ("job_key" below). None of
+# them replace JobLead — it remains the Job identity row; these are the
+# join tables that answer "who's involved, what was said, what documents
+# exist, what's scheduled, what was offered" for a given job.
+
+
+@dataclass
+class JobContact:
+    """A person involved in a job (recruiter, hiring manager, referral).
+
+    `contact_ref` points at a comms-migration `contacts/Contacts.yaml` id
+    when a match was found there by email (read-only linkage — job-tracker
+    never writes back); empty when the sender isn't in that address book.
+    """
+
+    job_key: str
+    name: str = ""
+    email: str = ""
+    role: str = "recruiter"  # recruiter | hiring_manager | referral | other
+    contact_ref: str = ""
+    source_message_id: str = ""
+    id: int | None = None
+    first_contacted_at: str = field(default_factory=utc_now_iso)
+    last_contacted_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass
+class JobConversation:
+    """One logged interaction (email, call, ...) tied to a job and contact."""
+
+    job_key: str
+    contact_id: int | None = None
+    message_id: str = ""
+    channel: str = "email"  # email | call | other
+    direction: str = "inbound"  # inbound | outbound
+    summary: str = ""
+    id: int | None = None
+    occurred_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass
+class JobDocument:
+    """A versioned artifact tied to a job: JD snapshot, résumé, cover letter,
+    RTR, availability sent, or anything else worth keeping."""
+
+    job_key: str
+    doc_type: str  # jd_snapshot | resume | cover_letter | rtr | availability | other
+    path_or_url: str = ""
+    version: int = 1
+    id: int | None = None
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass
+class JobMeeting:
+    """A scheduled or completed interview/call tied to a job."""
+
+    job_key: str
+    contact_id: int | None = None
+    kind: str = "other"  # phone_screen | onsite | technical | other
+    status: str = "proposed"  # proposed | confirmed | completed | cancelled
+    notes: str = ""
+    id: int | None = None
+    scheduled_at: str = ""
+
+
+@dataclass
+class JobOffer:
+    """A final offer on a job, for side-by-side comparison (UC-7)."""
+
+    job_key: str
+    base_salary: float = 0.0
+    bonus: float = 0.0
+    equity: str = ""
+    benefits_notes: str = ""
+    deadline: str = ""
+    decision: str = "pending"  # pending | accepted | declined
+    id: int | None = None
+    received_at: str = field(default_factory=utc_now_iso)

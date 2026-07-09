@@ -14,7 +14,7 @@ import json
 import sys
 from pathlib import Path
 
-from job_tracker.pipeline.llm_apply import DEFAULT_MODEL, DEFAULT_OUTPUT_ROOT, generate_package
+from job_tracker.pipeline.llm_apply import DEFAULT_MODEL, DEFAULT_OUTPUT_ROOT, generate_package, render_jd_review
 from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect
 
 
@@ -77,7 +77,8 @@ def main(argv: list[str] | None = None) -> int:
         "--output-root",
         type=Path,
         default=DEFAULT_OUTPUT_ROOT,
-        help=f"Résumé output directory; cover letters go in <root>/CoverLetters (default: {DEFAULT_OUTPUT_ROOT})",
+        help="Artifacts land in <root>/<Company>_<Title>/ (JobDescription.docx, LLM_Review.docx, and on a "
+        f"pursue verdict the résumé + cover letter too) (default: {DEFAULT_OUTPUT_ROOT})",
     )
     ap.add_argument(
         "--comparison-jsonl",
@@ -134,9 +135,14 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "verdict": result.evaluation.verdict,
                     "match_pct": result.evaluation.match_pct,
-                    "dealbreaker_notes": result.evaluation.dealbreaker_notes,
+                    "job_summary": result.evaluation.job_summary,
+                    "dealbreaker_checks": result.evaluation.dealbreaker_checks,
                     "skills_alignment": result.evaluation.skills_alignment,
+                    "flags": result.evaluation.flags,
                     "rationale": result.evaluation.rationale,
+                    "framing_guidance": result.evaluation.framing_guidance,
+                    "jd_path": str(result.jd_path) if result.jd_path else None,
+                    "review_path": str(result.review_path) if result.review_path else None,
                     "resume_path": str(result.resume_path) if result.resume_path else None,
                     "cover_letter_path": str(result.cover_letter_path) if result.cover_letter_path else None,
                     "warnings": result.warnings,
@@ -152,15 +158,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    print(f"{args.title} @ {args.company}")
-    print(f"Verdict: {result.evaluation.verdict}   Match: {result.evaluation.match_pct}%")
-    print("\nDealbreaker notes:")
-    for n in result.evaluation.dealbreaker_notes:
-        print(f"  - {n}")
-    print("\nSkills alignment:")
-    for n in result.evaluation.skills_alignment:
-        print(f"  - {n}")
-    print(f"\nRationale: {result.evaluation.rationale}")
+    print(render_jd_review(result.evaluation, company=args.company, title=args.title))
+    if result.jd_path:
+        print(f"(job description saved to: {result.jd_path})")
+    if result.review_path:
+        print(f"(review saved to: {result.review_path})")
 
     def _fmt_cost(v):
         return f"${v:.4f}" if v is not None else "n/a"

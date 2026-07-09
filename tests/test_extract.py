@@ -145,6 +145,50 @@ def test_company_extraction_stops_at_sentence_boundary():
     assert roles[0].company == "DTN"
 
 
+def test_single_jd_snippet_is_the_full_body():
+    """A SINGLE_JD message is about exactly one job, so its snippet can
+    safely be the whole body — no sibling-listing contamination is possible."""
+    message = load_fixture("stripe_single_jd.json")
+    roles = extract_roles(message, Label.SINGLE_JD)
+    assert roles[0].snippet == message.combined_text
+
+
+def test_multi_jd_bullet_snippet_is_isolated_to_its_own_bullet():
+    """Regression (2026-07-07): each bullet-extracted role's snippet must be
+    its own line only, never the whole digest or a sibling bullet's line —
+    otherwise a keyword from one role's description could leak into another
+    role's dealbreaker/skills scoring downstream."""
+    message = load_fixture("multi_jd_in_body.json")
+    roles = extract_roles(message, Label.MULTI_JD_IN_BODY)
+    by_title = {r.title: r for r in roles}
+    assert "backend platform" in by_title["Senior Software Engineer"].snippet
+    assert "product team" not in by_title["Senior Software Engineer"].snippet
+    assert "analytics" not in by_title["Senior Software Engineer"].snippet
+
+
+def test_flattened_job_board_digest_snippet_is_isolated_per_listing():
+    """Regression (2026-07-07): each 'more details'-delimited listing's
+    snippet must not include a neighboring listing's company/title/flags."""
+    message = load_fixture("job_board_flattened_digest.json")
+    roles = extract_roles(message, Label.MULTI_JD_IN_BODY)
+    by_company = {r.company: r for r in roles}
+    platform_role = by_company["Robert Half"]
+    assert "Platform Engineer" in platform_role.snippet
+    assert "Quantum Technologies" not in platform_role.snippet
+    assert "Fidelity" not in platform_role.snippet
+
+
+def test_ref_no_digest_snippet_is_isolated_per_listing():
+    """Regression (2026-07-07): each Ref-no.-delimited listing's snippet must
+    not spill into the next listing's chunk."""
+    message = load_fixture("ref_no_web_aggregation_digest.json")
+    roles = extract_roles(message, Label.MULTI_JD_IN_BODY)
+    target = next(
+        r for r in roles if "Senior Software Engineer - Full-Stack Developer (Hybrid)" in r.title
+    )
+    assert target.snippet
+
+
 def test_sender_domain_fallback_ignores_known_job_boards():
     message = load_fixture("job_board_marketing_noise.json")
     roles = extract_roles(message, Label.SINGLE_JD)

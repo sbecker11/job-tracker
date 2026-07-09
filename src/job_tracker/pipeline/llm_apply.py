@@ -1,7 +1,7 @@
 """LLM-driven JD evaluation + résumé/cover-letter generation.
 
 Runs the same "JD Match Framework" (dealbreaker sweep -> skills alignment ->
-match % -> verdict) documented in ~/Wisdom/CLAUDE.md §10, and — only on a
+match % -> verdict) documented in ~/CLAUDE.md §10, and — only on a
 "pursue" verdict — generates tailored résumé + cover letter content per
 §5-§9 and §11, then renders it to real .docx files.
 
@@ -45,7 +45,7 @@ _MODEL_PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
 }
 
 _CANDIDATE_PROFILE_PATH = Path(
-    os.environ.get("JOB_TRACKER_CANDIDATE_PROFILE_PATH", str(Path.home() / "Wisdom" / "CLAUDE.md"))
+    os.environ.get("JOB_TRACKER_CANDIDATE_PROFILE_PATH", str(Path.home() / "CLAUDE.md"))
 )
 
 DEFAULT_OUTPUT_ROOT = Path.home() / "Desktop" / "Resumes" / "2026"
@@ -132,15 +132,33 @@ def _sum_metrics(step: str, model: str, calls: list[CallMetrics]) -> CallMetrics
 class EvaluationResult:
     verdict: str  # "pursue" | "review" | "pass"
     match_pct: float
-    dealbreaker_notes: list[str] = field(default_factory=list)
-    skills_alignment: list[str] = field(default_factory=list)
+    job_summary: str = ""
+    # Each item: {"check": str, "status": "clean" | "warning" | "fail", "notes": str}.
+    # One row per CLAUDE.md §3 dealbreaker plus comp floor / remote-location fit /
+    # durability lens (§2) — the model derives the exact set from whatever the
+    # loaded candidate profile's dealbreaker table actually contains, so this
+    # isn't hardcoded to today's five checks.
+    dealbreaker_checks: list[dict] = field(default_factory=list)
+    # Each item: {"requirement": str, "evidence": str, "strength": "very_strong" |
+    # "strong" | "moderate" | "minor_gap" | "gap"}.
+    skills_alignment: list[dict] = field(default_factory=list)
+    # Notable non-dealbreaker concerns worth flagging (e.g. a title/seniority
+    # mismatch, an ambiguous hybrid policy) — things that don't fail the
+    # dealbreaker sweep but should still shape how the candidate approaches it.
+    flags: list[str] = field(default_factory=list)
     rationale: str = ""
+    # Only on pursue/review — concrete guidance for how to position the
+    # application (what to lead with, what to downplay, an angle for the
+    # cover letter) given whatever `flags` surfaced. Empty on a clean pass.
+    framing_guidance: list[str] = field(default_factory=list)
     metrics: CallMetrics | None = None
 
 
 @dataclass
 class PackageResult:
     evaluation: EvaluationResult
+    jd_path: Path | None = None
+    review_path: Path | None = None
     resume_path: Path | None = None
     cover_letter_path: Path | None = None
     warnings: list[str] = field(default_factory=list)
@@ -183,13 +201,24 @@ def _load_candidate_profile() -> str:
     return _CANDIDATE_PROFILE_PATH.read_text(encoding="utf-8")
 
 
+# The SDK's default is 600s per attempt (with retries on top) — fine for a
+# one-off call, but a batch run (e.g. triage_recruiter_inbox.py over a large
+# backlog) can silently stall for an hour-plus if even one call/retry hits a
+# slow patch, since nothing in this codebase's call sites has its own
+# timeout. Real evaluate/generate calls finish in well under a minute; a
+# call still running after 2 is almost certainly stuck, not just slow, and
+# job-tracker's built-in JSON-repair retry (see `_call_and_parse_json`)
+# already covers the "got a bad response, try once more" case on top of this.
+_ANTHROPIC_TIMEOUT_S = 120.0
+
+
 def _client():
     import anthropic
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")  # pragma: allowlist secret
     if not api_key:
         raise LLMApplyError("ANTHROPIC_API_KEY is not set (see .env.example).")
-    return anthropic.Anthropic(api_key=api_key)  # pragma: allowlist secret
+    return anthropic.Anthropic(api_key=api_key, timeout=_ANTHROPIC_TIMEOUT_S)  # pragma: allowlist secret
 
 
 def _parse_json_object(raw: str) -> dict:
@@ -260,7 +289,8 @@ def _call_and_parse_json(
 _EVAL_SYSTEM_PROMPT = """You evaluate a job description against a specific candidate's real background, \
 using the candidate profile document below, which defines the "JD Match Framework" the candidate uses \
 (see its "JD Match Framework" section). Follow that framework's steps exactly: dealbreaker sweep, then \
-skills alignment, then an honest match percentage, then a verdict.
+skills alignment, then an honest match percentage, then a verdict. Produce a review detailed enough that \
+the candidate can decide whether to pursue this role WITHOUT re-reading the original JD.
 
 Rules:
 - Never invent experience, skills, or history not present in the candidate profile.
@@ -270,14 +300,38 @@ Rules:
 - A skill or technology mentioned only as one alternative among several acceptable options \
 (e.g. "React (or Angular)", "Golang, Java, Python, Ruby, C#, or similar") is NOT load-bearing on its own \
 unless the surrounding text makes clear it's the team's actual primary/required choice.
+- "job_summary": 2-3 plain sentences on what the role/team actually does, based on the JD text — not a \
+sales pitch, just enough for the candidate to recall this specific posting later without re-reading it.
+- "dealbreaker_checks": one row per check the candidate profile's dealbreaker table/targeting section \
+defines (e.g. banned stack items, employment type, compensation floor, location/remote fit) PLUS the \
+profile's "durability lens" if it has one. Each row's "status" is "clean" (no concern), "warning" (a \
+soft/non-fatal concern worth noting), or "fail" (an actual dealbreaker). "notes" cites the specific JD \
+language that led to that status — never a generic restatement of the rule.
+- "skills_alignment": one row per significant JD requirement, each mapped to the candidate's actual \
+matching evidence (a named real engagement or portfolio project from the profile, not a vague "yes"). \
+"strength" is one of "very_strong", "strong", "moderate", "minor_gap", "gap" — "gap" only if the profile \
+has genuinely nothing relevant to point to for that requirement.
+- "flags": notable concerns that are NOT dealbreakers but still change how the candidate should approach \
+this application — e.g. a title/seniority mismatch (JD's actual day-to-day responsibilities read as more \
+junior or more senior than the title suggests), an unusually vague scope, a signal the team is much \
+earlier/later stage than the durability lens prefers. Empty list if nothing stands out.
+- "framing_guidance": only populate on "pursue" or "review" — concrete, specific advice for HOW to \
+position the application given whatever "flags" surfaced (what to lead with, what to downplay or reframe, \
+a concrete cover-letter angle). Not generic advice ("highlight your skills") — it must reference the \
+specific flags/gaps found for this role. Empty list on "pass".
 
 Respond with ONLY a raw JSON object (no markdown fences, no prose outside the JSON), with exactly these keys:
 {
-  "dealbreaker_notes": [string, ...],
-  "skills_alignment": [string, ...],
+  "job_summary": string,
+  "dealbreaker_checks": [ {"check": string, "status": "clean" | "warning" | "fail", "notes": string}, ... ],
+  "skills_alignment": [
+    {"requirement": string, "evidence": string, "strength": "very_strong" | "strong" | "moderate" | "minor_gap" | "gap"}, ...
+  ],
   "match_pct": number (0-100),
+  "flags": [string, ...],
   "verdict": "pursue" | "review" | "pass",
-  "rationale": string
+  "rationale": string,
+  "framing_guidance": [string, ...]
 }
 
 --- CANDIDATE PROFILE ---
@@ -344,14 +398,170 @@ def evaluate_lead(
     system = _EVAL_SYSTEM_PROMPT.replace("{profile}", profile)
     user = f"Company: {company}\nTitle: {title}\n\nJob description:\n{jd_text}"
     data, calls = _call_and_parse_json(system, user, model=model, client=client, step="evaluate")
+
+    def _dict_list(key: str, expected_keys: tuple[str, ...]) -> list[dict]:
+        items = data.get(key) or []
+        out = []
+        for item in items:
+            if isinstance(item, dict):
+                out.append({k: str(item.get(k, "")) for k in expected_keys})
+            elif item:
+                # Defensive: tolerate an older/degraded flat-string response
+                # (e.g. from a JSON-repair retry that lost structure) rather
+                # than dropping the note entirely.
+                out.append({expected_keys[0]: str(item)})
+        return out
+
     return EvaluationResult(
         verdict=str(data.get("verdict", "review")).strip().lower(),
         match_pct=float(data.get("match_pct", 0) or 0),
-        dealbreaker_notes=[str(n) for n in (data.get("dealbreaker_notes") or [])],
-        skills_alignment=[str(n) for n in (data.get("skills_alignment") or [])],
+        job_summary=str(data.get("job_summary", "")),
+        dealbreaker_checks=_dict_list("dealbreaker_checks", ("check", "status", "notes")),
+        skills_alignment=_dict_list("skills_alignment", ("requirement", "evidence", "strength")),
+        flags=[str(f) for f in (data.get("flags") or [])],
         rationale=str(data.get("rationale", "")),
+        framing_guidance=[str(g) for g in (data.get("framing_guidance") or [])],
         metrics=_sum_metrics("evaluate", model, calls),
     )
+
+
+_STATUS_LABEL = {"clean": "✅ Clean", "warning": "⚠️ Warning", "fail": "❌ Fail"}
+_STRENGTH_LABEL = {
+    "very_strong": "Very strong",
+    "strong": "Strong",
+    "moderate": "Moderate",
+    "minor_gap": "Minor gap",
+    "gap": "Gap",
+}
+
+
+def render_jd_review(evaluation: EvaluationResult, *, company: str, title: str) -> str:
+    """Render an `EvaluationResult` as a human-readable markdown JD review —
+    the "About the job / dealbreaker sweep / skills alignment / recommendation"
+    report format the candidate reviews leads in (see chat history for the
+    reference example this mirrors). Deterministic and free — pure formatting
+    over already-computed evaluation data, no LLM call."""
+    lines = [f"## {title} @ {company}", ""]
+
+    if evaluation.job_summary:
+        lines += ["### About the job", "", evaluation.job_summary, ""]
+
+    if evaluation.dealbreaker_checks:
+        lines += ["### Dealbreaker sweep", "", "| Check | Status | Notes |", "|---|---|---|"]
+        for row in evaluation.dealbreaker_checks:
+            status = _STATUS_LABEL.get(row.get("status", ""), row.get("status", ""))
+            lines.append(f"| {row.get('check', '')} | {status} | {row.get('notes', '')} |")
+        lines.append("")
+        n_fail = sum(1 for r in evaluation.dealbreaker_checks if r.get("status") == "fail")
+        lines.append("**No hard dealbreakers.**" if n_fail == 0 else f"**{n_fail} hard dealbreaker(s) fired.**")
+        lines.append("")
+
+    if evaluation.skills_alignment:
+        lines += [
+            "### Skills alignment", "",
+            "| JD requirement | Your evidence | Strength |", "|---|---|---|",
+        ]
+        for row in evaluation.skills_alignment:
+            strength = _STRENGTH_LABEL.get(row.get("strength", ""), row.get("strength", ""))
+            lines.append(f"| {row.get('requirement', '')} | {row.get('evidence', '')} | {strength} |")
+        lines.append("")
+
+    lines.append(f"**Technical match: ~{evaluation.match_pct:.0f}%.** {evaluation.rationale}".strip())
+    lines.append("")
+
+    if evaluation.flags:
+        lines += ["### Flags", ""]
+        lines += [f"- {flag}" for flag in evaluation.flags]
+        lines.append("")
+
+    lines.append(f"### Recommendation: {evaluation.verdict.upper()}")
+    if evaluation.framing_guidance:
+        lines.append("")
+        lines += [f"- {g}" for g in evaluation.framing_guidance]
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _add_table(doc: Document, *, headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> None:
+    table = doc.add_table(rows=1, cols=len(headers))
+    table.style = "Table Grid"
+    for cell, header in zip(table.rows[0].cells, headers):
+        cell.text = header
+        for p in cell.paragraphs:
+            for run in p.runs:
+                run.bold = True
+    for row in rows:
+        cells = table.add_row().cells
+        for cell, value in zip(cells, row):
+            cell.text = value
+
+
+def render_jd_review_docx(
+    evaluation: EvaluationResult, *, company: str, title: str, out_dir: Path = DEFAULT_OUTPUT_ROOT
+) -> Path:
+    """Render an `EvaluationResult` as `LLM_Review.docx` in that job's
+    folder — the docx counterpart of `render_jd_review()`'s markdown, with
+    the dealbreaker sweep and skills alignment as real tables instead of
+    markdown pipe-tables (this is a saved artifact, not a terminal print)."""
+    doc = Document()
+    doc.add_heading(f"{title} @ {company}", level=1)
+
+    if evaluation.job_summary:
+        doc.add_heading("About the job", level=2)
+        doc.add_paragraph(evaluation.job_summary)
+
+    if evaluation.dealbreaker_checks:
+        doc.add_heading("Dealbreaker sweep", level=2)
+        _add_table(
+            doc,
+            headers=("Check", "Status", "Notes"),
+            rows=[
+                (
+                    row.get("check", ""),
+                    _STATUS_LABEL.get(row.get("status", ""), row.get("status", "")),
+                    row.get("notes", ""),
+                )
+                for row in evaluation.dealbreaker_checks
+            ],
+        )
+        n_fail = sum(1 for r in evaluation.dealbreaker_checks if r.get("status") == "fail")
+        p = doc.add_paragraph()
+        p.add_run(
+            "No hard dealbreakers." if n_fail == 0 else f"{n_fail} hard dealbreaker(s) fired."
+        ).bold = True
+
+    if evaluation.skills_alignment:
+        doc.add_heading("Skills alignment", level=2)
+        _add_table(
+            doc,
+            headers=("JD requirement", "Your evidence", "Strength"),
+            rows=[
+                (
+                    row.get("requirement", ""),
+                    row.get("evidence", ""),
+                    _STRENGTH_LABEL.get(row.get("strength", ""), row.get("strength", "")),
+                )
+                for row in evaluation.skills_alignment
+            ],
+        )
+
+    p = doc.add_paragraph()
+    p.add_run(f"Technical match: ~{evaluation.match_pct:.0f}%.").bold = True
+    if evaluation.rationale:
+        p.add_run(f" {evaluation.rationale}")
+
+    if evaluation.flags:
+        doc.add_heading("Flags", level=2)
+        for flag in evaluation.flags:
+            doc.add_paragraph(flag, style="List Bullet")
+
+    doc.add_heading(f"Recommendation: {evaluation.verdict.upper()}", level=2)
+    for guidance in evaluation.framing_guidance:
+        doc.add_paragraph(guidance, style="List Bullet")
+
+    out_path = _job_folder(out_dir, company=company, title=title) / "LLM_Review.docx"
+    doc.save(str(out_path))
+    return out_path
 
 
 def _generate_content(
@@ -422,6 +632,34 @@ def _safe_filename(name: str) -> str:
     return _UNSAFE_FILENAME_CHARS.sub("", name.replace(" ", "_"))
 
 
+def _job_folder(out_dir: Path, *, company: str, title: str) -> Path:
+    """One folder per job under the output root (`<Company>_<Title>/`)
+    holding every artifact for that role together — JD, LLM review, résumé,
+    cover letter — instead of scattering them across parallel Reviews/
+    CoverLetters subfolders. Created if missing; reused as-is if a prior
+    evaluate/generate run already made it (e.g. the JD + review land first,
+    the résumé/cover letter land later only if the verdict is "pursue")."""
+    folder = out_dir / _safe_filename(f"{company}_{title}")
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def render_job_description(jd_text: str, *, company: str, title: str, out_dir: Path = DEFAULT_OUTPUT_ROOT) -> Path:
+    """Save the JD text this lead was actually evaluated against as its own
+    docx, alongside the review/résumé/cover letter — so the full context for
+    a decision is preserved even if the source email is later deleted or the
+    ATS posting expires."""
+    doc = Document()
+    doc.add_heading(f"{title} @ {company}", level=1)
+    for para in (jd_text or "(no JD text captured)").split("\n\n"):
+        if para.strip():
+            doc.add_paragraph(para.strip())
+
+    out_path = _job_folder(out_dir, company=company, title=title) / "JobDescription.docx"
+    doc.save(str(out_path))
+    return out_path
+
+
 def _add_muted_github_line(doc: Document, extra: str = "") -> None:
     p = doc.add_paragraph()
     if extra:
@@ -473,15 +711,14 @@ def render_resume(resume: dict, *, company: str, title: str, out_dir: Path = DEF
         for item in resume["education"]:
             doc.add_paragraph(str(item), style="List Bullet")
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / _safe_filename(f"Shawn_Becker_Resume_{company}_{title}.docx")
+    out_path = _job_folder(out_dir, company=company, title=title) / _safe_filename(
+        f"Shawn_Becker_Resume_{company}_{title}.docx"
+    )
     doc.save(str(out_path))
     return out_path
 
 
-def render_cover_letter(
-    cover_letter: dict, *, company: str, title: str, out_dir: Path = DEFAULT_OUTPUT_ROOT / "CoverLetters"
-) -> Path:
+def render_cover_letter(cover_letter: dict, *, company: str, title: str, out_dir: Path = DEFAULT_OUTPUT_ROOT) -> Path:
     doc = Document()
     doc.add_paragraph().add_run(CANDIDATE_NAME).bold = True
     _add_muted_github_line(doc, extra=f"{CANDIDATE_EMAIL}  |  {CANDIDATE_PHONE}  |  {CANDIDATE_LINKEDIN}  |  ")
@@ -495,8 +732,9 @@ def render_cover_letter(
     doc.add_paragraph("Sincerely,")
     doc.add_paragraph(CANDIDATE_NAME)
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / _safe_filename(f"Shawn_Becker_Cover_Letter_{company}_{title}.docx")
+    out_path = _job_folder(out_dir, company=company, title=title) / _safe_filename(
+        f"Shawn_Becker_Cover_Letter_{company}_{title}.docx"
+    )
     doc.save(str(out_path))
     return out_path
 
@@ -510,11 +748,17 @@ def generate_package(
     client=None,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
 ) -> PackageResult:
-    """Evaluate a lead and, only on a "pursue" verdict, generate + save a
-    tailored résumé and cover letter. Returns the evaluation either way."""
+    """Evaluate a lead (always saving the JD text + LLM review into that
+    job's folder — see `_job_folder`) and, only on a "pursue" verdict,
+    additionally generate + save a tailored résumé and cover letter into the
+    same folder. Returns the evaluation either way — CLAUDE.md's "on a
+    dealbreaker or pass, report the mismatch and stop" only means "don't
+    generate a résumé/cover letter", not "don't write down the review"."""
     evaluation = evaluate_lead(jd_text, company=company, title=title, model=model, client=client)
+    jd_path = render_job_description(jd_text, company=company, title=title, out_dir=output_root)
+    review_path = render_jd_review_docx(evaluation, company=company, title=title, out_dir=output_root)
     if evaluation.verdict != "pursue":
-        return PackageResult(evaluation=evaluation)
+        return PackageResult(evaluation=evaluation, jd_path=jd_path, review_path=review_path)
 
     content, generate_calls = _generate_content(jd_text, company=company, title=title, model=model, client=client)
     warnings = _check_house_rules(content, company=company)
@@ -528,10 +772,12 @@ def generate_package(
 
     resume_path = render_resume(content.get("resume") or {}, company=company, title=title, out_dir=output_root)
     cover_letter_path = render_cover_letter(
-        content.get("cover_letter") or {}, company=company, title=title, out_dir=output_root / "CoverLetters"
+        content.get("cover_letter") or {}, company=company, title=title, out_dir=output_root
     )
     return PackageResult(
         evaluation=evaluation,
+        jd_path=jd_path,
+        review_path=review_path,
         resume_path=resume_path,
         cover_letter_path=cover_letter_path,
         warnings=warnings,

@@ -4,7 +4,7 @@
 No real Anthropic API calls are made here — the client is always a fake
 stand-in so the test suite runs offline and free of charge. The candidate
 profile is also faked via an autouse fixture so tests don't depend on
-~/Wisdom/CLAUDE.md existing on the machine running them.
+~/CLAUDE.md existing on the machine running them.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ class _FakeClient:
 @pytest.fixture(autouse=True)
 def fake_profile(monkeypatch, tmp_path):
     """Point the module at a small throwaway candidate profile for every
-    test, so nothing here depends on ~/Wisdom/CLAUDE.md existing."""
+    test, so nothing here depends on ~/CLAUDE.md existing."""
     profile_path = tmp_path / "CLAUDE.md"
     profile_path.write_text("FAKE CANDIDATE PROFILE FOR TESTS", encoding="utf-8")
     monkeypatch.setattr(llm_apply, "_CANDIDATE_PROFILE_PATH", profile_path)
@@ -74,21 +74,29 @@ def fake_profile(monkeypatch, tmp_path):
 
 _EVAL_PAYLOAD_PURSUE = json.dumps(
     {
-        "dealbreaker_notes": ["No dealbreakers fire."],
-        "skills_alignment": ["Python: strong match."],
+        "job_summary": "A backend role building agentic AI systems.",
+        "dealbreaker_checks": [{"check": "Banned stack", "status": "clean", "notes": "Python/TypeScript only."}],
+        "skills_alignment": [{"requirement": "Python", "evidence": "Years of Python work.", "strength": "strong"}],
         "match_pct": 85,
+        "flags": ["Title reads senior but scope may be mid-level."],
         "verdict": "pursue",
         "rationale": "Strong overall fit.",
+        "framing_guidance": ["Lead with the agentic-AI throughline."],
     }
 )
 
 _EVAL_PAYLOAD_PASS = json.dumps(
     {
-        "dealbreaker_notes": ["Angular required as sole frontend framework."],
+        "job_summary": "A frontend-heavy role on a small team.",
+        "dealbreaker_checks": [
+            {"check": "Banned stack", "status": "fail", "notes": "Angular required as sole frontend framework."}
+        ],
         "skills_alignment": [],
         "match_pct": 10,
+        "flags": [],
         "verdict": "pass",
         "rationale": "Dealbreaker fires.",
+        "framing_guidance": [],
     }
 )
 
@@ -121,9 +129,12 @@ def test_evaluate_lead_parses_response_and_computes_metrics():
 
     assert result.verdict == "pursue"
     assert result.match_pct == 85
-    assert result.dealbreaker_notes == ["No dealbreakers fire."]
-    assert result.skills_alignment == ["Python: strong match."]
+    assert result.job_summary == "A backend role building agentic AI systems."
+    assert result.dealbreaker_checks == [{"check": "Banned stack", "status": "clean", "notes": "Python/TypeScript only."}]
+    assert result.skills_alignment == [{"requirement": "Python", "evidence": "Years of Python work.", "strength": "strong"}]
+    assert result.flags == ["Title reads senior but scope may be mid-level."]
     assert result.rationale == "Strong overall fit."
+    assert result.framing_guidance == ["Lead with the agentic-AI throughline."]
     assert len(client.calls) == 1
     assert client.calls[0]["model"] == "claude-haiku-4-5"
 
@@ -248,6 +259,18 @@ def test_generate_package_skips_generation_when_verdict_is_not_pursue(tmp_path):
     assert result.total_input_tokens == 900
     assert result.total_output_tokens == 150
 
+    # The JD text + review are still written even on a non-pursue verdict.
+    assert result.jd_path is not None and result.jd_path.exists()
+    assert result.jd_path.name == "JobDescription.docx"
+    assert result.review_path is not None and result.review_path.exists()
+    assert result.review_path.name == "LLM_Review.docx"
+    # Both artifacts land together in one per-job folder.
+    assert result.jd_path.parent == result.review_path.parent == tmp_path / "Acme_Engineer"
+
+    review_doc = Document(result.review_path)
+    review_text = "\n".join(cell.text for table in review_doc.tables for row in table.rows for cell in row.cells)
+    assert "Angular required" in review_text
+
 
 def test_generate_package_full_flow_saves_docx_and_aggregates_metrics(tmp_path):
     client = _FakeClient(
@@ -261,9 +284,15 @@ def test_generate_package_full_flow_saves_docx_and_aggregates_metrics(tmp_path):
     )
 
     assert result.evaluation.verdict == "pursue"
+    assert result.jd_path is not None and result.jd_path.exists()
+    assert result.review_path is not None and result.review_path.exists()
     assert result.resume_path is not None and result.resume_path.exists()
     assert result.cover_letter_path is not None and result.cover_letter_path.exists()
     assert result.warnings == []
+    # All four artifacts land in the same per-job folder.
+    job_folder = tmp_path / "Bellese_Senior_Engineer"
+    assert result.jd_path.parent == result.review_path.parent == job_folder
+    assert result.resume_path.parent == result.cover_letter_path.parent == job_folder
 
     assert result.generate_metrics.input_tokens == 2000
     assert result.generate_metrics.output_tokens == 3000
@@ -382,6 +411,7 @@ def test_render_resume_places_homeportfolio_last_regardless_of_input_order(tmp_p
         ]
     }
     path = llm_apply.render_resume(resume, company="Acme", title="Engineer", out_dir=tmp_path)
+    assert path.parent == tmp_path / "Acme_Engineer"
     doc = Document(path)
     employer_paras = [p.text for p in doc.paragraphs if "HomePortfolio" in p.text or "Sierra Vista" in p.text]
     assert employer_paras[0].startswith("Sierra Vista")
@@ -391,11 +421,120 @@ def test_render_resume_places_homeportfolio_last_regardless_of_input_order(tmp_p
 def test_render_cover_letter_includes_phone_and_salutation(tmp_path):
     cover_letter = {"salutation": "Dear Hiring Team,", "paragraphs": ["Body paragraph."]}
     path = llm_apply.render_cover_letter(cover_letter, company="Acme", title="Engineer", out_dir=tmp_path)
+    assert path.parent == tmp_path / "Acme_Engineer"
     doc = Document(path)
     full_text = "\n".join(p.text for p in doc.paragraphs)
     assert llm_apply.CANDIDATE_PHONE in full_text
     assert "Dear Hiring Team," in full_text
     assert "Body paragraph." in full_text
+
+
+def test_render_resume_and_cover_letter_share_the_same_job_folder(tmp_path):
+    resume_path = llm_apply.render_resume({}, company="Acme", title="Engineer", out_dir=tmp_path)
+    cover_letter_path = llm_apply.render_cover_letter({}, company="Acme", title="Engineer", out_dir=tmp_path)
+    assert resume_path.parent == cover_letter_path.parent == tmp_path / "Acme_Engineer"
+
+
+# --- JD review rendering -------------------------------------------------------
+
+
+def _sample_evaluation(**overrides) -> llm_apply.EvaluationResult:
+    defaults = dict(
+        verdict="pursue",
+        match_pct=92.0,
+        job_summary="A greenfield agentic-AI team in regulated healthcare.",
+        dealbreaker_checks=[
+            {"check": "Banned stack", "status": "clean", "notes": "Python/TypeScript, React/Next.js."},
+            {"check": "Comp floor", "status": "clean", "notes": "$170K-$195K, well above floor."},
+        ],
+        skills_alignment=[
+            {"requirement": "Agentic systems", "evidence": "healthcare-agentic-snowflake-rag", "strength": "strong"},
+            {"requirement": "React/Next.js", "evidence": "React yes; Next.js not in portfolio", "strength": "minor_gap"},
+        ],
+        flags=["Title reads Senior but requirements read mid-level."],
+        rationale="Cleanest skill fit in recent pipeline.",
+        framing_guidance=["Lead with the healthcare-agentic-RAG throughline."],
+    )
+    defaults.update(overrides)
+    return llm_apply.EvaluationResult(**defaults)
+
+
+def test_render_jd_review_includes_all_sections():
+    text = llm_apply.render_jd_review(_sample_evaluation(), company="Talkiatry", title="Senior AI Engineer")
+
+    assert "Senior AI Engineer @ Talkiatry" in text
+    assert "About the job" in text
+    assert "greenfield agentic-AI team" in text
+    assert "Dealbreaker sweep" in text
+    assert "Banned stack" in text and "✅ Clean" in text
+    assert "No hard dealbreakers." in text
+    assert "Skills alignment" in text
+    assert "Agentic systems" in text and "Strong" in text
+    assert "Technical match: ~92%." in text
+    assert "Flags" in text
+    assert "seniority" in text.lower() or "mid-level" in text.lower()
+    assert "Recommendation: PURSUE" in text
+    assert "healthcare-agentic-RAG throughline" in text
+
+
+def test_render_jd_review_reports_fired_dealbreaker():
+    evaluation = _sample_evaluation(
+        verdict="pass",
+        dealbreaker_checks=[{"check": "Banned stack", "status": "fail", "notes": "Angular required."}],
+        flags=[],
+        framing_guidance=[],
+    )
+    text = llm_apply.render_jd_review(evaluation, company="Acme", title="Engineer")
+    assert "1 hard dealbreaker(s) fired." in text
+    assert "Recommendation: PASS" in text
+    # No Flags section when there are no flags.
+    assert "### Flags" not in text
+
+
+def test_render_jd_review_docx_writes_llm_review_with_tables(tmp_path):
+    path = llm_apply.render_jd_review_docx(_sample_evaluation(), company="Talkiatry", title="Senior AI Engineer", out_dir=tmp_path)
+    assert path.exists()
+    assert path.name == "LLM_Review.docx"
+    assert path.parent == tmp_path / "Talkiatry_Senior_AI_Engineer"
+
+    doc = Document(path)
+    full_text = "\n".join(p.text for p in doc.paragraphs)
+    assert "Senior AI Engineer @ Talkiatry" in full_text
+    assert "greenfield agentic-AI team" in full_text
+    assert "Technical match: ~92%." in full_text
+    assert "Recommendation: PURSUE" in full_text
+    assert "healthcare-agentic-RAG throughline" in full_text
+
+    assert len(doc.tables) == 2  # dealbreaker sweep + skills alignment
+    dealbreaker_table_text = [cell.text for row in doc.tables[0].rows for cell in row.cells]
+    assert "Banned stack" in dealbreaker_table_text
+    assert "✅ Clean" in dealbreaker_table_text
+    skills_table_text = [cell.text for row in doc.tables[1].rows for cell in row.cells]
+    assert "Agentic systems" in skills_table_text
+    assert "Strong" in skills_table_text
+
+
+def test_render_job_description_writes_docx(tmp_path):
+    path = llm_apply.render_job_description(
+        "We are hiring a Senior AI Engineer.\n\nResponsibilities:\n- Build things.",
+        company="Talkiatry",
+        title="Senior AI Engineer",
+        out_dir=tmp_path,
+    )
+    assert path.exists()
+    assert path.name == "JobDescription.docx"
+    assert path.parent == tmp_path / "Talkiatry_Senior_AI_Engineer"
+
+    doc = Document(path)
+    full_text = "\n".join(p.text for p in doc.paragraphs)
+    assert "Senior AI Engineer @ Talkiatry" in full_text
+    assert "Build things." in full_text
+
+
+def test_job_description_and_review_share_the_same_job_folder(tmp_path):
+    jd_path = llm_apply.render_job_description("JD text", company="Acme", title="Engineer", out_dir=tmp_path)
+    review_path = llm_apply.render_jd_review_docx(_sample_evaluation(), company="Acme", title="Engineer", out_dir=tmp_path)
+    assert jd_path.parent == review_path.parent == tmp_path / "Acme_Engineer"
 
 
 # --- candidate profile loading -------------------------------------------------

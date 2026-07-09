@@ -73,6 +73,20 @@ _NOISE_SENDERS = re.compile(
 )
 _UNSUBSCRIBE = re.compile(r"\bunsubscribe\b", re.I)
 
+# Broader than _JOB_TITLE above (which requires a specific tech-keyword
+# prefix like "software"/"cloud"/"data") — used only to spot a single,
+# unambiguous "<Title> at <Company>" pattern in the *subject line* of a
+# digest-domain sender's mail (see single_job_signal in classify() below), a
+# shape job-alert platforms use for one-off single-role alerts just as often
+# as for genuine multi-job digests. Real digests almost always carry their
+# own tell (a `_DIGEST_SUBJECT` phrase like "15 new jobs", or `_MULTI_JD_HINTS`
+# phrasing), which are checked independently and win regardless of this.
+_SUBJECT_SINGLE_ROLE_AT_COMPANY = re.compile(
+    r"\b(?:engineer|developer|architect|manager|analyst|designer|scientist|"
+    r"specialist|consultant|director|coordinator)\b[^|,;]{0,40}?\s+at\s+[A-Z]",
+    re.I,
+)
+
 _MULTI_JD_HINTS = re.compile(
     r"\b(?:open roles?|multiple positions?|several (?:open )?roles?|"
     r"jobs? (?:at|from) \w+|we(?:'re| are) hiring for|job matches:|"
@@ -139,6 +153,15 @@ def classify(message: EmailMessage) -> ClassificationResult:
     title_count = _count_job_titles(text)
     unique_titles = _unique_job_titles(text)
     has_jobs = _has_job_keywords(text)
+    # Broader than `_JOB_TITLE`/title_count (which needs a specific
+    # tech-keyword prefix like "software"/"cloud"/"data") — catches the
+    # "<Title> at <Company>" shape job-alert subjects use for single-role
+    # mail regardless of field (e.g. "Web Developer II ... at Woodbury
+    # School of Business"). Feeds both the digest-sender carve-out below
+    # and step 6 (Single JD), so a message that escapes LINK_ONLY_DIGEST
+    # via this signal can actually reach SINGLE_JD instead of falling
+    # through to the NOISE catch-all for lack of a title_count hit.
+    subject_single_role = bool(_SUBJECT_SINGLE_ROLE_AT_COMPANY.search(subject))
 
     # 1.5. schema.org JSON-LD marketing boilerplate — real job listings never
     # ship as raw JSON-LD; this is a strong noise signal even if the mail
@@ -162,7 +185,36 @@ def classify(message: EmailMessage) -> ClassificationResult:
     digest_sender = bool(_DIGEST_SENDERS.search(from_addr) or _DIGEST_SENDERS.search(_sender_domain(from_addr)))
     digest_subject = bool(_DIGEST_SUBJECT.search(subject))
     link_heavy = url_count >= 3 and len(text.split()) < url_count * 40
-    if digest_sender or (digest_subject and url_count >= 2) or (link_heavy and url_count >= 3 and ats_count == 0):
+    # A digest-domain sender (LinkedIn Job Alerts, etc.) doesn't always mean a
+    # multi-job digest — plenty of that mail is a single "<Title> at <Company>"
+    # alert with exactly one identifiable role and no multi-job phrasing.
+    # Added 2026-07-06 after a real job-tracker triage run showed ~90% of
+    # Category/recruiter_job mail short-circuiting to LINK_ONLY_DIGEST purely
+    # on sender domain — before extraction was ever attempted — even when the
+    # subject cleanly named one company/title that pipeline/extract.py's
+    # subject-parser could resolve fine on its own.
+    #
+    # BROADENED again 2026-07-06 (2nd pass): `link_heavy` alone was *still*
+    # overriding `single_job_signal`, since a real single-job LinkedIn Job
+    # Alert email ships ~10 tracking/footer/unsubscribe links even when the
+    # body contains exactly one job card (e.g. "Senior Software Engineer at
+    # Podium" — one listing, 10 URLs, 253 words — tripped `link_heavy` and
+    # got misfiled as a digest despite a clean, unambiguous single-role
+    # subject). `digest_subject` genuinely does still win outright — its
+    # phrasing ("15 new jobs", "jobs for you") is a real multi-job signal
+    # independent of any subject-single-role false-positive risk — but
+    # `link_heavy` is just a raw link-count proxy with no such guarantee, so
+    # it must respect `single_job_signal` too. Multi-job digests remain
+    # correctly caught: a real digest either has >1 unique job title,
+    # multi-role phrasing, or (for aggregators like Energy Job Line/
+    # TheLadders) no single "<title> at <company>" subject shape at all —
+    # so `single_job_signal` stays False for them regardless of this change.
+    single_job_signal = (len(unique_titles) == 1 or subject_single_role) and not _MULTI_JD_HINTS.search(text)
+    if (
+        (digest_subject and url_count >= 2)
+        or (link_heavy and url_count >= 3 and ats_count == 0 and not single_job_signal)
+        or (digest_sender and not single_job_signal)
+    ):
         if digest_sender:
             reasons.append("sender: job-alert domain")
         if digest_subject:
@@ -195,11 +247,13 @@ def classify(message: EmailMessage) -> ClassificationResult:
         return ClassificationResult(Label.MULTI_JD_IN_BODY, 0.85, reasons)
 
     # 6. Single JD
-    if ats_count == 1 or (title_count >= 1 and has_jobs):
+    if ats_count == 1 or ((title_count >= 1 or subject_single_role) and has_jobs):
         if ats_count == 1:
             reasons.append("body: single ATS link")
         if title_count >= 1:
             reasons.append("body: job title present")
+        elif subject_single_role:
+            reasons.append("subject: single role at company")
         if has_jobs:
             reasons.append("body: job keywords present")
         conf = 0.9 if ats_count == 1 else 0.8

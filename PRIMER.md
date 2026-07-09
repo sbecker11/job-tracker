@@ -32,7 +32,7 @@ Category/recruiter_job inbox mail  →  LLM score + auto-generate on pursue  →
 - Gmail OAuth for `shawnbecker.recruiting@gmail.com`: `~/.config/job-tracker/credentials.json` + `token.json` — present.
 - Optional second account `personal_hub` (`scbboston@gmail.com`, reads `Category/recruiter_job` mail comms-migration's classifier applies there): `~/.config/job-tracker/personal_hub/` — present.
 - `ANTHROPIC_API_KEY` in `.env` — required for Stage 2 and Stage 4 (both call the LLM). Without it, only Stage 1's keyword scoring works.
-- Candidate profile / JD Match Framework: `~/Wisdom/CLAUDE.md` (dealbreakers, skills vocabulary, banned terms, contact info) and `config/framework.yaml` (the same framework, machine-readable, used by the keyword scorer). Keep these two in sync if the framework changes.
+- Candidate profile / JD Match Framework: `~/CLAUDE.md` (dealbreakers, skills vocabulary, banned terms, contact info) and `config/framework.yaml` (the same framework, machine-readable, used by the keyword scorer). Keep these two in sync if the framework changes.
 - `var/leads.db` — SQLite dedup store, created automatically on first run. Already has real data from prior runs.
 
 Activate the venv first: `source .venv/bin/activate` (from the repo root).
@@ -94,9 +94,9 @@ on leads you might reject at a glance (bad location, stale posting, etc.).
 python scripts/apply_package.py --company "Acme Corp" --title "Senior Software Engineer"
 ```
 
-- Re-evaluates that one lead's `jd_text` with the LLM (JD Match Framework), and **only on a "pursue" verdict**, renders a tailored résumé (`.docx`) and cover letter (`.docx`).
-- Output locations: résumé in `~/Desktop/Resumes/2026/`, cover letter in `~/Desktop/Resumes/2026/CoverLetters/` (override with `--output-root`).
-- Both documents are generated from the candidate profile in `~/Wisdom/CLAUDE.md` (contact info, banned terms, positioning) — never hand-typed per lead.
+- Re-evaluates that one lead's `jd_text` with the LLM (JD Match Framework) — always saving the JD text and the LLM review — and **only on a "pursue" verdict**, additionally renders a tailored résumé (`.docx`) and cover letter (`.docx`).
+- Output location: everything for one lead lands together in `~/Desktop/Resumes/2026/<Company>_<Title>/` (override the root with `--output-root`) — `JobDescription.docx`, `LLM_Review.docx`, and on a pursue verdict `Shawn_Becker_Resume_<Company>_<Title>.docx` + `Shawn_Becker_Cover_Letter_<Company>_<Title>.docx`.
+- Both documents are generated from the candidate profile in `~/CLAUDE.md` (contact info, banned terms, positioning) — never hand-typed per lead.
 - `--json` gives the full machine-readable result (verdict, match %, rationale, both file paths, token/cost/time metrics for both the evaluate and generate calls) if you're scripting around this.
 - Optional `--comparison-jsonl <path>`: if you're tracking leads in a manual comparison JSONL file, this updates the matching company/title line with the result instead of leaving it a separate, disconnected artifact.
 

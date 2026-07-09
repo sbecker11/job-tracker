@@ -16,6 +16,19 @@ class ExtractedRole:
     apply_url: str = ""
     source: str = ""  # "ats_url" | "bullet_line" | "subject" | "sender_domain"
     confidence: float = 0.0
+    # The specific slice of the source email's text that describes THIS role
+    # — a listing chunk, bullet line, or (for a genuinely single-job message)
+    # the whole body — as opposed to `message.combined_text`, which is the
+    # ENTIRE email. Populated whenever an extraction path can isolate one
+    # (added 2026-07-07 after a false dealbreaker hit on a Bugcrowd role fired
+    # from a *different* job's "Angular" mention living elsewhere in the same
+    # multi-job digest): `pipeline/triage.py` scores against this instead of
+    # `message.combined_text` when it's non-empty, so scoring one role in a
+    # digest never gets contaminated by a sibling listing's content. Left
+    # empty when an extraction path can't isolate a per-role chunk (e.g. the
+    # bare "one row per ATS link" fallback) — callers fall back to the full
+    # message text in that case, same as before this field existed.
+    snippet: str = ""
 
 
 @dataclass

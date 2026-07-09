@@ -62,11 +62,17 @@ before or after it). Each element must be an object with exactly these keys:
    - "title": string (job title, or "" if unknown)
    - "apply_url": string (a direct application/posting URL if one is clearly \
 associated with this specific listing, else "")
+   - "excerpt": string — a VERBATIM quote copied directly from the email \
+text containing everything describing THIS specific listing (requirements, \
+location, seniority, etc.) and nothing about any other listing in the same \
+digest. Copy the actual substring from the email; never paraphrase or \
+summarize it. Empty string ("") only if the digest has no descriptive text \
+for this listing beyond its title.
    - "confidence": number from 0.0 to 1.0 reflecting how certain you are \
 this is a real, correctly-attributed listing
 
 Example valid response:
-[{"company": "Acme Corp", "title": "Senior Backend Engineer", "apply_url": "https://acme.com/jobs/123", "confidence": 0.9}]
+[{"company": "Acme Corp", "title": "Senior Backend Engineer", "apply_url": "https://acme.com/jobs/123", "excerpt": "Senior Backend Engineer - Acme Corp - Remote (US)\\n5+ years Python, AWS, and distributed systems experience required.", "confidence": 0.9}]
 
 Example valid response for an email with no real postings:
 []
@@ -77,6 +83,13 @@ class LLMExtractionError(RuntimeError):
     """Raised when the LLM call fails or returns unusable output."""
 
 
+# See the matching comment in pipeline/llm_apply.py — the SDK's 600s default
+# per-attempt timeout has no business being that long for a call that
+# normally finishes in seconds, and a batch triage run has no per-message
+# error handling around a stuck call.
+_ANTHROPIC_TIMEOUT_S = 120.0
+
+
 def _client():
     import anthropic  # imported lazily so `anthropic` is only required when this path is used
 
@@ -85,7 +98,7 @@ def _client():
         raise LLMExtractionError(
             "ANTHROPIC_API_KEY is not set. Add it to job-tracker/.env (see .env.example)."
         )
-    return anthropic.Anthropic(api_key=api_key)  # pragma: allowlist secret
+    return anthropic.Anthropic(api_key=api_key, timeout=_ANTHROPIC_TIMEOUT_S)  # pragma: allowlist secret
 
 
 def _build_user_prompt(message: EmailMessage) -> str:
@@ -152,6 +165,11 @@ def _items_to_roles(items: list[dict]) -> list[ExtractedRole]:
                 apply_url=str(item.get("apply_url") or "").strip(),
                 source="llm_fallback",
                 confidence=confidence,
+                # Verbatim per-listing excerpt (added 2026-07-07 alongside
+                # ExtractedRole.snippet) — keeps a digest's roles from being
+                # scored against each other's requirements downstream, same
+                # motivation as the regex extractors' snippet fields.
+                snippet=str(item.get("excerpt") or "").strip(),
             )
         )
     return roles

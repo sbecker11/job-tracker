@@ -7,6 +7,7 @@ __pycache__/
 .env.*
 !.env.example
 *.db
+*.db.bak*
 
 # Gmail OAuth — never commit (prefer ~/.config/job-tracker/)
 credentials.json

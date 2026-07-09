@@ -118,6 +118,43 @@ def test_extract_roles_llm_clamps_out_of_range_confidence():
     assert roles[0].confidence == 1.0
 
 
+def test_extract_roles_llm_populates_snippet_from_excerpt():
+    """Regression (2026-07-07): each role's `snippet` must come from the
+    LLM's per-listing `excerpt`, not the whole digest — otherwise triage.py
+    falls back to scoring every role against the entire multi-job email."""
+    payload = json.dumps(
+        [
+            {
+                "company": "Acme Corp",
+                "title": "Senior Backend Engineer",
+                "excerpt": "Senior Backend Engineer at Acme Corp - 5+ years Python required.",
+                "confidence": 0.9,
+            },
+            {
+                "company": "Beta Inc",
+                "title": "Data Analyst",
+                "excerpt": "Data Analyst at Beta Inc - SQL and Tableau required.",
+                "confidence": 0.8,
+            },
+        ]
+    )
+    client = _FakeClient(response_text=payload)
+    roles = llm_extract.extract_roles_llm(_message(), client=client)
+
+    assert roles[0].snippet == "Senior Backend Engineer at Acme Corp - 5+ years Python required."
+    assert roles[1].snippet == "Data Analyst at Beta Inc - SQL and Tableau required."
+    # Neither role's snippet mentions the other listing's stack.
+    assert "SQL" not in roles[0].snippet
+    assert "Python" not in roles[1].snippet
+
+
+def test_extract_roles_llm_defaults_snippet_to_empty_when_excerpt_missing():
+    payload = json.dumps([{"company": "Acme", "title": "Engineer", "confidence": 0.7}])
+    client = _FakeClient(response_text=payload)
+    roles = llm_extract.extract_roles_llm(_message(), client=client)
+    assert roles[0].snippet == ""
+
+
 def test_cached_wrapper_calls_llm_once_then_reuses_cache(tmp_path: Path):
     conn = store.connect(tmp_path / "leads.db")
     payload = json.dumps([{"company": "Acme", "title": "Engineer", "confidence": 0.8}])

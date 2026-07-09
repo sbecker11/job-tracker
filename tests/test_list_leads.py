@@ -9,8 +9,9 @@ from pathlib import Path
 import pytest
 
 from job_tracker.cli.list_leads import main as list_leads_main
+from job_tracker.pipeline.llm_apply import CallMetrics, EvaluationResult
 from job_tracker.pipeline.models import JobLead
-from job_tracker.pipeline.store import connect, upsert_lead
+from job_tracker.pipeline.store import connect, update_llm_evaluation, upsert_lead
 
 
 @pytest.fixture()
@@ -77,13 +78,13 @@ def test_list_leads_csv_export(seeded_db: Path, tmp_path: Path):
 
 
 def test_list_leads_set_status(seeded_db: Path):
-    rc = list_leads_main(["--db", str(seeded_db), "--verdict", "pursue", "--set-status", "approved"])
+    rc = list_leads_main(["--db", str(seeded_db), "--verdict", "pursue", "--set-status", "pursued"])
     assert rc == 0
 
     conn = connect(seeded_db)
-    row = conn.execute("SELECT status, approved_at FROM job_leads WHERE company = 'Stripe'").fetchone()
-    assert row["status"] == "approved"
-    assert row["approved_at"] is not None
+    row = conn.execute("SELECT status, pursued_at FROM job_leads WHERE company = 'Stripe'").fetchone()
+    assert row["status"] == "pursued"
+    assert row["pursued_at"] is not None
     other = conn.execute("SELECT status FROM job_leads WHERE company = 'BigCorp'").fetchone()
     assert other["status"] == "new"
     conn.close()
@@ -123,3 +124,75 @@ def test_list_leads_show_jd_text_handles_missing_text(seeded_db: Path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "no JD text stored" in out
+
+
+def test_list_leads_show_review_renders_stored_llm_evaluation(seeded_db: Path, capsys):
+    conn = connect(seeded_db)
+    update_llm_evaluation(
+        conn,
+        JobLead(company="Stripe", title="Software Engineer", source_message_id="m1", source_label="single-jd").normalized_key,
+        EvaluationResult(
+            verdict="pursue",
+            match_pct=88.0,
+            job_summary="Building payments infra APIs.",
+            dealbreaker_checks=[{"check": "Banned stack", "status": "clean", "notes": "Python only."}],
+            skills_alignment=[{"requirement": "APIs", "evidence": "Years of API work.", "strength": "strong"}],
+            flags=["Fully remote but HQ-centric culture."],
+            rationale="Strong overall fit.",
+            framing_guidance=["Lead with distributed-systems experience."],
+            metrics=CallMetrics(step="evaluate", model="claude-sonnet-5"),
+        ),
+    )
+    conn.close()
+
+    rc = list_leads_main(["--db", str(seeded_db), "--company", "Stripe", "--show-review"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Software Engineer @ Stripe" in out
+    assert "Building payments infra APIs." in out
+    assert "Banned stack" in out
+    assert "Recommendation: PURSUE" in out
+    assert "distributed-systems experience" in out
+
+
+def test_list_leads_show_review_handles_not_yet_evaluated(seeded_db: Path, capsys):
+    rc = list_leads_main(["--db", str(seeded_db), "--company", "BigCorp", "--show-review"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "not yet LLM-evaluated" in out
+
+
+def test_list_leads_show_review_handles_legacy_flat_string_notes(seeded_db: Path, capsys):
+    """Regression: leads evaluated before the 2026-07-07 richer-schema change
+    stored llm_dealbreaker_notes/llm_skills_alignment as flat lists of prose
+    strings rather than {check/status/notes}/{requirement/evidence/strength}
+    dicts. render_jd_review() indexes into each entry with .get(...), which
+    raises AttributeError on a bare str — --show-review must degrade
+    gracefully (showing the legacy text) instead of crashing."""
+    conn = connect(seeded_db)
+    key = JobLead(
+        company="Stripe", title="Software Engineer", source_message_id="m1", source_label="single-jd"
+    ).normalized_key
+    conn.execute(
+        """
+        UPDATE job_leads
+        SET llm_verdict = 'pursue', llm_match_pct = 70.0,
+            llm_dealbreaker_notes = ?, llm_skills_alignment = ?,
+            llm_rationale = 'Legacy-format review.'
+        WHERE normalized_key = ?
+        """,
+        (
+            json.dumps(["No C2C-only requirement identified."]),
+            json.dumps(["Backend APIs -> strong evidence in prior roles."]),
+            key,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    rc = list_leads_main(["--db", str(seeded_db), "--company", "Stripe", "--show-review"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "No C2C-only requirement identified." in out
+    assert "Backend APIs -> strong evidence in prior roles." in out
+    assert "Recommendation: PURSUE" in out

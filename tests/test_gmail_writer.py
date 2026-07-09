@@ -61,18 +61,18 @@ class _FakeService:
 
 
 def test_get_or_create_label_returns_existing_id_without_creating():
-    service = _FakeService(existing_labels=[{"id": "Label_1", "name": "JobTracker/ACCEPT"}])
-    label_id = gmail_writer.get_or_create_label(service, "JobTracker/ACCEPT")
+    service = _FakeService(existing_labels=[{"id": "Label_1", "name": "JobTracker/PURSUE"}])
+    label_id = gmail_writer.get_or_create_label(service, "JobTracker/PURSUE")
     assert label_id == "Label_1"
     assert service.labels_resource.created == []
 
 
 def test_get_or_create_label_creates_when_missing():
     service = _FakeService(existing_labels=[])
-    label_id = gmail_writer.get_or_create_label(service, "JobTracker/DENY")
+    label_id = gmail_writer.get_or_create_label(service, "JobTracker/SKIP")
     assert label_id is not None
     assert len(service.labels_resource.created) == 1
-    assert service.labels_resource.created[0]["name"] == "JobTracker/DENY"
+    assert service.labels_resource.created[0]["name"] == "JobTracker/SKIP"
 
 
 def test_label_and_archive_adds_label_and_removes_inbox():
@@ -83,6 +83,43 @@ def test_label_and_archive_adds_label_and_removes_inbox():
     assert call["id"] == "msg-123"
     assert call["body"]["addLabelIds"] == ["Label_1"]
     assert call["body"]["removeLabelIds"] == ["INBOX"]
+
+
+def test_label_and_archive_strips_stale_outcome_labels_on_re_triage():
+    """--force re-triage (e.g. after a classifier fix) must swap a stale
+    JobTracker/* outcome label for the fresh one rather than stacking both."""
+    service = _FakeService()
+    gmail_writer.label_and_archive(
+        service,
+        "msg-123",
+        "Label_accept",
+        remove_label_ids=["Label_needs_review", "Label_deny"],
+    )
+    call = service.messages_resource.modify_calls[0]
+    assert call["body"]["addLabelIds"] == ["Label_accept"]
+    assert call["body"]["removeLabelIds"] == ["INBOX", "Label_needs_review", "Label_deny"]
+
+
+def test_label_and_archive_with_archive_false_leaves_inbox_alone():
+    service = _FakeService()
+    gmail_writer.label_and_archive(
+        service, "msg-123", "Label_needs_review", remove_label_ids=["Label_deny"], archive=False
+    )
+    call = service.messages_resource.modify_calls[0]
+    assert call["body"]["addLabelIds"] == ["Label_needs_review"]
+    assert call["body"]["removeLabelIds"] == ["Label_deny"]
+    assert "INBOX" not in call["body"]["removeLabelIds"]
+
+
+def test_find_label_id_returns_existing_id():
+    service = _FakeService(existing_labels=[{"id": "Label_9", "name": "Job-Digests"}])
+    assert gmail_writer.find_label_id(service, "Job-Digests") == "Label_9"
+
+
+def test_find_label_id_returns_none_when_missing():
+    service = _FakeService(existing_labels=[])
+    assert gmail_writer.find_label_id(service, "Job-Digests") is None
+    assert service.labels_resource.created == []
 
 
 def test_outcome_label_constants_are_distinct_and_prefixed():

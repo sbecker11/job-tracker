@@ -15,11 +15,26 @@ from __future__ import annotations
 
 LABEL_PREFIX = "JobTracker/"
 
-ACCEPT_LABEL = f"{LABEL_PREFIX}ACCEPT"
-DENY_LABEL = f"{LABEL_PREFIX}DENY"
+# Renamed 2026-07-07 (were ACCEPT/DENY) to match the LLM Match Framework's
+# own verdict language (evaluate_lead()'s "pursue"/"pass"/"review") instead
+# of a separate accept/deny vocabulary for the same three outcomes.
+PURSUE_LABEL = f"{LABEL_PREFIX}PURSUE"
+SKIP_LABEL = f"{LABEL_PREFIX}SKIP"
 NEEDS_REVIEW_LABEL = f"{LABEL_PREFIX}NEEDS_REVIEW"
 
-ALL_OUTCOME_LABELS = (ACCEPT_LABEL, DENY_LABEL, NEEDS_REVIEW_LABEL)
+ALL_OUTCOME_LABELS = (PURSUE_LABEL, SKIP_LABEL, NEEDS_REVIEW_LABEL)
+
+
+def find_label_id(service, label_name: str) -> str | None:
+    """Look up an existing label's id by name without creating it if
+    missing — unlike `get_or_create_label`, appropriate for checking against
+    a label this repo doesn't own (e.g. the recruiting account's own
+    Gmail-filter-created "Job-Digests" label)."""
+    labels = service.users().labels().list(userId="me").execute().get("labels", [])
+    for label in labels:
+        if label["name"] == label_name:
+            return label["id"]
+    return None
 
 
 def get_or_create_label(service, label_name: str) -> str:
@@ -44,11 +59,25 @@ def get_or_create_label(service, label_name: str) -> str:
     return created["id"]
 
 
-def label_and_archive(service, message_id: str, label_id: str) -> None:
-    """Add `label_id` and remove INBOX so the message leaves the inbox but
-    stays searchable under that label."""
+def label_and_archive(
+    service, message_id: str, label_id: str, *, remove_label_ids: list[str] | None = None, archive: bool = True
+) -> None:
+    """Add `label_id` and, by default, remove INBOX so the message leaves the
+    inbox but stays searchable under that label.
+
+    `remove_label_ids` additionally strips other label ids (e.g. a stale
+    JobTracker/NEEDS_REVIEW from a prior run being re-triaged after a
+    classifier fix) — harmless to include ids the message never had, Gmail's
+    `messages.modify` silently no-ops those.
+
+    `archive=False` still applies the label (and strips `remove_label_ids`)
+    but leaves INBOX alone — used for a message whose extraction was judged
+    incomplete (see `pipeline/triage.py`'s `extraction_complete`) so it stays
+    visible for a human instead of getting filed away as if fully handled.
+    """
+    remove_ids = ["INBOX", *(remove_label_ids or [])] if archive else list(remove_label_ids or [])
     service.users().messages().modify(
         userId="me",
         id=message_id,
-        body={"addLabelIds": [label_id], "removeLabelIds": ["INBOX"]},
+        body={"addLabelIds": [label_id], "removeLabelIds": remove_ids},
     ).execute()
