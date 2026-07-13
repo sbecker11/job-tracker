@@ -194,7 +194,158 @@ skills:
   - keyword: "fintech"
     weight: 1
 
+# Broad, generic software-engineering tech vocabulary — languages,
+# frameworks, databases, cloud platforms, infra/data tooling — deliberately
+# NOT limited to the candidate's own skills above. Used only as the
+# denominator for match_pct (2026-07-11 rescale, see scoring/scorer.py's
+# _skills_alignment): "of the recognizable tech stack this specific JD
+# actually asks for, what fraction does the candidate cover?" instead of
+# "what fraction of the candidate's entire multi-decade vocabulary happens
+# to overlap with this one JD" (the old formula, which topped out around
+# ~23% for any real JD in the historical corpus since no single posting
+# mentions most of a candidate's whole career stack). Keep entries here
+# distinct from the `skills:` keywords above (no exact duplicates) so a
+# term is never double-counted. Weight defaults to 1 (all generic/unweighted)
+# unless given explicitly; entries with no explicit `weight:` are read by
+# the loader as weight 1 via the same weight-lookup rule as `skills:`.
+generic_tech_vocabulary:
+  # Languages
+  - keyword: "golang"
+  - keyword: "\\bgo\\b"
+  - keyword: "\\bc\\+\\+"
+  - keyword: "\\bc#"
+  - keyword: "\\.net\\b"
+  - keyword: "asp\\.net"
+  - keyword: "\\bruby\\b"
+  - keyword: "ruby on rails"
+  - keyword: "\\brails\\b"
+  - keyword: "\\bphp\\b"
+  - keyword: "laravel"
+  - keyword: "symfony"
+  - keyword: "\\brust\\b"
+  - keyword: "\\bscala\\b"
+  - keyword: "\\bkotlin\\b"
+  - keyword: "\\bswift\\b"
+  - keyword: "objective-c"
+  - keyword: "\\bperl\\b"
+  - keyword: "matlab"
+  - keyword: "\\bsas\\b"
+  - keyword: "javascript"
+  - keyword: "\\bjquery\\b"
+  # Frontend frameworks
+  - keyword: "angular"
+  - keyword: "\\bember\\b"
+  - keyword: "svelte"
+  - keyword: "next\\.js"
+  - keyword: "nuxt"
+  - keyword: "webpack"
+  - keyword: "\\bvite\\b"
+  # Backend frameworks
+  - keyword: "django"
+  - keyword: "\\bflask\\b"
+  - keyword: "\\bexpress\\b"
+  - keyword: "nestjs"
+  - keyword: "node\\.js"
+  - keyword: "\\bspring\\b"
+  # Databases / data stores
+  - keyword: "mysql"
+  - keyword: "mongodb"
+  - keyword: "\\bredis\\b"
+  - keyword: "cassandra"
+  - keyword: "dynamodb"
+  - keyword: "elasticsearch"
+  - keyword: "\\bsqlite\\b"
+  - keyword: "\\boracle\\b"
+  - keyword: "\\bneo4j\\b"
+  - keyword: "graph database"
+  # Cloud platforms
+  - keyword: "\\bazure\\b"
+  - keyword: "\\bgcp\\b"
+  - keyword: "google cloud"
+  # Infra / DevOps
+  - keyword: "terraform"
+  - keyword: "ansible"
+  - keyword: "cloudformation"
+  - keyword: "\\bhelm\\b"
+  - keyword: "\\bistio\\b"
+  - keyword: "service mesh"
+  - keyword: "jenkins"
+  - keyword: "github actions"
+  - keyword: "circleci"
+  - keyword: "\\bansible\\b"
+  - keyword: "prometheus"
+  - keyword: "grafana"
+  - keyword: "datadog"
+  - keyword: "new relic"
+  - keyword: "splunk"
+  # Data / ML / big data
+  - keyword: "\\bspark\\b"
+  - keyword: "hadoop"
+  - keyword: "\\bhive\\b"
+  - keyword: "presto"
+  - keyword: "\\btrino\\b"
+  - keyword: "databricks"
+  - keyword: "kafka"
+  - keyword: "rabbitmq"
+  - keyword: "\\bsqs\\b"
+  - keyword: "\\bsns\\b"
+  - keyword: "pub/sub"
+  - keyword: "tensorflow"
+  - keyword: "\\bkeras\\b"
+  - keyword: "scikit-learn"
+  - keyword: "\\bnumpy\\b"
+  - keyword: "opencv"
+  - keyword: "hugging face"
+  - keyword: "\\bopenai\\b"
+  - keyword: "\\bgpt\\b"
+  - keyword: "transformer model"
+  - keyword: "neural network"
+  - keyword: "reinforcement learning"
+  - keyword: "\\betl\\b"
+  - keyword: "\\belt\\b"
+  - keyword: "data warehouse"
+  - keyword: "data lake"
+  - keyword: "\\bnlp\\b"
+  - keyword: "computer vision"
+  - keyword: "deep learning"
+  # API / architecture
+  - keyword: "graphql"
+  - keyword: "\\bgrpc\\b"
+  - keyword: "protobuf"
+  - keyword: "\\bsoap\\b"
+  - keyword: "rest api"
+  - keyword: "monolith"
+  - keyword: "event-driven"
+  - keyword: "message queue"
+  - keyword: "websocket"
+  - keyword: "load balancer"
+  - keyword: "\\bcdn\\b"
+  # Testing
+  - keyword: "selenium"
+  - keyword: "\\bjest\\b"
+  - keyword: "\\bjunit\\b"
+  - keyword: "\\bpytest\\b"
+  # Security / compliance
+  - keyword: "oauth"
+  - keyword: "\\bsaml\\b"
+  - keyword: "\\bsso\\b"
+  - keyword: "\\bhipaa\\b"
+  - keyword: "soc\\s?2"
+  - keyword: "\\bpci\\b"
+  - keyword: "\\bgdpr\\b"
+  - keyword: "penetration testing"
+
 # Verdict thresholds on match_pct (0-100), applied after the dealbreaker sweep.
+# match_pct (2026-07-11 rescale) is JD-relative: matched-candidate-skill
+# weight / (matched-candidate-skill weight + matched-generic-vocabulary
+# weight) — i.e. of the recognizable tech stack *this JD* actually mentions,
+# what fraction does the candidate cover. A JD whose entire stated stack is
+# things the candidate knows scores near 100%; thresholds below are
+# calibrated to that scale, not the old "vs. whole career vocabulary" one.
 thresholds:
-  pursue_min_pct: 15
-  review_min_pct: 5
+  pursue_min_pct: 50
+  review_min_pct: 25
+  # Gate for the no-LLM-review -> full-LLM-review pipeline stage (see
+  # CLAUDE.md / apply_package.py): only spend an LLM call once the free
+  # rule-based pass already looks like a strong stack match.
+  llm_review_min_pct: 70

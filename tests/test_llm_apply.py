@@ -79,9 +79,13 @@ _EVAL_PAYLOAD_PURSUE = json.dumps(
         "skills_alignment": [{"requirement": "Python", "evidence": "Years of Python work.", "strength": "strong"}],
         "match_pct": 85,
         "flags": ["Title reads senior but scope may be mid-level."],
+        "structural_verdict": "PASS on structure",
+        "next_step": "",
         "verdict": "pursue",
         "rationale": "Strong overall fit.",
         "framing_guidance": ["Lead with the agentic-AI throughline."],
+        "cover_letter_strategy": "Frame the agentic-AI throughline as the core narrative.",
+        "interview_prep": ["Open with the agentic-AI project as the go-to example."],
     }
 )
 
@@ -94,9 +98,13 @@ _EVAL_PAYLOAD_PASS = json.dumps(
         "skills_alignment": [],
         "match_pct": 10,
         "flags": [],
+        "structural_verdict": "FAIL on structure",
+        "next_step": "",
         "verdict": "pass",
         "rationale": "Dealbreaker fires.",
         "framing_guidance": [],
+        "cover_letter_strategy": "",
+        "interview_prep": [],
     }
 )
 
@@ -135,6 +143,9 @@ def test_evaluate_lead_parses_response_and_computes_metrics():
     assert result.flags == ["Title reads senior but scope may be mid-level."]
     assert result.rationale == "Strong overall fit."
     assert result.framing_guidance == ["Lead with the agentic-AI throughline."]
+    assert result.structural_verdict == "PASS on structure"
+    assert result.cover_letter_strategy == "Frame the agentic-AI throughline as the core narrative."
+    assert result.interview_prep == ["Open with the agentic-AI project as the go-to example."]
     assert len(client.calls) == 1
     assert client.calls[0]["model"] == "claude-haiku-4-5"
 
@@ -263,9 +274,11 @@ def test_generate_package_skips_generation_when_verdict_is_not_pursue(tmp_path):
     assert result.jd_path is not None and result.jd_path.exists()
     assert result.jd_path.name == "JobDescription.docx"
     assert result.review_path is not None and result.review_path.exists()
-    assert result.review_path.name == "LLM_Review.docx"
-    # Both artifacts land together in one per-job folder.
-    assert result.jd_path.parent == result.review_path.parent == tmp_path / "Acme_Engineer"
+    assert result.review_path.name == "full-LLM-review.docx"
+    # Both artifacts land together in one per-job folder. This is the only
+    # tracked lead for "Acme" (no multi_lead passed), so the layout is flat:
+    # straight in the company folder, no title-specific subfolder.
+    assert result.jd_path.parent == result.review_path.parent == tmp_path / "Acme"
 
     review_doc = Document(result.review_path)
     review_text = "\n".join(cell.text for table in review_doc.tables for row in table.rows for cell in row.cells)
@@ -313,8 +326,9 @@ def test_generate_package_full_flow_saves_docx_and_aggregates_metrics(tmp_path):
     assert result.resume_path is not None and result.resume_path.exists()
     assert result.cover_letter_path is not None and result.cover_letter_path.exists()
     assert result.warnings == []
-    # All four artifacts land in the same per-job folder.
-    job_folder = tmp_path / "Bellese_Senior_Engineer"
+    # All four artifacts land in the same per-job folder. Flat layout: this
+    # is the only tracked lead for "Bellese" (no multi_lead passed).
+    job_folder = tmp_path / "Bellese"
     assert result.jd_path.parent == result.review_path.parent == job_folder
     assert result.resume_path.parent == result.cover_letter_path.parent == job_folder
 
@@ -332,6 +346,67 @@ def test_generate_package_full_flow_saves_docx_and_aggregates_metrics(tmp_path):
     doc = Document(result.resume_path)
     employer_lines = [p.text for p in doc.paragraphs if "HomePortfolio" in p.text or "Spexture" in p.text]
     assert employer_lines[-1].startswith("HomePortfolio")
+
+
+def test_generate_package_multi_lead_nests_under_company_folder(tmp_path):
+    client = _FakeClient(responses=[(_EVAL_PAYLOAD_PASS, 900, 150)])
+    result = llm_apply.generate_package(
+        "JD text",
+        company="Acme",
+        title="Engineer",
+        model="claude-haiku-4-5",
+        client=client,
+        output_root=tmp_path,
+        multi_lead=True,
+        sibling_titles=("Manager",),
+    )
+    assert result.jd_path.parent == result.review_path.parent == tmp_path / "Acme" / "Acme_Engineer"
+
+
+# --- _job_folder layout -------------------------------------------------------
+
+
+def test_job_folder_flat_when_not_multi_lead(tmp_path):
+    folder = llm_apply._job_folder(tmp_path, company="Acme", title="Engineer", multi_lead=False)
+    assert folder == tmp_path / "Acme"
+
+
+def test_job_folder_nested_when_multi_lead(tmp_path):
+    folder = llm_apply._job_folder(tmp_path, company="Acme", title="Engineer", multi_lead=True)
+    assert folder == tmp_path / "Acme" / "Acme_Engineer"
+
+
+def test_job_folder_migrates_stale_flat_files_when_second_lead_appears(tmp_path):
+    # Simulate a prior single-lead run that wrote flat files for "Manager".
+    flat_dir = tmp_path / "Acme"
+    flat_dir.mkdir()
+    (flat_dir / "JobDescription.docx").write_text("old JD", encoding="utf-8")
+
+    # A second lead ("Engineer") now shows up for the same company.
+    folder = llm_apply._job_folder(
+        tmp_path, company="Acme", title="Engineer", multi_lead=True, sibling_titles=("Manager",)
+    )
+
+    assert folder == flat_dir / "Acme_Engineer"
+    migrated = flat_dir / "Acme_Manager" / "JobDescription.docx"
+    assert migrated.exists()
+    assert migrated.read_text(encoding="utf-8") == "old JD"
+    assert not (flat_dir / "JobDescription.docx").exists()
+
+
+def test_job_folder_does_not_guess_when_migration_is_ambiguous(tmp_path):
+    flat_dir = tmp_path / "Acme"
+    flat_dir.mkdir()
+    (flat_dir / "JobDescription.docx").write_text("old JD", encoding="utf-8")
+
+    # Two (or zero) apparent siblings -> ambiguous which lead the stray flat
+    # files belong to; leave them alone rather than guessing wrong.
+    folder = llm_apply._job_folder(
+        tmp_path, company="Acme", title="Engineer", multi_lead=True, sibling_titles=("Manager", "Director")
+    )
+
+    assert folder == flat_dir / "Acme_Engineer"
+    assert (flat_dir / "JobDescription.docx").exists()  # left in place, not moved
 
 
 def test_generate_package_auto_repairs_house_rule_violation_before_saving(tmp_path):
@@ -435,7 +510,7 @@ def test_render_resume_places_homeportfolio_last_regardless_of_input_order(tmp_p
         ]
     }
     path = llm_apply.render_resume(resume, company="Acme", title="Engineer", out_dir=tmp_path)
-    assert path.parent == tmp_path / "Acme_Engineer"
+    assert path.parent == tmp_path / "Acme"
     doc = Document(path)
     employer_paras = [p.text for p in doc.paragraphs if "HomePortfolio" in p.text or "Sierra Vista" in p.text]
     assert employer_paras[0].startswith("Sierra Vista")
@@ -445,7 +520,7 @@ def test_render_resume_places_homeportfolio_last_regardless_of_input_order(tmp_p
 def test_render_cover_letter_includes_phone_and_salutation(tmp_path):
     cover_letter = {"salutation": "Dear Hiring Team,", "paragraphs": ["Body paragraph."]}
     path = llm_apply.render_cover_letter(cover_letter, company="Acme", title="Engineer", out_dir=tmp_path)
-    assert path.parent == tmp_path / "Acme_Engineer"
+    assert path.parent == tmp_path / "Acme"
     doc = Document(path)
     full_text = "\n".join(p.text for p in doc.paragraphs)
     assert llm_apply.CANDIDATE_PHONE in full_text
@@ -456,7 +531,17 @@ def test_render_cover_letter_includes_phone_and_salutation(tmp_path):
 def test_render_resume_and_cover_letter_share_the_same_job_folder(tmp_path):
     resume_path = llm_apply.render_resume({}, company="Acme", title="Engineer", out_dir=tmp_path)
     cover_letter_path = llm_apply.render_cover_letter({}, company="Acme", title="Engineer", out_dir=tmp_path)
-    assert resume_path.parent == cover_letter_path.parent == tmp_path / "Acme_Engineer"
+    assert resume_path.parent == cover_letter_path.parent == tmp_path / "Acme"
+
+
+def test_render_resume_and_cover_letter_nest_under_company_when_multi_lead(tmp_path):
+    resume_path = llm_apply.render_resume(
+        {}, company="Acme", title="Engineer", out_dir=tmp_path, multi_lead=True, sibling_titles=("Manager",)
+    )
+    cover_letter_path = llm_apply.render_cover_letter(
+        {}, company="Acme", title="Engineer", out_dir=tmp_path, multi_lead=True, sibling_titles=("Manager",)
+    )
+    assert resume_path.parent == cover_letter_path.parent == tmp_path / "Acme" / "Acme_Engineer"
 
 
 # --- JD review rendering -------------------------------------------------------
@@ -478,6 +563,10 @@ def _sample_evaluation(**overrides) -> llm_apply.EvaluationResult:
         flags=["Title reads Senior but requirements read mid-level."],
         rationale="Cleanest skill fit in recent pipeline.",
         framing_guidance=["Lead with the healthcare-agentic-RAG throughline."],
+        structural_verdict="PASS on structure",
+        next_step="",
+        cover_letter_strategy="Lead with the healthcare-agentic-RAG throughline as the core narrative.",
+        interview_prep=["Open with the healthcare-agentic-RAG project as the go-to example."],
     )
     defaults.update(overrides)
     return llm_apply.EvaluationResult(**defaults)
@@ -493,12 +582,18 @@ def test_render_jd_review_includes_all_sections():
     assert "Banned stack" in text and "✅ Clean" in text
     assert "No hard dealbreakers." in text
     assert "Skills alignment" in text
-    assert "Agentic systems" in text and "Strong" in text
-    assert "Technical match: ~92%." in text
+    assert "Strong (real overlap):" in text
+    assert "Agentic systems" in text and "healthcare-agentic-snowflake-rag" in text
+    assert "Gaps:" in text and "React/Next.js" in text
+    assert "Verdict: ~92% skills match / PASS on structure." in text
     assert "Flags" in text
     assert "seniority" in text.lower() or "mid-level" in text.lower()
     assert "Recommendation: PURSUE" in text
     assert "healthcare-agentic-RAG throughline" in text
+    assert "### Cover letter strategy" in text
+    assert "core narrative" in text
+    assert "### Interview prep" in text
+    assert "go-to example" in text
 
 
 def test_render_jd_review_reports_fired_dealbreaker():
@@ -515,27 +610,37 @@ def test_render_jd_review_reports_fired_dealbreaker():
     assert "### Flags" not in text
 
 
-def test_render_jd_review_docx_writes_llm_review_with_tables(tmp_path):
+def test_render_jd_review_includes_next_step_escape_hatch_when_present():
+    evaluation = _sample_evaluation(next_step="Ask the recruiter to confirm remote eligibility before applying.")
+    text = llm_apply.render_jd_review(evaluation, company="Acme", title="Engineer")
+    assert "**Next step:** Ask the recruiter to confirm remote eligibility before applying." in text
+
+
+def test_render_jd_review_docx_writes_llm_review_with_dealbreaker_table_and_grouped_skills(tmp_path):
     path = llm_apply.render_jd_review_docx(_sample_evaluation(), company="Talkiatry", title="Senior AI Engineer", out_dir=tmp_path)
     assert path.exists()
-    assert path.name == "LLM_Review.docx"
-    assert path.parent == tmp_path / "Talkiatry_Senior_AI_Engineer"
+    assert path.name == "full-LLM-review.docx"
+    assert path.parent == tmp_path / "Talkiatry"
 
     doc = Document(path)
     full_text = "\n".join(p.text for p in doc.paragraphs)
     assert "Senior AI Engineer @ Talkiatry" in full_text
     assert "greenfield agentic-AI team" in full_text
-    assert "Technical match: ~92%." in full_text
+    assert "Verdict: ~92% skills match / PASS on structure." in full_text
     assert "Recommendation: PURSUE" in full_text
     assert "healthcare-agentic-RAG throughline" in full_text
+    assert "Strong (real overlap):" in full_text
+    assert "Agentic systems" in full_text and "healthcare-agentic-snowflake-rag" in full_text
+    assert "Gaps: " in full_text and "React/Next.js" in full_text
+    assert "Cover letter strategy" in full_text and "core narrative" in full_text
+    assert "Interview prep" in full_text and "go-to example" in full_text
 
-    assert len(doc.tables) == 2  # dealbreaker sweep + skills alignment
+    # Skills alignment is grouped prose now, not a table — only the
+    # dealbreaker sweep still renders as a real table.
+    assert len(doc.tables) == 1
     dealbreaker_table_text = [cell.text for row in doc.tables[0].rows for cell in row.cells]
     assert "Banned stack" in dealbreaker_table_text
     assert "✅ Clean" in dealbreaker_table_text
-    skills_table_text = [cell.text for row in doc.tables[1].rows for cell in row.cells]
-    assert "Agentic systems" in skills_table_text
-    assert "Strong" in skills_table_text
 
 
 def test_render_job_description_writes_docx(tmp_path):
@@ -547,7 +652,7 @@ def test_render_job_description_writes_docx(tmp_path):
     )
     assert path.exists()
     assert path.name == "JobDescription.docx"
-    assert path.parent == tmp_path / "Talkiatry_Senior_AI_Engineer"
+    assert path.parent == tmp_path / "Talkiatry"
 
     doc = Document(path)
     full_text = "\n".join(p.text for p in doc.paragraphs)
@@ -558,7 +663,18 @@ def test_render_job_description_writes_docx(tmp_path):
 def test_job_description_and_review_share_the_same_job_folder(tmp_path):
     jd_path = llm_apply.render_job_description("JD text", company="Acme", title="Engineer", out_dir=tmp_path)
     review_path = llm_apply.render_jd_review_docx(_sample_evaluation(), company="Acme", title="Engineer", out_dir=tmp_path)
-    assert jd_path.parent == review_path.parent == tmp_path / "Acme_Engineer"
+    assert jd_path.parent == review_path.parent == tmp_path / "Acme"
+
+
+def test_job_description_and_review_nest_under_company_when_multi_lead(tmp_path):
+    jd_path = llm_apply.render_job_description(
+        "JD text", company="Acme", title="Engineer", out_dir=tmp_path, multi_lead=True, sibling_titles=("Manager",)
+    )
+    review_path = llm_apply.render_jd_review_docx(
+        _sample_evaluation(), company="Acme", title="Engineer", out_dir=tmp_path,
+        multi_lead=True, sibling_titles=("Manager",),
+    )
+    assert jd_path.parent == review_path.parent == tmp_path / "Acme" / "Acme_Engineer"
 
 
 # --- candidate profile loading -------------------------------------------------

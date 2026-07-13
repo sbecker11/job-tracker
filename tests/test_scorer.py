@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from job_tracker.scoring.scorer import score_jd
+from job_tracker.scoring.scorer import score_jd, should_run_llm_review
 
 
 def test_load_bearing_dealbreaker_forces_pass():
@@ -115,6 +115,68 @@ def test_dealbreaker_keyword_under_nice_to_have_heading_is_not_load_bearing():
     hits = [h for h in result.dealbreaker_hits if h.id == "golang"]
     assert hits and not hits[0].load_bearing
     assert result.verdict != "pass"
+
+
+def test_match_pct_is_jd_relative_not_whole_career_vocabulary():
+    # 2026-07-11 rescale: denominator is only vocabulary terms actually
+    # present in *this* JD (candidate skills + generic reference terms),
+    # not the candidate's entire ~40-term skill vocabulary regardless of
+    # presence — so a JD whose entire recognizable stack happens to be
+    # things the candidate knows can score near 100%, not cap at ~25%.
+    jd = """
+    Senior Software Engineer
+
+    Requirements: Java, Spring Boot, Python, FastAPI, LangChain, AWS,
+    Aurora PostgreSQL, pgvector, Bedrock, ECS Fargate, RAG, LLM, React,
+    TypeScript, Snowflake, MLflow, Docker, Kubernetes, CI/CD.
+    """
+    result = score_jd(jd)
+    assert result.match_pct >= 90.0
+    assert result.relevant_weight >= 10
+
+
+def test_thin_jd_below_relevant_weight_floor_forces_zero_match():
+    # A single recognizable term (matched_weight == relevant_weight) would
+    # otherwise spuriously score 100% no matter how thin/unreliable the
+    # underlying text is (e.g. a mangled digest-email snippet). Below
+    # MIN_RELEVANT_WEIGHT, match_pct is forced to 0 instead of trusting a
+    # ratio computed from essentially no data.
+    jd = "Full Stack Engineer — apply now, great opportunity!"
+    result = score_jd(jd)
+    assert result.match_pct == 0.0
+    assert 0 < result.relevant_weight < 5
+    assert any("too thin to score reliably" in r for r in result.rationale)
+
+
+def test_should_run_llm_review_gates_on_threshold():
+    strong_jd = """
+    Senior Software Engineer
+    Java, Spring Boot, Python, FastAPI, LangChain, AWS, Aurora PostgreSQL,
+    pgvector, Bedrock, ECS Fargate, RAG, LLM, React, TypeScript, Snowflake,
+    MLflow, Docker, Kubernetes, CI/CD.
+    """
+    weak_jd = "Full Stack Engineer using PHP and Laravel with some MySQL."
+    assert should_run_llm_review(score_jd(strong_jd)) is True
+    assert should_run_llm_review(score_jd(weak_jd)) is False
+
+
+def test_should_run_llm_review_ignores_rule_based_dealbreaker_sweep():
+    # Deliberate design choice (2026-07-11): gate purely on match_pct, even
+    # if the coarse rule-based dealbreaker sweep also fired — a real
+    # historical case (Waystar) had a false-positive "Angular" hit (legacy-
+    # migration context, not load-bearing) that only the full LLM review
+    # could correctly discount. Gating on the rule-based sweep too would
+    # have silently dropped a genuine "pursue" lead before the smarter pass
+    # ever got a chance to catch the nuance.
+    jd = """
+    Senior Software Engineer — migrating our legacy Angular frontend to
+    React. Java, Spring Boot, Python, FastAPI, LangChain, AWS, Aurora
+    PostgreSQL, pgvector, Bedrock, ECS Fargate, RAG, LLM, React, TypeScript,
+    Snowflake, MLflow, Docker, Kubernetes, CI/CD.
+    """
+    result = score_jd(jd)
+    assert any(h.id == "angular" and h.load_bearing for h in result.dealbreaker_hits)
+    assert should_run_llm_review(result) is True
 
 
 def test_soft_section_ends_at_next_heading_even_if_unrecognized():

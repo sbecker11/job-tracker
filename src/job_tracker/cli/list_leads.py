@@ -21,6 +21,9 @@ _COLUMNS = [
     "llm_verdict",
     "llm_job_summary",
     "llm_rationale",
+    "llm_structural_verdict",
+    "llm_next_step",
+    "llm_cover_letter_strategy",
     "status",
     "apply_url",
     "jd_resolved",
@@ -49,6 +52,7 @@ def _row_to_dict(row) -> dict:
     d["llm_skills_alignment"] = json.loads(d.get("llm_skills_alignment") or "[]")
     d["llm_flags"] = json.loads(d.get("llm_flags") or "[]")
     d["llm_framing_guidance"] = json.loads(d.get("llm_framing_guidance") or "[]")
+    d["llm_interview_prep"] = json.loads(d.get("llm_interview_prep") or "[]")
     return d
 
 
@@ -76,6 +80,10 @@ def _row_to_evaluation(r: dict) -> EvaluationResult:
         flags=r["llm_flags"],
         rationale=r.get("llm_rationale") or "",
         framing_guidance=r["llm_framing_guidance"],
+        structural_verdict=r.get("llm_structural_verdict") or "",
+        next_step=r.get("llm_next_step") or "",
+        cover_letter_strategy=r.get("llm_cover_letter_strategy") or "",
+        interview_prep=r["llm_interview_prep"],
     )
 
 

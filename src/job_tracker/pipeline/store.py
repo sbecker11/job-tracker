@@ -167,6 +167,16 @@ _MIGRATIONS: list[tuple[str, str]] = [
     ("llm_job_summary", "ALTER TABLE job_leads ADD COLUMN llm_job_summary TEXT"),
     ("llm_flags", "ALTER TABLE job_leads ADD COLUMN llm_flags TEXT"),
     ("llm_framing_guidance", "ALTER TABLE job_leads ADD COLUMN llm_framing_guidance TEXT"),
+    # CLAUDE.md §10 steps 4-7 (2026-07-11) — structural_verdict/next_step
+    # split "does this look good on paper" from the final dealbreaker-aware
+    # verdict and surface a concrete escape-hatch action when a dealbreaker
+    # is soft/confirmable; cover_letter_strategy/interview_prep synthesize
+    # framing_guidance into a narrative paragraph and interview talking
+    # points, respectively — see llm_apply.py's _EVAL_SYSTEM_PROMPT.
+    ("llm_structural_verdict", "ALTER TABLE job_leads ADD COLUMN llm_structural_verdict TEXT"),
+    ("llm_next_step", "ALTER TABLE job_leads ADD COLUMN llm_next_step TEXT"),
+    ("llm_cover_letter_strategy", "ALTER TABLE job_leads ADD COLUMN llm_cover_letter_strategy TEXT"),
+    ("llm_interview_prep", "ALTER TABLE job_leads ADD COLUMN llm_interview_prep TEXT"),
     # Lifecycle timeline (models.LEAD_STAGES) — one nullable timestamp column
     # per stage after "new", stamped by advance_status() below whenever a
     # lead's status moves forward. Lets a lead's history stay visible (e.g.
@@ -348,6 +358,20 @@ def list_leads(conn: sqlite3.Connection, *, verdict: str | None = None) -> list[
             )
         )
     return list(conn.execute("SELECT * FROM job_leads ORDER BY match_pct DESC, last_seen DESC"))
+
+
+def get_sibling_titles(conn: sqlite3.Connection, company: str, *, exclude_title: str | None = None) -> list[str]:
+    """All distinct titles already tracked for this company (any status),
+    optionally excluding one — used to decide the on-disk artifact layout
+    (see llm_apply.py's `_job_folder`): a company with only one tracked
+    lead gets a flat `<Company>/` folder; once a second lead exists,
+    both get their own `<Company>/<Company>_<Title>/` subfolder so files
+    from different roles at the same company never collide."""
+    rows = conn.execute("SELECT DISTINCT title FROM job_leads WHERE company = ?", (company,)).fetchall()
+    titles = [r[0] for r in rows]
+    if exclude_title is not None:
+        titles = [t for t in titles if t != exclude_title]
+    return titles
 
 
 def list_leads_needing_llm_eval(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -716,6 +740,10 @@ def update_llm_evaluation(conn: sqlite3.Connection, normalized_key: str, evaluat
             llm_flags = ?,
             llm_rationale = ?,
             llm_framing_guidance = ?,
+            llm_structural_verdict = ?,
+            llm_next_step = ?,
+            llm_cover_letter_strategy = ?,
+            llm_interview_prep = ?,
             llm_eval_input_tokens = ?,
             llm_eval_output_tokens = ?,
             llm_eval_cost_usd = ?,
@@ -731,6 +759,10 @@ def update_llm_evaluation(conn: sqlite3.Connection, normalized_key: str, evaluat
             json.dumps(evaluation.flags),
             evaluation.rationale,
             json.dumps(evaluation.framing_guidance),
+            evaluation.structural_verdict,
+            evaluation.next_step,
+            evaluation.cover_letter_strategy,
+            json.dumps(evaluation.interview_prep),
             metrics.input_tokens if metrics else None,
             metrics.output_tokens if metrics else None,
             metrics.cost_usd if metrics else None,

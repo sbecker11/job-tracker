@@ -158,6 +158,7 @@ def test_single_jd_pursue_verdict_accepts_and_generates(tmp_path):
     result = triage.triage_message(
         _single_jd_message(),
         resolve_full_jd=False,
+        force_llm_review=True,
         output_root=tmp_path,
         client=client,
     )
@@ -175,6 +176,7 @@ def test_single_jd_pass_verdict_denies_and_skips_generation(tmp_path):
     result = triage.triage_message(
         _single_jd_message(),
         resolve_full_jd=False,
+        force_llm_review=True,
         output_root=tmp_path,
         client=client,
     )
@@ -188,6 +190,7 @@ def test_single_jd_review_verdict_needs_review(tmp_path):
     result = triage.triage_message(
         _single_jd_message(),
         resolve_full_jd=False,
+        force_llm_review=True,
         output_root=tmp_path,
         client=client,
     )
@@ -200,6 +203,7 @@ def test_no_generate_flag_never_spends_on_generation_even_when_pursue(tmp_path):
         _single_jd_message(),
         resolve_full_jd=False,
         generate=False,
+        force_llm_review=True,
         output_root=tmp_path,
         client=client,
     )
@@ -324,6 +328,7 @@ def test_link_only_digest_with_llm_fallback_extracts_and_scores_roles(tmp_path):
     result = triage.triage_message(
         _digest_message(),
         resolve_full_jd=False,
+        force_llm_review=True,
         output_root=tmp_path,
         client=eval_client,
         use_llm_extraction_fallback=True,
@@ -366,6 +371,7 @@ def test_link_only_digest_fallback_caps_roles_evaluated_by_confidence(tmp_path):
     result = triage.triage_message(
         _digest_message(),
         resolve_full_jd=False,
+        force_llm_review=True,
         output_root=tmp_path,
         client=eval_client,
         use_llm_extraction_fallback=True,

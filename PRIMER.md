@@ -81,6 +81,22 @@ python scripts/list_leads.py --company "Acme" --title "Software Engineer"   # on
 python scripts/list_leads.py --verdict pursue --csv ~/Desktop/job_leads.csv  # spreadsheet pass
 ```
 
+For a single bookmarkable overview instead of one-off queries:
+
+```bash
+python scripts/render_pending_actions.py
+```
+
+Regenerates `var/pending-actions.html` — a static, `file://`-bookmarkable
+snapshot with a sortable/filterable "needs your review" table (linked
+straight to each company's résumé folder), plus collapsed sections for
+already-`pass`ed-but-not-`skipped` leads, JD-unresolved (`REVIEW NEEDED`)
+leads, thin/0%-score leads, and everything already past `status='new'`.
+By default it also refreshes every `status='new'` lead's rule-based score
+with the current scorer before rendering (pass `--no-rescore` to skip that
+and just render whatever's already stored). Re-run any time after the
+backlog changes — it's free and local, no API calls.
+
 This is where you decide, as a human, which leads are actually worth a
 generated package — Stage 4 is deliberately **not** automatic for every
 `pursue` verdict (see the docstring in
@@ -94,11 +110,36 @@ on leads you might reject at a glance (bad location, stale posting, etc.).
 python scripts/apply_package.py --company "Acme Corp" --title "Senior Software Engineer"
 ```
 
-- Re-evaluates that one lead's `jd_text` with the LLM (JD Match Framework) — always saving the JD text and the LLM review — and **only on a "pursue" verdict**, additionally renders a tailored résumé (`.docx`) and cover letter (`.docx`).
-- Output location: everything for one lead lands together in `~/Desktop/Resumes/2026/<Company>_<Title>/` (override the root with `--output-root`) — `JobDescription.docx`, `LLM_Review.docx`, and on a pursue verdict `Shawn_Becker_Resume_<Company>_<Title>.docx` + `Shawn_Becker_Cover_Letter_<Company>_<Title>.docx`.
+Two-tier review pipeline (2026-07-11) — every lead gets a free rule-based
+pass; only a lead that looks like a strong stack match spends an LLM call;
+only an actual "pursue" verdict spends a second LLM call on documents:
+
+1. **Always**: the free, deterministic rule-based scorer (`scoring/scorer.py`,
+   same `config/framework.yaml` vocabulary as Stage 1) scores `jd_text` and
+   saves `no-LLM-review.docx` — a match % (JD-relative: of the recognizable
+   tech stack *this JD* mentions, how much of it the candidate covers) plus a
+   skills-match table. No API call, no cost.
+2. **Only if** that score clears `thresholds.llm_review_min_pct` in
+   `config/framework.yaml` (currently 70%) — or `--force` — a real LLM call
+   runs the full JD Match Framework and saves `full-LLM-review.docx` (richer
+   match %, dealbreaker sweep, skills matrix, framing/interview-prep notes).
+3. **Only if** that LLM verdict is "pursue" — or `--force` — a second LLM
+   call renders `Shawn_Becker_Resume_<Company>_<Title>.docx` +
+   `Shawn_Becker_Cover_Letter_<Company>_<Title>.docx`.
+
+- Output location: everything for one lead lands together under
+  `~/Desktop/Resumes/2026/<Company>/` (override the root with
+  `--output-root`) — flat directly in that folder if this is the company's
+  only tracked lead, or nested one level deeper in
+  `<Company>/<Company>_<Title>/` once a second lead exists for the same
+  company (existing flat files auto-migrate the first time a sibling shows
+  up).
 - Both documents are generated from the candidate profile in `~/CLAUDE.md` (contact info, banned terms, positioning) — never hand-typed per lead.
-- `--json` gives the full machine-readable result (verdict, match %, rationale, both file paths, token/cost/time metrics for both the evaluate and generate calls) if you're scripting around this.
+- `--json` gives the full machine-readable result (both tiers' verdicts/scores, all doc paths, token/cost/time metrics for the evaluate and generate calls) if you're scripting around this.
 - Optional `--comparison-jsonl <path>`: if you're tracking leads in a manual comparison JSONL file, this updates the matching company/title line with the result instead of leaving it a separate, disconnected artifact.
+- `--force` bypasses both LLM gates above at once — use when a human's
+  already decided this lead deserves the full treatment regardless of what
+  the free pass or the LLM verdict says (e.g. after a call).
 
 ### Doing Stage 4 for several leads in one sitting
 
@@ -121,6 +162,35 @@ for lead in leads:
 Run this against a list you've already eyeballed via Stage 3 — not blindly
 against every `pursue` verdict the moment it appears.
 
+### Resolving JDs for link-only digest leads (manual, agent-assisted)
+
+`resolve_jd_text()` (`pipeline/run.py`) only knows how to hit public ATS
+board APIs (Greenhouse, Lever, etc.) directly by company/title. For leads
+that only carry a link the ATS lookup can't resolve — e.g. a LinkedIn
+digest's click-tracking URL (`linkedin.com/comm/jobs/view/<id>/?trackingId=...`,
+gated behind login) — there's no automated crawler in this repo; getting the
+full JD is a manual, agent-assisted step (WebFetch), following this order —
+2026-07-11 policy:
+
+1. **Follow the link chain.** Strip tracking wrappers down to the canonical
+   public URL (e.g. LinkedIn's `/comm/jobs/view/<id>/?trackingId=...` →
+   `/jobs/view/<id>/`, which stays publicly crawlable) and fetch that. For
+   ATS-hosted links (Greenhouse, Lever, etc.) fetch directly.
+2. **If that fails, search the company's own careers page** for the same
+   role (by title + location) as a second attempt before giving up.
+3. **If a full JD still can't be located by either method**, don't leave the
+   lead on a stale thin-snippet score — explicitly mark it for manual
+   intervention instead of letting a low-signal automatic score stand in for
+   "actually looked and found nothing":
+   ```bash
+   sqlite3 var/leads.db "
+   UPDATE job_leads SET match_pct = 0, verdict = 'REVIEW NEEDED'
+   WHERE normalized_key = '<company>::<title>';"
+   ```
+   (`REVIEW NEEDED` is deliberately distinct from the scorer's normal
+   `pursue`/`review`/`pass` verdicts — it signals "JD unresolved, needs a
+   human to go find it," not "scored low.")
+
 ---
 
 ## End-to-end example (fresh backlog, recruiting funnel only)
@@ -141,7 +211,7 @@ python scripts/apply_package.py --company "<company>" --title "<title>"
 | 1 (`run_pipeline.py`) | Gmail (read-only), live ATS boards (unless `--offline`) | Free, unless `--llm-fallback` (cheap, cached per message) |
 | 2 (`evaluate_backlog.py`) | Anthropic API, one call per un-evaluated lead | ~$0.02–0.04/lead (Haiku) |
 | 3 (`list_leads.py`) | Local SQLite only | Free |
-| 4 (`apply_package.py`) | Anthropic API, evaluate + generate calls | ~$0.10–0.30/lead (Sonnet), only on a pursue verdict |
+| 4 (`apply_package.py`) | Local rule-based score always; Anthropic API only past each gate | Free (`no-LLM-review.docx`) → ~$0.05–0.10/lead for the full LLM review only once the free score clears 70% → +~$0.10–0.20 more for résumé/cover letter only on a pursue verdict |
 | 5 (`triage_recruiter_inbox.py`) | Gmail (**read/write** — `gmail.modify`), Anthropic API | ~$0.02–0.04/message (evaluate), +~$0.10–0.30 more only on a pursue verdict; relabels + archives the message |
 
 Nothing in this pipeline applies, replies to, or sends anything to an

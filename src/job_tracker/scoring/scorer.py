@@ -35,6 +35,11 @@ class ScoreResult:
     dealbreaker_hits: list[DealbreakerHit] = field(default_factory=list)
     verdict: str = "review"  # "pursue" | "review" | "pass"
     rationale: list[str] = field(default_factory=list)
+    # Combined weight of vocabulary terms (candidate + generic) actually
+    # found in the JD text — the match_pct denominator. Low values mean
+    # match_pct is low-confidence/noisy (see MIN_RELEVANT_WEIGHT) rather
+    # than a genuine signal of poor fit.
+    relevant_weight: float = 0.0
 
 
 @lru_cache(maxsize=4)
@@ -129,18 +134,73 @@ def _dealbreaker_sweep(text: str, framework: dict[str, Any]) -> list[Dealbreaker
     return hits
 
 
-def _skills_alignment(text: str, framework: dict[str, Any]) -> tuple[float, list[str]]:
-    skills = framework.get("skills") or []
-    total_weight = sum(s.get("weight", 1) for s in skills) or 1
-    matched_weight = 0
+def _clean_keyword_label(pattern: str) -> str:
+    return re.sub(r"\\b|\\\.", "", pattern).replace("\\", "")
+
+
+def _weighted_hits(text: str, terms: list[dict[str, Any]]) -> tuple[float, list[str]]:
+    """Sum of weights for vocabulary terms that actually appear in `text`,
+    plus their cleaned labels — a term only counts if it's *present*, unlike
+    the old denominator which summed every vocabulary weight unconditionally."""
+    weight = 0.0
     matched: list[str] = []
-    for skill in skills:
-        pattern = skill["keyword"]
+    for term in terms:
+        pattern = term["keyword"]
         if re.search(pattern, text, re.I):
-            matched_weight += skill.get("weight", 1)
-            matched.append(re.sub(r"\\b|\\\.", "", pattern).replace("\\", ""))
-    match_pct = round(matched_weight / total_weight * 100, 1)
-    return match_pct, matched
+            weight += term.get("weight", 1)
+            matched.append(_clean_keyword_label(pattern))
+    return weight, matched
+
+
+# Below this much combined weight (candidate skills + generic vocabulary
+# terms actually present in the JD), match_pct is too noisy to trust as a
+# gate signal. Backtested against the historical corpus (2026-07-11): thin
+# JD text (e.g. a mangled digest-email snippet carrying almost no
+# recognizable tech terms) could hit a spurious 100% purely because the one
+# term present happened to also be a candidate skill — e.g. relevant_weight
+# 1.0 (a single "full-stack" mention, nothing else recognized) scoring
+# 100% regardless of whether the underlying JD was ever seen at all. Below
+# the floor, real signal (rel_weight 10-25 in the same corpus) started
+# tracking the LLM's own match_pct reasonably well; above it, a handful of
+# JDs each hit hundreds of words summarizing multi-decade experience
+# unrelated to fit (rel_weight fell off again toward the very high end of
+# real JDs), so this is a floor, not a full noise model — see
+# scripts/backfill_jd_review_docs.py-adjacent calibration notes in chat
+# history for the raw sweep this was picked from.
+MIN_RELEVANT_WEIGHT = 5.0
+
+
+def _skills_alignment(text: str, framework: dict[str, Any]) -> tuple[float, list[str], float]:
+    """JD-relative skills match %: of the technical vocabulary this JD
+    actually mentions — both required *and* nice-to-have, since a JD's own
+    "nice to have" skills are still real signal about its stack, unlike the
+    dealbreaker sweep's hard/soft split which specifically cares whether a
+    requirement is *mandatory* — (candidate `skills:` + the broader,
+    generic `generic_tech_vocabulary:` reference list), what fraction does
+    the candidate's own skill list cover?
+
+    2026-07-11 rescale: the old formula (matched weight / the *entire*
+    ~40-term skills vocabulary, matched or not) could never clear ~25% for
+    any real JD — no single posting mentions most of a candidate's whole
+    career stack — which made a literal "run the LLM review at >=70%
+    match" gate meaningless. This version's denominator is only the
+    vocabulary terms actually present in *this* JD (candidate skills +
+    generic terms both count toward "present"), so a JD whose entire
+    stated stack happens to be things the candidate knows can score near
+    100%, and 70% is a real, discriminating bar — guarded by
+    MIN_RELEVANT_WEIGHT so a near-empty JD can't fake a high score.
+    """
+    skills = framework.get("skills") or []
+    generic_terms = framework.get("generic_tech_vocabulary") or []
+
+    matched_weight, matched = _weighted_hits(text, skills)
+    generic_weight, _ = _weighted_hits(text, generic_terms)
+
+    relevant_weight = matched_weight + generic_weight
+    if relevant_weight < MIN_RELEVANT_WEIGHT:
+        return 0.0, matched, relevant_weight
+    match_pct = round(matched_weight / relevant_weight * 100, 1)
+    return match_pct, matched, relevant_weight
 
 
 def score_jd(
@@ -153,7 +213,7 @@ def score_jd(
     text = jd_text or ""
 
     dealbreaker_hits = _dealbreaker_sweep(text, framework)
-    match_pct, matched_skills = _skills_alignment(text, framework)
+    match_pct, matched_skills, relevant_weight = _skills_alignment(text, framework)
 
     load_bearing_hits = [h for h in dealbreaker_hits if h.load_bearing]
     mention_only_hits = [h for h in dealbreaker_hits if not h.load_bearing]
@@ -183,7 +243,12 @@ def score_jd(
             f"Note: '{h.label}' mentioned {h.hit_count}x but below load-bearing threshold — verify manually"
         )
 
-    if matched_skills:
+    if relevant_weight < MIN_RELEVANT_WEIGHT:
+        rationale.append(
+            f"JD too thin to score reliably (only {relevant_weight:.0f} pts of recognizable tech vocabulary "
+            f"found, need {MIN_RELEVANT_WEIGHT:.0f}+) — match_pct forced to 0, needs a manual look"
+        )
+    elif matched_skills:
         rationale.append("Matched skills: " + ", ".join(sorted(matched_skills)))
     else:
         rationale.append("No known skills matched — JD text may be thin (snippet only) or vocabulary gap")
@@ -194,4 +259,23 @@ def score_jd(
         dealbreaker_hits=dealbreaker_hits,
         verdict=verdict,
         rationale=rationale,
+        relevant_weight=relevant_weight,
     )
+
+
+def should_run_llm_review(score: ScoreResult, *, framework_path: Path = DEFAULT_FRAMEWORK_PATH) -> bool:
+    """Gate for the two-tier review pipeline (no-LLM-review.docx ->
+    full-LLM-review.docx): purely `match_pct >= thresholds.llm_review_min_pct`
+    (config/framework.yaml), as specified. Deliberately does NOT also
+    require a clean rule-based dealbreaker sweep — backtesting against the
+    historical corpus (2026-07-11) found a real "pursue" lead (Waystar)
+    whose rule-based sweep threw a false-positive load-bearing "Angular"
+    hit (JD mentioned it in a legacy-migration context the keyword sweep
+    can't distinguish from a real requirement) that the full LLM review
+    correctly read as non-load-bearing. Gating on the rule-based dealbreaker
+    sweep in addition to score would have silently dropped that lead before
+    the smarter LLM pass ever got a chance to catch the nuance — exactly
+    the failure mode the second tier exists to avoid."""
+    framework = load_framework(framework_path)
+    gate_pct = (framework.get("thresholds") or {}).get("llm_review_min_pct", 70)
+    return score.match_pct >= gate_pct

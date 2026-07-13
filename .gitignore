@@ -15,3 +15,7 @@ token.json
 client_secret*.json
 
 .DS_Store
+
+# Generated/personal artifacts (regenerate via scripts/render_pending_actions.py
+# etc.) — derived from leads.db, which is itself gitignored above.
+var/

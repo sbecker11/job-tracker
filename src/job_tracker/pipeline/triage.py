@@ -29,11 +29,17 @@ from job_tracker.email.classifier import classify
 from job_tracker.email.labels import Label
 from job_tracker.email.models import EmailMessage, ExtractedRole
 from job_tracker.pipeline.extract import extract_roles
-from job_tracker.pipeline.llm_apply import DEFAULT_MODEL, DEFAULT_OUTPUT_ROOT, PackageResult, generate_package
+from job_tracker.pipeline.llm_apply import (
+    DEFAULT_MODEL,
+    DEFAULT_OUTPUT_ROOT,
+    TwoTierPackageResult,
+    generate_two_tier_package,
+)
 from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_EXTRACT_MODEL
 from job_tracker.pipeline.llm_extract import extract_roles_llm, extract_roles_llm_cached
 from job_tracker.pipeline.models import JobLead
 from job_tracker.pipeline.run import resolve_jd_text
+from job_tracker.pipeline.store import get_sibling_titles
 
 # Renamed 2026-07-07 (were ACCEPT/DENY) to match the LLM Match Framework's
 # own verdict language (evaluate_lead()'s "pursue"/"pass"/"review") — see
@@ -66,7 +72,7 @@ _REGEX_EXTRACTABLE_LABELS = {Label.SINGLE_JD, Label.MULTI_JD_IN_BODY}
 @dataclass
 class RoleOutcome:
     lead: JobLead
-    package: PackageResult
+    package: TwoTierPackageResult
 
 
 @dataclass
@@ -134,10 +140,23 @@ def _extract_roles_with_fallback(
     return complete_llm_roles[:max_llm_extracted_roles], "llm", truncated
 
 
+def _effective_verdict(package: TwoTierPackageResult) -> str:
+    """The two-tier pipeline's LLM stage only runs once the free rule-based
+    pass clears its gate (see `llm_apply.generate_two_tier_package`) — for
+    a role that never cleared it, the rule-based verdict IS the verdict."""
+    return package.evaluation.verdict if package.evaluation is not None else package.no_llm_score.verdict
+
+
+def _effective_rationale(package: TwoTierPackageResult) -> list[str]:
+    if package.evaluation is not None:
+        return [package.evaluation.rationale] if package.evaluation.rationale else []
+    return list(package.no_llm_score.rationale)
+
+
 def _decide_outcome(role_outcomes: list[RoleOutcome]) -> tuple[str, str]:
     if not role_outcomes:
         return NEEDS_REVIEW, "no roles extracted"
-    verdicts = {r.package.evaluation.verdict for r in role_outcomes}
+    verdicts = {_effective_verdict(r.package) for r in role_outcomes}
     if "pursue" in verdicts:
         return PURSUE, "at least one role scored 'pursue'"
     if "review" in verdicts:
@@ -150,6 +169,7 @@ def triage_message(
     *,
     model: str = DEFAULT_MODEL,
     generate: bool = True,
+    force_llm_review: bool = False,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
     resolve_full_jd: bool = True,
     ats_verbose: bool = False,
@@ -212,6 +232,17 @@ def triage_message(
 
     role_outcomes: list[RoleOutcome] = []
     for role in complete_roles:
+        # Sibling titles for this company, combining what's already in the
+        # DB with any other role in *this same* digest/message for the same
+        # company — the latter matters because upsert_lead() for those
+        # siblings doesn't happen until after this whole function returns
+        # (see triage_recruiter_inbox.py), so a fresh multi-role digest for
+        # one company would otherwise look single-lead to every role in it.
+        sibling_titles = set(get_sibling_titles(conn, role.company, exclude_title=role.title)) if conn else set()
+        sibling_titles |= {
+            other.title for other in complete_roles if other.company == role.company and other.title != role.title
+        }
+        sibling_titles_tuple = tuple(sibling_titles)
         jd_text = ""
         if resolve_full_jd:
             jd_text, jd_resolved, resolved_url = resolve_jd_text(
@@ -235,19 +266,22 @@ def triage_message(
         if not jd_text:
             jd_text = message.combined_text
 
-        package = (
-            generate_package(
-                jd_text,
-                company=role.company,
-                title=role.title,
-                model=model,
-                client=client,
-                output_root=output_root,
-            )
-            if generate
-            else _evaluate_only(
-                jd_text, company=role.company, title=role.title, model=model, client=client, output_root=output_root
-            )
+        # Two-tier pipeline (2026-07-11): the free rule-based pass
+        # (no-LLM-review.docx) always runs; the LLM call (full-LLM-review)
+        # only runs once that clears its gate. `generate=False` (the
+        # `--no-generate` CLI flag) still respects that same gate — it only
+        # additionally skips résumé/cover-letter generation on a pursue.
+        package = generate_two_tier_package(
+            jd_text,
+            company=role.company,
+            title=role.title,
+            model=model,
+            client=client,
+            output_root=output_root,
+            multi_lead=len(sibling_titles_tuple) > 0,
+            sibling_titles=sibling_titles_tuple,
+            generate=generate,
+            force_llm_review=force_llm_review,
         )
 
         lead = JobLead(
@@ -262,8 +296,10 @@ def triage_message(
                 "ats_api" if jd_resolved else "digest_snippet" if used_role_snippet else "email_body"
             ),
             jd_text=jd_text,
-            verdict=package.evaluation.verdict,
-            rationale=[package.evaluation.rationale] if package.evaluation.rationale else [],
+            match_pct=package.no_llm_score.match_pct,
+            matched_skills=list(package.no_llm_score.matched_skills),
+            verdict=_effective_verdict(package),
+            rationale=_effective_rationale(package),
         )
         role_outcomes.append(RoleOutcome(lead=lead, package=package))
 
@@ -276,15 +312,3 @@ def triage_message(
     return result
 
 
-def _evaluate_only(
-    jd_text: str, *, company: str, title: str, model: str, client=None, output_root: Path = DEFAULT_OUTPUT_ROOT
-) -> PackageResult:
-    """`generate=False` path: score with the LLM but never spend on
-    generation, regardless of verdict — used by `--no-generate`. Still saves
-    the (free, local) JD text + review, same as `generate_package()` does."""
-    from job_tracker.pipeline.llm_apply import evaluate_lead, render_job_description, render_jd_review_docx
-
-    evaluation = evaluate_lead(jd_text, company=company, title=title, model=model, client=client)
-    jd_path = render_job_description(jd_text, company=company, title=title, out_dir=output_root)
-    review_path = render_jd_review_docx(evaluation, company=company, title=title, out_dir=output_root)
-    return PackageResult(evaluation=evaluation, jd_path=jd_path, review_path=review_path)
