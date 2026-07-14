@@ -26,6 +26,11 @@ If the recruiting funnel's source addresses ever change, that update happens in
 `comms-migration`'s `routing-inventory.md` first — this repo just needs the
 Gmail reader still pointed at the right inbox.
 
+A third sibling, [`recruiting-automation`](https://github.com/sbecker11/recruiting-automation),
+owns neither routing nor processing — it's the `launchd`-scheduled wrapper
+that runs `comms-migration`'s classifier and this repo's pipeline together
+hourly, unattended, with its own halt/resume safety net.
+
 ## Pipeline (target)
 
 ```
@@ -128,32 +133,49 @@ Run comms-migration's classifier first (or on a schedule) so the label
 exists before job-tracker polls it — this repo never applies that label
 itself.
 
-### Re-authenticating when a login expires (expect this ~weekly)
+### Re-authenticating when a login expires (should be rare now — see below)
 
-This OAuth app is in Google's **"Testing" publishing status** (unverified —
-that's the "Google hasn't verified this app" screen you see on every login).
-Google hard-expires refresh tokens issued to Testing-status apps **after 7
-days, regardless of use**. This is not a bug and not specific to one
-account — every account authenticated against this app (recruiting funnel,
-`personal_hub`, or any future one) will need to be re-authenticated on this
-cadence until/unless the app is moved to "In production" status.
+**Status as of 2026-07-13: this OAuth app (`job-tracker-desktop`, Google
+Cloud project `job-tracker-500901`) is published "In production."** It was
+in Google's "Testing" publishing status until then, which hard-expires
+refresh tokens after 7 days regardless of use — that was the cause of the
+recurring weekly re-auth prompts. Moving to "In production" removes that
+7-day cap entirely; **this does not require Google's full verification
+process** (that's a separate, optional step — see the "Submit for
+verification" banner note below) even though `gmail.readonly`/`gmail.modify`
+are "restricted" scopes. All 5 token grants across this repo and the
+sibling `comms-migration` repo (which shares this same OAuth client) were
+force-refreshed under the new production policy the same day — see that
+repo's README for the full account/scope breakdown. Old pre-production
+tokens were backed up to `~/tmp/oauth-tokens-backup-20260713-182409/` before
+being replaced, in case anything needs to be cross-checked later.
 
-**You don't need to do anything manually to prepare for this.** When a
-cached token has expired, the next `run_pipeline.py` (or any Gmail-backed)
-command will print something like:
+If Google ever shows an "unverified app" click-through on a *future* new
+account/scope grant, that's expected and harmless — publishing to
+production and submitting for Google's optional verification are
+independent; you can always ignore the "submit for verification" nudge for
+a personal tool like this one.
+
+**If you ever *do* see the old weekly-expiry symptom again** (a cached token
+suddenly failing to refresh well before you'd expect), that most likely
+means the app's publishing status regressed back to "Testing" somehow (or a
+*new* OAuth client was created that isn't the production one) — check
+Google Cloud Console → APIs & Services → OAuth consent screen ("Google Auth
+Platform") → **Audience** tab → **Publishing status** first, rather than
+assuming this is just normal weekly maintenance again. When a cached token
+genuinely does need a fresh login (expired for any reason), the next
+`run_pipeline.py` (or any Gmail-backed) command handles it automatically —
+no need to delete `token.json` by hand:
 
 ```
 Cached Gmail token for 'personal_hub' is no longer valid (...). Re-opening
-browser for a fresh login — this is expected roughly weekly while this app
-is in Google's 'Testing' publishing status ...
+browser for a fresh login ...
 ```
 
 and a browser window opens automatically for a fresh login — same as the
 very first time you authenticated that account. Sign in as the **same**
-Gmail account named in the message, click through the "unverified app"
-warning the same way you did originally, approve access, and the command
-continues normally. There's no need to delete `token.json` by hand first;
-the code detects the failed refresh and re-opens the login flow for you.
+Gmail account named in the message, approve access, and the command
+continues normally.
 
 ### Write access for the triage flow (`triage_recruiter_inbox.py` only)
 
