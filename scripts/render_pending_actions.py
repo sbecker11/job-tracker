@@ -40,10 +40,15 @@ from job_tracker.scoring.scorer import score_jd  # noqa: E402
 
 DEFAULT_OUTPUT_HTML = _REPO_ROOT / "var" / "pending-actions.html"
 
+# Single source of truth for the "this lead is getting stale" amber-highlight
+# threshold — interpolated into both the JS (STALE_DAYS) and the hint text
+# below so the two can never drift apart.
+STALE_DAYS_THRESHOLD = 21
+
 _LEAD_COLUMNS = (
     "normalized_key, company, title, status, jd_text, jd_resolved, "
     "match_pct, matched_skills, verdict, rationale, "
-    "llm_verdict, llm_match_pct"
+    "llm_verdict, llm_match_pct, first_seen"
 )
 
 
@@ -103,6 +108,27 @@ def _company_label(company: str, count: int) -> str:
     return company if count <= 1 else f"{company} (x{count})"
 
 
+def _age_days(first_seen: str | None, now: datetime) -> int:
+    """Whole days since `first_seen` (job_leads.first_seen, set once at
+    ingest by upsert_lead and never touched again) — the basis for the
+    "value decays with age" sort/display added 2026-07-15: a lead sitting
+    unreviewed gets less useful the longer it sits (the posting may fill,
+    the JD may go stale, a digest re-send may already be a re-post rather
+    than new), so surfacing the oldest unreviewed leads first is more
+    actionable than match-score-only ordering. Falls back to 0 (today) for
+    the rare row missing/unparsable first_seen rather than raising, since
+    this only drives a display sort, not a disqualification decision."""
+    if not first_seen:
+        return 0
+    try:
+        seen = datetime.fromisoformat(first_seen)
+    except ValueError:
+        return 0
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=now.tzinfo)
+    return max(0, (now - seen).days)
+
+
 def render(conn, *, output_root: Path, now: datetime) -> dict:
     rows = [dict(r) for r in conn.execute(f"SELECT {_LEAD_COLUMNS} FROM job_leads")]
 
@@ -132,7 +158,13 @@ def render(conn, *, output_root: Path, now: datetime) -> dict:
         pct = r["llm_match_pct"] if r["llm_match_pct"] is not None else r["match_pct"]
         pct = _fmt_pct(pct)
 
-        entry = {"company": r["company"], "title": r["title"], "fileCount": fc, "folderPath": folder_path}
+        entry = {
+            "company": r["company"],
+            "title": r["title"],
+            "fileCount": fc,
+            "folderPath": folder_path,
+            "ageDays": _age_days(r["first_seen"], now),
+        }
         if verdict == "REVIEW NEEDED":
             needs_manual_jd.append(entry)
         elif pct > 0 and verdict in ("review", "pursue"):
@@ -151,10 +183,15 @@ def render(conn, *, output_root: Path, now: datetime) -> dict:
         for status, counts in sorted(manual_status.items())
     ]
 
-    pending_review.sort(key=lambda l: l["matchPct"], reverse=True)
-    auto_skipped.sort(key=lambda l: l["matchPct"], reverse=True)
-    unresolved.sort(key=lambda l: l["company"].lower())
-    needs_manual_jd.sort(key=lambda l: l["company"].lower())
+    # Oldest-first by default everywhere — a lead's value decays with age
+    # (see _age_days' docstring), so the thing most in danger of going
+    # stale unreviewed belongs at the top, not just the highest-scoring one.
+    # The main table remains client-side re-sortable by any column (see the
+    # JS below); these server-side orders are just its initial state.
+    pending_review.sort(key=lambda l: (-l["ageDays"], -l["matchPct"]))
+    auto_skipped.sort(key=lambda l: (-l["ageDays"], -l["matchPct"]))
+    unresolved.sort(key=lambda l: (-l["ageDays"], l["company"].lower()))
+    needs_manual_jd.sort(key=lambda l: (-l["ageDays"], l["company"].lower()))
 
     status_counts = Counter(r["status"] for r in rows)
     new_verdict_counts = Counter(r["llm_verdict"] or r["verdict"] or "review" for r in rows if r["status"] == "new")
@@ -256,6 +293,12 @@ _TEMPLATE = r"""<!DOCTYPE html>
     background: var(--bg);
   }
   th.num, td.num { text-align: right; }
+  thead th[data-sort] { cursor: pointer; user-select: none; }
+  thead th[data-sort]:hover { color: var(--text); }
+  thead th[data-sort].sorted { color: var(--text); }
+  thead th[data-sort] .arrow { color: var(--accent); margin-left: 3px; }
+  td.age { color: var(--text-secondary); }
+  td.age.stale { color: var(--warning); font-weight: 600; }
   tbody tr { border-bottom: 1px solid var(--border); }
   tbody tr:nth-child(odd) { background: rgba(255,255,255,0.02); }
   tbody tr.high { background: rgba(74,144,217,0.08); }
@@ -323,11 +366,12 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <div class="table-scroll">
     <table>
       <thead>
-        <tr>
-          <th>Company</th>
-          <th>Title</th>
-          <th class="num">Match %</th>
-          <th>Verdict</th>
+        <tr id="table-header-row">
+          <th data-sort="company">Company</th>
+          <th data-sort="title">Title</th>
+          <th class="num" data-sort="matchPct">Match %</th>
+          <th data-sort="verdict">Verdict</th>
+          <th class="num" data-sort="ageDays">Age (days)</th>
           <th>Priority</th>
           <th>Action</th>
         </tr>
@@ -337,6 +381,8 @@ _TEMPLATE = r"""<!DOCTYPE html>
   </div>
   <div class="hint">
     Rows shaded red are already scored <strong>PURSUE</strong> but haven't had a package generated yet.
+    Sorted oldest-first by default (a lead's value decays the longer it sits unreviewed) &mdash; click any
+    column header to re-sort, click again to reverse. Age turns amber at ${STALE_DAYS_THRESHOLD}+ days.
     "Copy prompt" copies a ready-to-paste request for a new Cursor chat, pre-loaded with that
     company/title, so the agent can pull its full stored review and &mdash; if you decide to pursue
     &mdash; generate the r&eacute;sum&eacute; + cover letter for you (with <code>--force</code> for
@@ -350,7 +396,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
-          <thead><tr><th>Company</th><th>Title</th></tr></thead>
+          <thead><tr><th>Company</th><th>Title</th><th class="num">Age (days)</th></tr></thead>
           <tbody id="needs-manual-jd-body"></tbody>
         </table>
       </div>
@@ -367,7 +413,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
-          <thead><tr><th>Company</th><th>Title</th><th class="num">Match %</th></tr></thead>
+          <thead><tr><th>Company</th><th>Title</th><th class="num">Match %</th><th class="num">Age (days)</th></tr></thead>
           <tbody id="auto-skip-body"></tbody>
         </table>
       </div>
@@ -379,7 +425,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
-          <thead><tr><th>Company</th><th>Title</th></tr></thead>
+          <thead><tr><th>Company</th><th>Title</th><th class="num">Age (days)</th></tr></thead>
           <tbody id="unresolved-body"></tbody>
         </table>
       </div>
@@ -410,6 +456,28 @@ const PRIORITY_LABEL = { high: "High (\u226550%)", medium: "Medium (35\u201349%)
 
 let query = "";
 let priorityFilter = "all";
+// Default sort: oldest first — see _age_days' docstring in
+// render_pending_actions.py for why age, not just match %, drives the
+// default ordering. Click any column header to re-sort by that instead.
+let sortKey = "ageDays";
+let sortDir = "desc";
+const STALE_DAYS = ${STALE_DAYS_THRESHOLD};
+
+function ageCellHtml(days) {
+  const cls = days >= STALE_DAYS ? "age stale" : "age";
+  return `<td class="num ${cls}">${days}</td>`;
+}
+
+function compareBy(key, dir) {
+  const sign = dir === "asc" ? 1 : -1;
+  return (a, b) => {
+    const av = a[key], bv = b[key];
+    if (typeof av === "string" || typeof bv === "string") {
+      return sign * String(av).localeCompare(String(bv));
+    }
+    return sign * ((av ?? 0) - (bv ?? 0));
+  };
+}
 
 function reviewPrompt(lead) {
   return `Show me the full stored JD-match review for "${lead.company}" / "${lead.title}" ` +
@@ -478,14 +546,27 @@ function renderPills() {
   });
 }
 
+function renderTableHeaderSortState() {
+  document.querySelectorAll("#table-header-row th[data-sort]").forEach(th => {
+    const key = th.dataset.sort;
+    const arrow = th.querySelector(".arrow");
+    if (arrow) arrow.remove();
+    th.classList.toggle("sorted", key === sortKey);
+    if (key === sortKey) {
+      th.insertAdjacentHTML("beforeend", `<span class="arrow">${sortDir === "asc" ? "\u25b2" : "\u25bc"}</span>`);
+    }
+  });
+}
+
 function renderTable() {
   const q = query.trim().toLowerCase();
   const filtered = PENDING_REVIEW
     .filter(l => (priorityFilter === "all" || priorityOf(l.matchPct) === priorityFilter))
     .filter(l => !q || l.company.toLowerCase().includes(q) || l.title.toLowerCase().includes(q))
-    .sort((a, b) => b.matchPct - a.matchPct);
+    .sort(compareBy(sortKey, sortDir));
 
   document.getElementById("table-heading").textContent = `Needs your review (${filtered.length} of ${PENDING_REVIEW.length})`;
+  renderTableHeaderSortState();
 
   const body = document.getElementById("table-body");
   body.innerHTML = filtered.map((lead, idx) => `
@@ -494,6 +575,7 @@ function renderTable() {
       <td class="title">${escapeHtml(lead.title)}</td>
       <td class="num">${lead.matchPct}%</td>
       <td><span class="verdict-badge ${lead.verdict}">${lead.verdict.toUpperCase()}</span></td>
+      ${ageCellHtml(lead.ageDays)}
       <td><span class="count-pill">${PRIORITY_LABEL[priorityOf(lead.matchPct)]}</span></td>
       <td><button class="copy-btn" data-idx="${idx}">Copy prompt</button></td>
     </tr>`).join("");
@@ -511,12 +593,26 @@ function renderTable() {
   });
 }
 
+document.querySelectorAll("#table-header-row th[data-sort]").forEach(th => {
+  th.addEventListener("click", () => {
+    const key = th.dataset.sort;
+    if (sortKey === key) {
+      sortDir = sortDir === "asc" ? "desc" : "asc";
+    } else {
+      sortKey = key;
+      sortDir = key === "company" || key === "title" || key === "verdict" ? "asc" : "desc";
+    }
+    renderTable();
+  });
+});
+
 function renderNeedsManualJd() {
   document.getElementById("needs-manual-jd-count").textContent = NEEDS_MANUAL_JD.length;
   document.getElementById("needs-manual-jd-body").innerHTML = NEEDS_MANUAL_JD.map(l => `
     <tr>
       <td class="company">${companyCellHtml(l.company, l.folderPath, l.fileCount)}</td>
       <td class="title">${escapeHtml(l.title)}</td>
+      ${ageCellHtml(l.ageDays)}
     </tr>`).join("");
 }
 
@@ -527,6 +623,7 @@ function renderAutoSkipped() {
       <td class="company">${companyCellHtml(l.company, l.folderPath, l.fileCount)}</td>
       <td class="title">${escapeHtml(l.title)}</td>
       <td class="num">${l.matchPct}%</td>
+      ${ageCellHtml(l.ageDays)}
     </tr>`).join("");
 }
 
@@ -536,6 +633,7 @@ function renderUnresolved() {
     <tr>
       <td class="company">${companyCellHtml(l.company, l.folderPath, l.fileCount)}</td>
       <td class="title">${escapeHtml(l.title)}</td>
+      ${ageCellHtml(l.ageDays)}
     </tr>`).join("");
 }
 
@@ -590,6 +688,7 @@ def _render_html(data: dict, *, output_root: Path) -> str:
     html = html.replace("${NEEDS_MANUAL_JD_JSON}", json.dumps(data["needs_manual_jd"]))
     html = html.replace("${MANUAL_HANDLED_JSON}", json.dumps(data["manual_handled"]))
     html = html.replace("${FOLDER_ROOT}", str(output_root))
+    html = html.replace("${STALE_DAYS_THRESHOLD}", str(STALE_DAYS_THRESHOLD))
     return html
 
 

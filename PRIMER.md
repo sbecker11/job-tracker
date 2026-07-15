@@ -97,6 +97,14 @@ with the current scorer before rendering (pass `--no-rescore` to skip that
 and just render whatever's already stored). Re-run any time after the
 backlog changes — it's free and local, no API calls.
 
+Every table also shows an **Age (days)** column (days since `first_seen`)
+and defaults to oldest-first sort — a lead's value decays the longer it
+sits unreviewed (the posting may fill, the JD may go stale), so the
+default view surfaces what's most at risk of going stale first rather
+than just what scored highest. Click any column header in the main table
+to re-sort by that column instead (click again to reverse); ages of 21+
+days show in amber.
+
 This is where you decide, as a human, which leads are actually worth a
 generated package — Stage 4 is deliberately **not** automatic for every
 `pursue` verdict (see the docstring in
