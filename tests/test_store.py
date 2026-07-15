@@ -27,15 +27,20 @@ from job_tracker.pipeline.store import (
     connect,
     find_matching_job,
     find_similar_jobs,
+    get_job,
     is_message_processed,
     processed_at,
     latest_conversation_at,
+    list_all_contacts,
     list_job_contacts,
     list_job_conversations,
     list_job_documents,
     list_job_meetings,
     list_job_offers,
+    find_recent_rejection,
     record_message_processed,
+    record_rejection,
+    set_awaiting_response,
     update_llm_evaluation,
     upsert_lead,
 )
@@ -206,6 +211,98 @@ def test_advance_status_rejects_unknown_stage(tmp_path: Path):
     upsert_lead(conn, lead)
     with pytest.raises(ValueError):
         advance_status(conn, lead.normalized_key, "not-a-real-stage")
+    conn.close()
+
+
+def test_record_rejection_stamps_status_and_audit_columns(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(company="Acme", title="Software Engineer", source_message_id="m1", source_label="single-jd")
+    upsert_lead(conn, lead)
+
+    record_rejection(
+        conn,
+        lead.normalized_key,
+        source="gmail:recruiting_funnel",
+        email_text="Unfortunately, we have decided to move forward with other candidates.",
+        message_id="msg-rejection-1",
+        when="2026-07-01T00:00:00+00:00",
+    )
+    row = conn.execute(
+        "SELECT status, rejected_at, rejection_source, rejection_email_text, rejection_message_id "
+        "FROM job_leads WHERE normalized_key = ?",
+        (lead.normalized_key,),
+    ).fetchone()
+    assert row["status"] == "rejected"
+    assert row["rejected_at"] == "2026-07-01T00:00:00+00:00"
+    assert row["rejection_source"] == "gmail:recruiting_funnel"
+    assert "move forward with other candidates" in row["rejection_email_text"]
+    assert row["rejection_message_id"] == "msg-rejection-1"
+    conn.close()
+
+
+def test_find_recent_rejection_exact_match_within_window(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(company="Acme", title="Software Engineer", source_message_id="m1", source_label="single-jd")
+    upsert_lead(conn, lead)
+    record_rejection(conn, lead.normalized_key, when="2026-07-01T00:00:00+00:00")
+
+    match = find_recent_rejection(
+        conn, "Acme", "Software Engineer", within_days=90, now="2026-07-10T00:00:00+00:00"
+    )
+    assert match is not None
+    assert match["normalized_key"] == lead.normalized_key
+    conn.close()
+
+
+def test_find_recent_rejection_fuzzy_title_variant_still_matches(tmp_path: Path):
+    """A re-posting with a slightly reworded title (e.g. a trailing
+    location/level suffix) should still count as the same role."""
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(company="Acme Corp", title="Senior Software Engineer", source_message_id="m1", source_label="single-jd")
+    upsert_lead(conn, lead)
+    record_rejection(conn, lead.normalized_key, when="2026-07-01T00:00:00+00:00")
+
+    match = find_recent_rejection(
+        conn, "Acme Corp", "Senior Software Engineer ", within_days=90, now="2026-07-10T00:00:00+00:00"
+    )
+    assert match is not None
+    assert match["normalized_key"] == lead.normalized_key
+    conn.close()
+
+
+def test_find_recent_rejection_returns_none_outside_cooldown_window(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(company="Acme", title="Software Engineer", source_message_id="m1", source_label="single-jd")
+    upsert_lead(conn, lead)
+    record_rejection(conn, lead.normalized_key, when="2026-01-01T00:00:00+00:00")
+
+    match = find_recent_rejection(
+        conn, "Acme", "Software Engineer", within_days=90, now="2026-07-10T00:00:00+00:00"
+    )
+    assert match is None
+    conn.close()
+
+
+def test_find_recent_rejection_returns_none_for_unrelated_role(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(company="Acme", title="Software Engineer", source_message_id="m1", source_label="single-jd")
+    upsert_lead(conn, lead)
+    record_rejection(conn, lead.normalized_key, when="2026-07-01T00:00:00+00:00")
+
+    # Different company entirely, and a different title at the same company —
+    # neither should be disqualified by Acme's unrelated rejection.
+    assert find_recent_rejection(conn, "Widgetco", "Software Engineer", now="2026-07-10T00:00:00+00:00") is None
+    assert find_recent_rejection(conn, "Acme", "Data Engineer", now="2026-07-10T00:00:00+00:00") is None
+    conn.close()
+
+
+def test_find_recent_rejection_ignores_leads_that_arent_rejected(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(company="Acme", title="Software Engineer", source_message_id="m1", source_label="single-jd")
+    upsert_lead(conn, lead)
+    advance_status(conn, lead.normalized_key, "skipped", when="2026-07-01T00:00:00+00:00")
+
+    assert find_recent_rejection(conn, "Acme", "Software Engineer", now="2026-07-10T00:00:00+00:00") is None
     conn.close()
 
 
@@ -464,4 +561,175 @@ def test_find_similar_jobs_surfaces_ambiguous_candidates_without_auto_merging(tm
     assert len(candidates) == 1
     assert candidates[0].combined_score < 0.92
     assert find_matching_job(conn, "Acme Corporation", "Sr Software Engineer") is None
+    conn.close()
+
+
+# --- get_job ----------------------------------------------------------------
+
+
+def test_get_job_exact_match_and_none_for_unknown(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    _seed_lead(conn, company="Acme", title="Software Engineer")
+
+    row = get_job(conn, "Acme", "Software Engineer")
+    assert row is not None
+    assert row["company"] == "Acme"
+
+    assert get_job(conn, "Acme", "Totally Different Title") is None
+    conn.close()
+
+
+# --- JobContact.phone ---------------------------------------------------------
+
+
+def test_add_job_contact_stores_phone(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    key = _seed_lead(conn)
+
+    add_job_contact(conn, JobContact(job_key=key, email="r@agency.com", phone="555-1234"))
+    contacts = list_job_contacts(conn, key)
+
+    assert contacts[0]["phone"] == "555-1234"
+    conn.close()
+
+
+def test_add_job_contact_dedupe_backfills_phone_and_name_when_missing(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    key = _seed_lead(conn)
+
+    id1 = add_job_contact(conn, JobContact(job_key=key, email="Recruiter@Agency.com"))
+    id2 = add_job_contact(
+        conn, JobContact(job_key=key, email="recruiter@agency.com", name="Jane Doe", phone="555-1234")
+    )
+
+    assert id1 == id2
+    contacts = list_job_contacts(conn, key)
+    assert len(contacts) == 1
+    assert contacts[0]["name"] == "Jane Doe"
+    assert contacts[0]["phone"] == "555-1234"
+    conn.close()
+
+
+def test_add_job_contact_dedupe_does_not_clobber_existing_phone_with_blank(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    key = _seed_lead(conn)
+
+    add_job_contact(conn, JobContact(job_key=key, email="r@agency.com", phone="555-1234"))
+    add_job_contact(conn, JobContact(job_key=key, email="r@agency.com"))
+
+    contacts = list_job_contacts(conn, key)
+    assert contacts[0]["phone"] == "555-1234"
+    conn.close()
+
+
+def test_list_all_contacts_joins_company_and_title_and_filters_by_company(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    key1 = _seed_lead(conn, company="Acme", title="Software Engineer")
+    key2 = _seed_lead(conn, company="Globex", title="Data Engineer")
+    add_job_contact(conn, JobContact(job_key=key1, name="Jane Doe", email="jane@acme.com", phone="555-1"))
+    add_job_contact(conn, JobContact(job_key=key2, name="John Roe", email="john@globex.com", phone="555-2"))
+
+    all_contacts = list_all_contacts(conn)
+    assert {c["job_company"] for c in all_contacts} == {"Acme", "Globex"}
+
+    acme_only = list_all_contacts(conn, company="acme")
+    assert len(acme_only) == 1
+    assert acme_only[0]["name"] == "Jane Doe"
+    assert acme_only[0]["job_title"] == "Software Engineer"
+    conn.close()
+
+
+# --- awaiting_response_since --------------------------------------------------
+
+
+def test_add_job_conversation_outbound_sets_awaiting_response_since(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    key = _seed_lead(conn)
+
+    add_job_conversation(
+        conn,
+        JobConversation(job_key=key, direction="outbound", summary="Sent a follow-up", occurred_at="2026-06-01T00:00:00+00:00"),
+    )
+
+    row = conn.execute("SELECT awaiting_response_since FROM job_leads WHERE normalized_key = ?", (key,)).fetchone()
+    assert row["awaiting_response_since"] == "2026-06-01T00:00:00+00:00"
+    conn.close()
+
+
+def test_add_job_conversation_inbound_clears_awaiting_response_since(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    key = _seed_lead(conn)
+    add_job_conversation(conn, JobConversation(job_key=key, direction="outbound", summary="Applied"))
+
+    add_job_conversation(conn, JobConversation(job_key=key, direction="inbound", summary="They replied"))
+
+    row = conn.execute("SELECT awaiting_response_since FROM job_leads WHERE normalized_key = ?", (key,)).fetchone()
+    assert row["awaiting_response_since"] is None
+    conn.close()
+
+
+def test_add_job_conversation_direction_other_leaves_awaiting_response_since_untouched(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    key = _seed_lead(conn)
+    add_job_conversation(
+        conn, JobConversation(job_key=key, direction="outbound", summary="Applied", occurred_at="2026-06-01T00:00:00+00:00")
+    )
+
+    add_job_conversation(conn, JobConversation(job_key=key, direction="other", summary="Just a note"))
+
+    row = conn.execute("SELECT awaiting_response_since FROM job_leads WHERE normalized_key = ?", (key,)).fetchone()
+    assert row["awaiting_response_since"] == "2026-06-01T00:00:00+00:00"
+    conn.close()
+
+
+def test_add_job_conversation_awaiting_response_override_wins_over_direction(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    key = _seed_lead(conn)
+
+    add_job_conversation(
+        conn, JobConversation(job_key=key, direction="inbound", summary="Left a voicemail"), awaiting_response=True
+    )
+
+    row = conn.execute("SELECT awaiting_response_since FROM job_leads WHERE normalized_key = ?", (key,)).fetchone()
+    assert row["awaiting_response_since"] is not None
+    conn.close()
+
+
+def test_set_awaiting_response_sets_and_clears_directly(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    key = _seed_lead(conn)
+
+    set_awaiting_response(conn, key, True, when="2026-07-01T00:00:00+00:00")
+    row = conn.execute("SELECT awaiting_response_since FROM job_leads WHERE normalized_key = ?", (key,)).fetchone()
+    assert row["awaiting_response_since"] == "2026-07-01T00:00:00+00:00"
+
+    set_awaiting_response(conn, key, False)
+    row = conn.execute("SELECT awaiting_response_since FROM job_leads WHERE normalized_key = ?", (key,)).fetchone()
+    assert row["awaiting_response_since"] is None
+    conn.close()
+
+
+def test_connect_migrates_a_pre_existing_db_missing_awaiting_response_since_and_phone_columns(tmp_path: Path):
+    """Regression test mirroring the existing jd_text migration test: a
+    pre-2026-07-14 DB (schema minus awaiting_response_since/job_contacts.phone)
+    must gain both columns on connect() without losing existing rows."""
+    db_path = tmp_path / "leads.db"
+    old_schema = _SCHEMA.replace(",\n    awaiting_response_since TEXT", "").replace(
+        ",\n    phone TEXT", ""
+    )
+    raw_conn = sqlite3.connect(str(db_path))
+    raw_conn.executescript(old_schema)
+    raw_conn.execute(
+        "INSERT INTO job_leads (normalized_key, company, title) VALUES ('k1', 'Acme', 'Engineer')"
+    )
+    raw_conn.execute("INSERT INTO job_contacts (job_key, name, email) VALUES ('k1', 'Jane', 'jane@acme.com')")
+    raw_conn.commit()
+    raw_conn.close()
+
+    conn = connect(db_path)
+    leads_cols = {row["name"] for row in conn.execute("PRAGMA table_info(job_leads)")}
+    contacts_cols = {row["name"] for row in conn.execute("PRAGMA table_info(job_contacts)")}
+    assert "awaiting_response_since" in leads_cols
+    assert "phone" in contacts_cols
+    assert conn.execute("SELECT company FROM job_leads WHERE normalized_key = 'k1'").fetchone()["company"] == "Acme"
     conn.close()

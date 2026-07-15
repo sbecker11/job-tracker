@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -46,7 +47,8 @@ CREATE TABLE IF NOT EXISTS job_leads (
     status TEXT DEFAULT 'new',
     first_seen TEXT,
     last_seen TEXT,
-    times_seen INTEGER DEFAULT 1
+    times_seen INTEGER DEFAULT 1,
+    awaiting_response_since TEXT
 );
 
 -- One row per email message ever sent through the LLM extraction fallback
@@ -89,6 +91,7 @@ CREATE TABLE IF NOT EXISTS job_contacts (
     contact_ref TEXT,
     name TEXT,
     email TEXT,
+    phone TEXT,
     role TEXT DEFAULT 'recruiter',
     source_message_id TEXT,
     first_contacted_at TEXT,
@@ -140,57 +143,80 @@ CREATE TABLE IF NOT EXISTS job_offers (
 
 # Columns added after the initial release. New databases get them via
 # _SCHEMA above; this backfills any pre-existing var/leads.db in place so
-# upgrading never requires deleting stored leads.
-_MIGRATIONS: list[tuple[str, str]] = [
-    ("jd_text", "ALTER TABLE job_leads ADD COLUMN jd_text TEXT"),
+# upgrading never requires deleting stored leads. Table name is explicit
+# (rather than assumed to always be job_leads) since 2026-07-14, when the
+# first migration targeting a *different* table (job_contacts.phone) showed
+# up — see _apply_migrations() below.
+_MIGRATIONS: list[tuple[str, str, str]] = [
+    ("job_leads", "jd_text", "ALTER TABLE job_leads ADD COLUMN jd_text TEXT"),
     # LLM-based evaluation (pipeline/llm_apply.py, CLAUDE.md's JD Match
     # Framework) — kept separate from the original keyword-scorer columns
     # above (match_pct/verdict/rationale) since the two disagree often enough
     # to matter (the keyword scorer produced false "pass"es the LLM verdict
     # caught as genuine "pursue"s in testing) and both are worth keeping for
     # comparison rather than overwriting one with the other.
-    ("llm_verdict", "ALTER TABLE job_leads ADD COLUMN llm_verdict TEXT"),
-    ("llm_match_pct", "ALTER TABLE job_leads ADD COLUMN llm_match_pct REAL"),
-    ("llm_dealbreaker_notes", "ALTER TABLE job_leads ADD COLUMN llm_dealbreaker_notes TEXT"),
-    ("llm_skills_alignment", "ALTER TABLE job_leads ADD COLUMN llm_skills_alignment TEXT"),
-    ("llm_rationale", "ALTER TABLE job_leads ADD COLUMN llm_rationale TEXT"),
-    ("llm_eval_input_tokens", "ALTER TABLE job_leads ADD COLUMN llm_eval_input_tokens INTEGER"),
-    ("llm_eval_output_tokens", "ALTER TABLE job_leads ADD COLUMN llm_eval_output_tokens INTEGER"),
-    ("llm_eval_cost_usd", "ALTER TABLE job_leads ADD COLUMN llm_eval_cost_usd REAL"),
-    ("llm_evaluated_at", "ALTER TABLE job_leads ADD COLUMN llm_evaluated_at TEXT"),
+    ("job_leads", "llm_verdict", "ALTER TABLE job_leads ADD COLUMN llm_verdict TEXT"),
+    ("job_leads", "llm_match_pct", "ALTER TABLE job_leads ADD COLUMN llm_match_pct REAL"),
+    ("job_leads", "llm_dealbreaker_notes", "ALTER TABLE job_leads ADD COLUMN llm_dealbreaker_notes TEXT"),
+    ("job_leads", "llm_skills_alignment", "ALTER TABLE job_leads ADD COLUMN llm_skills_alignment TEXT"),
+    ("job_leads", "llm_rationale", "ALTER TABLE job_leads ADD COLUMN llm_rationale TEXT"),
+    ("job_leads", "llm_eval_input_tokens", "ALTER TABLE job_leads ADD COLUMN llm_eval_input_tokens INTEGER"),
+    ("job_leads", "llm_eval_output_tokens", "ALTER TABLE job_leads ADD COLUMN llm_eval_output_tokens INTEGER"),
+    ("job_leads", "llm_eval_cost_usd", "ALTER TABLE job_leads ADD COLUMN llm_eval_cost_usd REAL"),
+    ("job_leads", "llm_evaluated_at", "ALTER TABLE job_leads ADD COLUMN llm_evaluated_at TEXT"),
     # Richer JD-review fields (2026-07-07) — job_summary/flags/framing_guidance
     # are new; llm_dealbreaker_notes/llm_skills_alignment above now hold JSON
     # lists of dicts (check/status/notes and requirement/evidence/strength)
     # instead of flat strings, but keep their original column names since
     # they're still "the dealbreaker sweep" and "the skills alignment table"
     # per CLAUDE.md §10 — just structured instead of prose now.
-    ("llm_job_summary", "ALTER TABLE job_leads ADD COLUMN llm_job_summary TEXT"),
-    ("llm_flags", "ALTER TABLE job_leads ADD COLUMN llm_flags TEXT"),
-    ("llm_framing_guidance", "ALTER TABLE job_leads ADD COLUMN llm_framing_guidance TEXT"),
+    ("job_leads", "llm_job_summary", "ALTER TABLE job_leads ADD COLUMN llm_job_summary TEXT"),
+    ("job_leads", "llm_flags", "ALTER TABLE job_leads ADD COLUMN llm_flags TEXT"),
+    ("job_leads", "llm_framing_guidance", "ALTER TABLE job_leads ADD COLUMN llm_framing_guidance TEXT"),
     # CLAUDE.md §10 steps 4-7 (2026-07-11) — structural_verdict/next_step
     # split "does this look good on paper" from the final dealbreaker-aware
     # verdict and surface a concrete escape-hatch action when a dealbreaker
     # is soft/confirmable; cover_letter_strategy/interview_prep synthesize
     # framing_guidance into a narrative paragraph and interview talking
     # points, respectively — see llm_apply.py's _EVAL_SYSTEM_PROMPT.
-    ("llm_structural_verdict", "ALTER TABLE job_leads ADD COLUMN llm_structural_verdict TEXT"),
-    ("llm_next_step", "ALTER TABLE job_leads ADD COLUMN llm_next_step TEXT"),
-    ("llm_cover_letter_strategy", "ALTER TABLE job_leads ADD COLUMN llm_cover_letter_strategy TEXT"),
-    ("llm_interview_prep", "ALTER TABLE job_leads ADD COLUMN llm_interview_prep TEXT"),
+    ("job_leads", "llm_structural_verdict", "ALTER TABLE job_leads ADD COLUMN llm_structural_verdict TEXT"),
+    ("job_leads", "llm_next_step", "ALTER TABLE job_leads ADD COLUMN llm_next_step TEXT"),
+    ("job_leads", "llm_cover_letter_strategy", "ALTER TABLE job_leads ADD COLUMN llm_cover_letter_strategy TEXT"),
+    ("job_leads", "llm_interview_prep", "ALTER TABLE job_leads ADD COLUMN llm_interview_prep TEXT"),
     # Lifecycle timeline (models.LEAD_STAGES) — one nullable timestamp column
     # per stage after "new", stamped by advance_status() below whenever a
     # lead's status moves forward. Lets a lead's history stay visible (e.g.
     # "applied 2026-06-01, interviewing 2026-06-15") instead of only ever
     # showing whatever stage it's currently in.
-    ("pursued_at", "ALTER TABLE job_leads ADD COLUMN pursued_at TEXT"),
-    ("package_generated_at", "ALTER TABLE job_leads ADD COLUMN package_generated_at TEXT"),
-    ("applied_at", "ALTER TABLE job_leads ADD COLUMN applied_at TEXT"),
-    ("following_up_at", "ALTER TABLE job_leads ADD COLUMN following_up_at TEXT"),
-    ("interviewing_at", "ALTER TABLE job_leads ADD COLUMN interviewing_at TEXT"),
-    ("offered_at", "ALTER TABLE job_leads ADD COLUMN offered_at TEXT"),
-    ("accepted_at", "ALTER TABLE job_leads ADD COLUMN accepted_at TEXT"),
-    ("started_at", "ALTER TABLE job_leads ADD COLUMN started_at TEXT"),
-    ("skipped_at", "ALTER TABLE job_leads ADD COLUMN skipped_at TEXT"),
+    ("job_leads", "pursued_at", "ALTER TABLE job_leads ADD COLUMN pursued_at TEXT"),
+    ("job_leads", "package_generated_at", "ALTER TABLE job_leads ADD COLUMN package_generated_at TEXT"),
+    ("job_leads", "applied_at", "ALTER TABLE job_leads ADD COLUMN applied_at TEXT"),
+    ("job_leads", "following_up_at", "ALTER TABLE job_leads ADD COLUMN following_up_at TEXT"),
+    ("job_leads", "interviewing_at", "ALTER TABLE job_leads ADD COLUMN interviewing_at TEXT"),
+    ("job_leads", "offered_at", "ALTER TABLE job_leads ADD COLUMN offered_at TEXT"),
+    ("job_leads", "accepted_at", "ALTER TABLE job_leads ADD COLUMN accepted_at TEXT"),
+    ("job_leads", "started_at", "ALTER TABLE job_leads ADD COLUMN started_at TEXT"),
+    ("job_leads", "skipped_at", "ALTER TABLE job_leads ADD COLUMN skipped_at TEXT"),
+    # Rejection tracking (2026-07-14) — "rejected" is its own LEAD_STAGES
+    # off-ramp, distinct from "skipped" (see models.py). rejected_at is the
+    # stage timestamp advance_status() stamps; the other three hold the
+    # rejection email's own details for reference/audit, filled in whenever
+    # a detected rejection is confirmed against this lead (a manual step —
+    # see docs on the pending-rejection review flow).
+    ("job_leads", "rejected_at", "ALTER TABLE job_leads ADD COLUMN rejected_at TEXT"),
+    ("job_leads", "rejection_source", "ALTER TABLE job_leads ADD COLUMN rejection_source TEXT"),
+    ("job_leads", "rejection_email_text", "ALTER TABLE job_leads ADD COLUMN rejection_email_text TEXT"),
+    ("job_leads", "rejection_message_id", "ALTER TABLE job_leads ADD COLUMN rejection_message_id TEXT"),
+    # "Whose turn is it" (2026-07-14) — orthogonal to `status`/LEAD_STAGES
+    # (see models.py): a lead can be `applied` *and* waiting-on-them, or
+    # `interviewing` *and* waiting-on-them, so this isn't a stage of its
+    # own. Auto-set to now by add_job_conversation() whenever an `outbound`
+    # conversation is logged (you just spoke, it's their turn), auto-cleared
+    # whenever an `inbound` one comes in (they responded) — with a manual
+    # override available via the same function for conversations that don't
+    # cleanly fit that rule (e.g. a phone call logged after the fact).
+    ("job_leads", "awaiting_response_since", "ALTER TABLE job_leads ADD COLUMN awaiting_response_since TEXT"),
+    ("job_contacts", "phone", "ALTER TABLE job_contacts ADD COLUMN phone TEXT"),
 ]
 
 # models.LEAD_STAGES -> the timestamp column stamped when a lead enters that
@@ -205,6 +231,7 @@ _STAGE_DATE_COLUMNS: dict[str, str] = {
     "accepted": "accepted_at",
     "started": "started_at",
     "skipped": "skipped_at",
+    "rejected": "rejected_at",
 }
 
 
@@ -231,10 +258,13 @@ def _migrate_pursued_skipped_rename(conn: sqlite3.Connection) -> None:
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
     _migrate_pursued_skipped_rename(conn)
-    existing = {row["name"] for row in conn.execute("PRAGMA table_info(job_leads)")}
-    for column, ddl in _MIGRATIONS:
-        if column not in existing:
+    existing_by_table: dict[str, set[str]] = {}
+    for table, column, ddl in _MIGRATIONS:
+        if table not in existing_by_table:
+            existing_by_table[table] = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing_by_table[table]:
             conn.execute(ddl)
+            existing_by_table[table].add(column)
     conn.commit()
 
 
@@ -360,6 +390,16 @@ def list_leads(conn: sqlite3.Connection, *, verdict: str | None = None) -> list[
     return list(conn.execute("SELECT * FROM job_leads ORDER BY match_pct DESC, last_seen DESC"))
 
 
+def get_job(conn: sqlite3.Connection, company: str, title: str) -> sqlite3.Row | None:
+    """Exact-match lookup by (company, title) — the "find the job I meant"
+    helper shared by the manual CLIs (log_contact.py, attach_document.py,
+    generate_message.py) that identify a job by company/title rather than
+    by normalized_key directly."""
+    return conn.execute(
+        "SELECT * FROM job_leads WHERE normalized_key = ?", (normalize_key(company, title),)
+    ).fetchone()
+
+
 def get_sibling_titles(conn: sqlite3.Connection, company: str, *, exclude_title: str | None = None) -> list[str]:
     """All distinct titles already tracked for this company (any status),
     optionally excluding one — used to decide the on-disk artifact layout
@@ -416,6 +456,33 @@ def advance_status(
             """,
             (stage, when or utc_now_iso(), normalized_key),
         )
+    conn.commit()
+
+
+def record_rejection(
+    conn: sqlite3.Connection,
+    normalized_key: str,
+    *,
+    source: str = "",
+    email_text: str = "",
+    message_id: str = "",
+    when: str | None = None,
+) -> None:
+    """Confirm a detected rejection against a specific lead: advances it to
+    the "rejected" stage (stamping rejected_at, same as any other
+    advance_status() call) and fills in the rejection's own audit details.
+    Always a deliberate, one-at-a-time call — never invoked automatically
+    from the triage pipeline itself (see find_recent_rejection() for the
+    read-side disqualification check that consumes what this writes)."""
+    advance_status(conn, normalized_key, "rejected", when=when)
+    conn.execute(
+        """
+        UPDATE job_leads
+        SET rejection_source = ?, rejection_email_text = ?, rejection_message_id = ?
+        WHERE normalized_key = ?
+        """,
+        (source, email_text, message_id, normalized_key),
+    )
     conn.commit()
 
 
@@ -485,19 +552,27 @@ def record_message_processed(
 
 def add_job_contact(conn: sqlite3.Connection, contact: JobContact) -> int:
     """Insert a JobContact, or — if `email` already exists for this job_key —
-    just bump `last_contacted_at` and return the existing row's id. This is
-    what makes UC-1 (ingest) and UC-2 (dedupe) safe to call repeatedly for
-    the same sender without piling up duplicate contact rows."""
+    just bump `last_contacted_at` (and backfill `name`/`phone` if this call
+    supplies one the stored row doesn't have yet — e.g. a manual
+    `log_contact.py` call filling in a phone number for a contact
+    auto-created from an email that never had one) and return the existing
+    row's id. This is what makes UC-1 (ingest) and UC-2 (dedupe) safe to call
+    repeatedly for the same sender without piling up duplicate contact rows."""
     email = (contact.email or "").strip().lower()
     if email:
         existing = conn.execute(
-            "SELECT id FROM job_contacts WHERE job_key = ? AND lower(email) = ?",
+            "SELECT id, name, phone FROM job_contacts WHERE job_key = ? AND lower(email) = ?",
             (contact.job_key, email),
         ).fetchone()
         if existing is not None:
             conn.execute(
-                "UPDATE job_contacts SET last_contacted_at = ? WHERE id = ?",
-                (utc_now_iso(), existing["id"]),
+                "UPDATE job_contacts SET last_contacted_at = ?, name = ?, phone = ? WHERE id = ?",
+                (
+                    utc_now_iso(),
+                    contact.name or existing["name"],
+                    contact.phone or existing["phone"],
+                    existing["id"],
+                ),
             )
             conn.commit()
             return existing["id"]
@@ -505,15 +580,16 @@ def add_job_contact(conn: sqlite3.Connection, contact: JobContact) -> int:
     cursor = conn.execute(
         """
         INSERT INTO job_contacts (
-            job_key, contact_ref, name, email, role, source_message_id,
+            job_key, contact_ref, name, email, phone, role, source_message_id,
             first_contacted_at, last_contacted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             contact.job_key,
             contact.contact_ref,
             contact.name,
             contact.email,
+            contact.phone,
             contact.role,
             contact.source_message_id,
             contact.first_contacted_at,
@@ -533,7 +609,35 @@ def list_job_contacts(conn: sqlite3.Connection, job_key: str) -> list[sqlite3.Ro
     )
 
 
-def add_job_conversation(conn: sqlite3.Connection, conversation: JobConversation) -> int:
+def list_all_contacts(conn: sqlite3.Connection, *, company: str | None = None) -> list[sqlite3.Row]:
+    """Every JobContact across every job, joined with the job's own
+    company/title — the basis for `list_contacts.py`'s report, since
+    `job_contacts` alone has no company column (it's implicit via job_key)."""
+    sql = """
+        SELECT jc.*, jl.company AS job_company, jl.title AS job_title
+        FROM job_contacts jc
+        JOIN job_leads jl ON jl.normalized_key = jc.job_key
+    """
+    params: tuple = ()
+    if company:
+        sql += " WHERE lower(jl.company) LIKE ?"
+        params = (f"%{company.lower()}%",)
+    sql += " ORDER BY jl.company ASC, jc.first_contacted_at ASC"
+    return list(conn.execute(sql, params))
+
+
+def add_job_conversation(
+    conn: sqlite3.Connection, conversation: JobConversation, *, awaiting_response: bool | None = None
+) -> int:
+    """Insert a JobConversation and update the job's `awaiting_response_since`
+    ("whose turn is it" — see the migration comment in _MIGRATIONS) as a
+    side effect: an `outbound` conversation (you spoke) sets it to this
+    conversation's `occurred_at`; an `inbound` one (they spoke) clears it.
+    `direction == "other"` leaves it untouched by default. `awaiting_response`
+    overrides that inference outright (True -> set, False -> clear,
+    regardless of direction) for cases direction alone doesn't capture well
+    — e.g. a phone call you logged after the fact where you left a
+    voicemail and are still the one waiting."""
     cursor = conn.execute(
         """
         INSERT INTO job_conversations (
@@ -550,8 +654,40 @@ def add_job_conversation(conn: sqlite3.Connection, conversation: JobConversation
             conversation.occurred_at,
         ),
     )
+
+    if awaiting_response is True:
+        waiting_since: str | None = conversation.occurred_at
+    elif awaiting_response is False:
+        waiting_since = None
+    elif conversation.direction == "outbound":
+        waiting_since = conversation.occurred_at
+    elif conversation.direction == "inbound":
+        waiting_since = None
+    else:
+        waiting_since = "__unchanged__"
+
+    if waiting_since != "__unchanged__":
+        conn.execute(
+            "UPDATE job_leads SET awaiting_response_since = ? WHERE normalized_key = ?",
+            (waiting_since, conversation.job_key),
+        )
+
     conn.commit()
     return cursor.lastrowid
+
+
+def set_awaiting_response(
+    conn: sqlite3.Connection, normalized_key: str, waiting: bool, *, when: str | None = None
+) -> None:
+    """Directly set/clear a job's `awaiting_response_since` — the standalone
+    escape hatch for callers that aren't logging a conversation at the same
+    time (e.g. `log_contact.py --meeting` recording a completed interview:
+    no new JobConversation row, but you're now waiting on feedback)."""
+    conn.execute(
+        "UPDATE job_leads SET awaiting_response_since = ? WHERE normalized_key = ?",
+        (when or utc_now_iso() if waiting else None, normalized_key),
+    )
+    conn.commit()
 
 
 def list_job_conversations(conn: sqlite3.Connection, job_key: str) -> list[sqlite3.Row]:
@@ -721,6 +857,64 @@ def find_matching_job(conn: sqlite3.Connection, company: str, title: str) -> Job
     if candidates and candidates[0].combined_score >= AUTO_MATCH_THRESHOLD:
         return candidates[0]
     return None
+
+
+# --- Rejection cooldown / disqualification --------------------------------
+# A company that just rejected someone for a specific role re-posting (or a
+# different recruiter re-surfacing) that exact same role within a short
+# window is, in practice, not worth re-spending an LLM evaluation (or a
+# human's attention) on — pipeline/triage.py checks this before running the
+# two-tier review pipeline for a role and short-circuits straight to a
+# "pass" verdict when it fires.
+DEFAULT_REJECTION_COOLDOWN_DAYS = 90
+
+
+def _parse_iso(ts: str | None) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def find_recent_rejection(
+    conn: sqlite3.Connection,
+    company: str,
+    title: str,
+    *,
+    within_days: int = DEFAULT_REJECTION_COOLDOWN_DAYS,
+    now: str | None = None,
+) -> sqlite3.Row | None:
+    """The most recent `status = 'rejected'` job_leads row fuzzy-matching
+    (company, title) whose `rejected_at` falls within the last `within_days`
+    days, or None if there isn't one.
+
+    Uses the same AUTO_MATCH_THRESHOLD bar as find_matching_job() (an exact
+    normalized_key always wins outright; otherwise both company and title
+    similarity must clear 0.92) — deliberately strict, since a false
+    positive here silently disqualifies what might be a genuinely new,
+    separate opening at the same company rather than a re-post/re-outreach
+    for the one that was already declined.
+    """
+    now_dt = _parse_iso(now) or datetime.now(timezone.utc)
+    cutoff = now_dt - timedelta(days=within_days)
+    exact_key = normalize_key(company, title)
+
+    best: tuple[float, sqlite3.Row] | None = None
+    for row in conn.execute(
+        "SELECT * FROM job_leads WHERE status = 'rejected' AND rejected_at IS NOT NULL"
+    ):
+        rejected_at = _parse_iso(row["rejected_at"])
+        if rejected_at is None or rejected_at < cutoff:
+            continue
+        if row["normalized_key"] == exact_key:
+            return row
+        combined = min(_ratio(company, row["company"]), _ratio(title, row["title"]))
+        if combined >= AUTO_MATCH_THRESHOLD and (best is None or combined > best[0]):
+            best = (combined, row)
+    return best[1] if best else None
 
 
 def update_llm_evaluation(conn: sqlite3.Connection, normalized_key: str, evaluation) -> None:

@@ -39,7 +39,8 @@ from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_EXTRAC
 from job_tracker.pipeline.llm_extract import extract_roles_llm, extract_roles_llm_cached
 from job_tracker.pipeline.models import JobLead
 from job_tracker.pipeline.run import resolve_jd_text
-from job_tracker.pipeline.store import get_sibling_titles
+from job_tracker.pipeline.store import DEFAULT_REJECTION_COOLDOWN_DAYS, find_recent_rejection, get_sibling_titles
+from job_tracker.scoring.scorer import ScoreResult
 
 # Renamed 2026-07-07 (were ACCEPT/DENY) to match the LLM Match Framework's
 # own verdict language (evaluate_lead()'s "pursue"/"pass"/"review") — see
@@ -180,6 +181,7 @@ def triage_message(
     max_llm_extracted_roles: int = DEFAULT_MAX_LLM_EXTRACTED_ROLES,
     conn=None,
     llm_extract_client=None,
+    rejection_cooldown_days: int = DEFAULT_REJECTION_COOLDOWN_DAYS,
 ) -> MessageTriageResult:
     result = MessageTriageResult(
         message_id=message.id,
@@ -232,6 +234,44 @@ def triage_message(
 
     role_outcomes: list[RoleOutcome] = []
     for role in complete_roles:
+        # Disqualification (2026-07-14): this exact role, at this exact
+        # company, was already confirmed rejected within the cooldown
+        # window (see store.find_recent_rejection/record_rejection) — most
+        # often a digest re-sending the same still-open posting, or a
+        # different recruiter re-surfacing it. Short-circuits straight to a
+        # "pass" verdict before spending anything on JD resolution or the
+        # two-tier review pipeline; `rejection_cooldown_days <= 0` disables
+        # this check entirely (e.g. for callers that want it off).
+        recent_rejection = (
+            find_recent_rejection(conn, role.company, role.title, within_days=rejection_cooldown_days)
+            if conn is not None and rejection_cooldown_days > 0
+            else None
+        )
+        if recent_rejection is not None:
+            rationale = [
+                f"disqualified: {recent_rejection['company']} already rejected this role "
+                f"(rejected_at={recent_rejection['rejected_at']}) — within the "
+                f"{rejection_cooldown_days}-day cooldown window"
+            ]
+            lead = JobLead(
+                company=role.company,
+                title=role.title,
+                source_message_id=message.id,
+                source_label=classification.label.value,
+                apply_url=role.apply_url,
+                extraction_confidence=role.confidence,
+                jd_resolved=False,
+                jd_source="",
+                jd_text=role.snippet or "",
+                match_pct=0.0,
+                matched_skills=[],
+                verdict="pass",
+                rationale=rationale,
+            )
+            package = TwoTierPackageResult(no_llm_score=ScoreResult(match_pct=0.0, verdict="pass", rationale=rationale))
+            role_outcomes.append(RoleOutcome(lead=lead, package=package))
+            continue
+
         # Sibling titles for this company, combining what's already in the
         # DB with any other role in *this same* digest/message for the same
         # company — the latter matters because upsert_lead() for those

@@ -29,7 +29,15 @@ LEAD_STAGES: tuple[str, ...] = (
     "offered",  # an offer is on the table
     "accepted",  # offer accepted
     "started",  # start date reached
-    "skipped",  # off-ramp: decided not to pursue (or rejected), can happen at any point
+    "skipped",  # off-ramp: WE decided not to pursue, can happen at any point
+    # off-ramp: THEY declined us (a rejection email was confirmed against
+    # this lead — see pipeline/store.py's rejected_at/rejection_* columns
+    # and find_recent_rejection()). Deliberately distinct from "skipped"
+    # (that's our own pass decision) so the two are never conflated — a
+    # rejected lead's rejected_at is also what
+    # pipeline.store.find_recent_rejection() checks to auto-disqualify a
+    # resurfacing posting for the same role within its cooldown window.
+    "rejected",
 )
 
 
@@ -83,6 +91,7 @@ class JobContact:
     job_key: str
     name: str = ""
     email: str = ""
+    phone: str = ""
     role: str = "recruiter"  # recruiter | hiring_manager | referral | other
     contact_ref: str = ""
     source_message_id: str = ""

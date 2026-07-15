@@ -176,6 +176,100 @@ def test_single_job_alert_with_link_heavy_body_still_reaches_single_jd() -> None
     assert result.label == Label.SINGLE_JD, f"got {result.label.value}; reasons={result.reasons}"
 
 
+@pytest.mark.parametrize(
+    "case_id,from_address,subject,snippet",
+    [
+        (
+            "epicor-after-careful-review",
+            "wdsetup@myworkday.com",
+            "Thank you for your interest in Epicor",
+            "After careful review, we have decided to move forward with other "
+            "candidates for this open position.",
+        ),
+        (
+            "nice-move-forward-with-other",
+            "no-reply@nice.com",
+            "Regarding your application to NICE",
+            "we have decided to move forward with other candidates for this role.",
+        ),
+        (
+            "workday-data-engineer-iii-move-forward",
+            "purple@myworkday.com",
+            "Update on your Application for Data Engineer III (Hybrid)",
+            "At this time, we have decided to move forward with other "
+            "candidates for the role",
+        ),
+    ],
+)
+def test_real_rejection_samples_previously_missed(
+    case_id: str, from_address: str, subject: str, snippet: str
+) -> None:
+    """Regression for 2026-07-14: these 3 real rejection emails (gathered
+    from Mail.app archives) all used "move forward with other candidate(s)"
+    — a phrase absent from _REJECTION_PATTERNS before this date — and none
+    of them matched any other existing pattern in either the subject or
+    body, so all 3 classified as something other than REJECTION."""
+    message = EmailMessage(
+        id=f"fixture-{case_id}",
+        from_address=from_address,
+        subject=subject,
+        snippet=snippet,
+        body_plain=snippet,
+        body_html="",
+        date="2026-05-01T09:00:00Z",
+    )
+    result = classify(message)
+    assert result.label == Label.REJECTION, f"got {result.label.value}; reasons={result.reasons}"
+
+
+@pytest.mark.parametrize(
+    "case_id,from_address,subject,snippet",
+    [
+        (
+            "angel-studios-wont-be-able-to-invite",
+            "no-reply@hire.lever.co",
+            "Angel Studios Application — Data Scientist",
+            "unfortunately, at this time we won't be able to invite you to the next stage of "
+            "the hiring process",
+        ),
+        (
+            "zapier-different-direction",
+            "hello@withtwill.com",
+            "Update on your application for Engineering Manager, Growth role",
+            "Unfortunately, the hiring team decided to go in a different direction.",
+        ),
+        (
+            "lightspeed-dms-not-proceed-with-candidacy",
+            "no-reply@lightspeeddms.com",
+            "Your application to Lightspeed DMS",
+            "Unfortunately, we have decided not to proceed with your candidacy for the Senior "
+            "Java Software Engineer opening at Lightspeed DMS.",
+        ),
+    ],
+)
+def test_real_rejection_samples_from_earlier_2026_archive(
+    case_id: str, from_address: str, subject: str, snippet: str
+) -> None:
+    """Regression for 2026-07-14 (2nd batch): 3 more real rejection emails
+    (Angel Studios, Zapier, Lightspeed DMS — dated 10/2025-3/2026, the oldest
+    in the Mail.app archive review) found while checking for gaps beyond the
+    8 samples above. All 3 already match the existing "unfortunately,"/"unfortunately
+    we" pattern with no changes needed — locked in here as a regression test
+    rather than a classifier change, since a future edit to that pattern
+    could otherwise silently regress these without anyone noticing."""
+    message = EmailMessage(
+        id=f"fixture-{case_id}",
+        from_address=from_address,
+        subject=subject,
+        snippet=snippet,
+        body_plain=snippet,
+        body_html="",
+        date="2026-03-19T09:00:00Z",
+    )
+    result = classify(message)
+    assert result.label == Label.REJECTION, f"got {result.label.value}; reasons={result.reasons}"
+
+
 def test_schema_org_marketing_json_ld_is_noise() -> None:
     """Regression: some senders' marketing mail leaks raw schema.org JSON-LD
     (promo cards, discount offers) into body_plain. That's a strong noise

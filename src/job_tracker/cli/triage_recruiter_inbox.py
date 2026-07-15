@@ -34,6 +34,7 @@ from pathlib import Path
 
 from job_tracker.email import gmail_writer
 from job_tracker.email.gmail_reader import (
+    KNOWN_ACCOUNTS,
     default_credentials_path,
     default_token_path,
     fetch_message,
@@ -46,6 +47,7 @@ from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_EXTRAC
 from job_tracker.pipeline.models import JobContact, JobConversation
 from job_tracker.pipeline.store import (
     DEFAULT_DB_PATH,
+    DEFAULT_REJECTION_COOLDOWN_DAYS,
     add_job_contact,
     add_job_conversation,
     advance_status,
@@ -157,6 +159,16 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     ap.add_argument(
+        "--rejection-cooldown-days",
+        type=int,
+        default=DEFAULT_REJECTION_COOLDOWN_DAYS,
+        help=(
+            "Auto-disqualify (skip straight to a 'pass' verdict, no LLM spend) a role whose "
+            "exact (company, title) was already confirmed rejected (status='rejected') within "
+            f"this many days (default: {DEFAULT_REJECTION_COOLDOWN_DAYS}). Set to 0 to disable."
+        ),
+    )
+    ap.add_argument(
         "--dry-run",
         action="store_true",
         help="Score and print what would happen, but never touch Gmail (no label/archive) or write to the DB",
@@ -182,20 +194,34 @@ def main(argv: list[str] | None = None) -> int:
             "— models.utc_now_iso()'s output). Implies --force; use instead of --force, not with it."
         ),
     )
+    ap.add_argument(
+        "--account",
+        choices=KNOWN_ACCOUNTS,
+        help="Triage a named account other than the default recruiting funnel "
+        "(credentials/token resolved from ~/.config/job-tracker/<account>/ unless "
+        "--credentials/--token override). E.g. --account personal_hub to catch up on "
+        "job-lead mail that landed on scbboston@gmail.com — including historical "
+        "backlog from before the recruiting funnel forwards existed (see "
+        "comms-migration's routing-inventory.md); remember to drop the default "
+        "query's `in:inbox` (--query \"label:Category/recruiter_job -label:JobTracker/PURSUE "
+        "-label:JobTracker/SKIP -label:JobTracker/NEEDS_REVIEW\") since that mail may "
+        "already be archived/read, and this account needs its own one-time "
+        "gmail.modify consent the first time you run this without --dry-run.",
+    )
     ap.add_argument("--credentials", type=Path, default=None)
     ap.add_argument("--token", type=Path, default=None)
     ap.add_argument("--json", action="store_true", help="Emit machine-readable JSON instead of a report")
     args = ap.parse_args(argv)
 
-    credentials_path = args.credentials or default_credentials_path()
+    credentials_path = args.credentials or default_credentials_path(args.account)
     if args.dry_run:
         # Scoring-only preview never mutates the mailbox — no reason to force
         # the separate, one-time-consent write token just to look.
-        token_path = args.token or default_token_path()
-        service = get_gmail_service(credentials_path, token_path)
+        token_path = args.token or default_token_path(args.account)
+        service = get_gmail_service(credentials_path, token_path, account=args.account)
     else:
-        token_path = args.token or default_token_path(writable=True)
-        service = get_gmail_service_writable(credentials_path, token_path)
+        token_path = args.token or default_token_path(args.account, writable=True)
+        service = get_gmail_service_writable(credentials_path, token_path, account=args.account)
 
     query = args.query
     if args.newer_than:
@@ -249,6 +275,7 @@ def main(argv: list[str] | None = None) -> int:
                     llm_extraction_model=args.llm_extraction_model,
                     max_llm_extracted_roles=args.max_llm_extracted_roles,
                     conn=conn,
+                    rejection_cooldown_days=args.rejection_cooldown_days,
                 )
             except Exception as exc:
                 # One bad message (a timed-out API call, a transient Gmail

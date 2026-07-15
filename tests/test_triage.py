@@ -13,6 +13,8 @@ import pytest
 
 from job_tracker.email.models import EmailMessage
 from job_tracker.pipeline import llm_apply, triage
+from job_tracker.pipeline.models import JobLead
+from job_tracker.pipeline.store import connect, record_rejection, upsert_lead
 
 
 @pytest.fixture(autouse=True)
@@ -210,6 +212,91 @@ def test_no_generate_flag_never_spends_on_generation_even_when_pursue(tmp_path):
     assert result.outcome == triage.PURSUE
     assert result.roles[0].package.resume_path is None
     assert len(client.calls) == 1
+
+
+# --- rejection cooldown disqualification (no LLM call) ----------------------
+
+
+def test_recently_rejected_role_is_disqualified_without_llm_call(tmp_path):
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(company="Acme", title="Software Engineer", source_message_id="m0", source_label="single-jd")
+    upsert_lead(conn, lead)
+    record_rejection(conn, lead.normalized_key, when="2026-07-01T00:00:00+00:00")
+
+    client = _FakeClient()  # no responses queued — a call would raise IndexError
+    result = triage.triage_message(
+        _single_jd_message(),
+        resolve_full_jd=False,
+        conn=conn,
+        client=client,
+    )
+    assert result.outcome == triage.SKIP
+    assert len(result.roles) == 1
+    role = result.roles[0]
+    assert role.package.evaluation is None  # never ran the LLM stage
+    assert "disqualified" in role.lead.rationale[0]
+    assert len(client.calls) == 0
+    conn.close()
+
+
+def test_rejection_outside_cooldown_window_is_not_disqualified(tmp_path):
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(company="Acme", title="Software Engineer", source_message_id="m0", source_label="single-jd")
+    upsert_lead(conn, lead)
+    # Stamp a rejection far enough in the past that the default 90-day
+    # cooldown has already elapsed relative to "now" — should score normally.
+    record_rejection(conn, lead.normalized_key, when="2020-01-01T00:00:00+00:00")
+
+    client = _FakeClient(responses=[(_eval_payload("pursue", 85), 900, 200), (_GENERATE_PAYLOAD, 1200, 800)])
+    result = triage.triage_message(
+        _single_jd_message(),
+        resolve_full_jd=False,
+        force_llm_review=True,
+        output_root=tmp_path,
+        conn=conn,
+        client=client,
+    )
+    assert result.outcome == triage.PURSUE
+    conn.close()
+
+
+def test_rejection_cooldown_days_zero_disables_disqualification(tmp_path):
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(company="Acme", title="Software Engineer", source_message_id="m0", source_label="single-jd")
+    upsert_lead(conn, lead)
+    record_rejection(conn, lead.normalized_key, when="2026-07-01T00:00:00+00:00")
+
+    client = _FakeClient(responses=[(_eval_payload("pursue", 85), 900, 200), (_GENERATE_PAYLOAD, 1200, 800)])
+    result = triage.triage_message(
+        _single_jd_message(),
+        resolve_full_jd=False,
+        force_llm_review=True,
+        output_root=tmp_path,
+        conn=conn,
+        client=client,
+        rejection_cooldown_days=0,
+    )
+    assert result.outcome == triage.PURSUE
+    conn.close()
+
+
+def test_unrelated_rejection_does_not_disqualify_a_different_role(tmp_path):
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(company="Widgetco", title="Data Engineer", source_message_id="m0", source_label="single-jd")
+    upsert_lead(conn, lead)
+    record_rejection(conn, lead.normalized_key, when="2026-07-01T00:00:00+00:00")
+
+    client = _FakeClient(responses=[(_eval_payload("pursue", 85), 900, 200), (_GENERATE_PAYLOAD, 1200, 800)])
+    result = triage.triage_message(
+        _single_jd_message(),  # Acme / Software Engineer — unrelated to Widgetco's rejection
+        resolve_full_jd=False,
+        force_llm_review=True,
+        output_root=tmp_path,
+        conn=conn,
+        client=client,
+    )
+    assert result.outcome == triage.PURSUE
+    conn.close()
 
 
 def test_extraction_failure_needs_review_without_llm_call():

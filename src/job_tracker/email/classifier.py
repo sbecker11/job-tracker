@@ -37,9 +37,36 @@ _REJECTION_PATTERNS: list[tuple[str, Pattern[str]]] = [
     ("subject/body: position filled", re.compile(r"position (?:has been )?filled", re.I)),
     ("subject/body: unfortunately", re.compile(r"unfortunately(?:,|\s+we)", re.I)),
     ("subject/body: will not proceed", re.compile(r"will not (?:be )?proceed", re.I)),
-    ("subject/body: after careful consideration", re.compile(r"after careful consideration", re.I)),
+    # Broadened 2026-07-14 from a "consideration"-only match after a real
+    # Epicor rejection used "After careful review" instead — same phrase
+    # family, different noun.
+    ("subject/body: after careful consideration/review/evaluation",
+     re.compile(r"after careful (?:consideration|review|evaluation)", re.I)),
     ("subject/body: regret to inform", re.compile(r"regret to inform", re.I)),
     ("subject/body: thank you for applying", re.compile(r"thank you for (?:your )?(?:application|applying)", re.I)),
+    # Added 2026-07-14 from 8 real rejection samples gathered from Mail.app
+    # archives: "move forward with other candidate(s)" (a very different verb
+    # from the existing "pursue other candidates") was the single most common
+    # phrase, and its absence was the sole miss for 3 of the 8 — NICE, Epicor,
+    # and a Workday-routed "Data Engineer III" rejection all used this exact
+    # construction with no other pattern above matching either the subject or
+    # body. See job-tracker git history for the full sample set this was
+    # tuned against.
+    ("subject/body: move forward with other candidate",
+     re.compile(r"move forward with (?:an)?other candidate", re.I)),
+    # "you have not been selected" (BNSF) — distinct, unambiguous decline
+    # phrasing with no legitimate positive-outcome use.
+    ("subject/body: not been selected", re.compile(r"not been selected", re.I)),
+    # "decided not to move forward with your application" (Adobe) —
+    # generalizes the negated form so it doesn't depend on an "unfortunately"
+    # prefix also being present, unlike in the one sample seen so far.
+    ("subject/body: not to move forward with you",
+     re.compile(r"not (?:to )?move forward with (?:your|you)\b", re.I)),
+    # A follow-up check against 3 more real samples (Angel Studios, Zapier,
+    # Lightspeed DMS — the oldest in the Mail.app archive review, back to
+    # 10/2025) found 0 gaps: all 3 already matched "unfortunately," above.
+    # See tests/test_classifier.py's test_real_rejection_samples_from_
+    # earlier_2026_archive — no new pattern was needed here.
 ]
 
 _DIGEST_SENDERS = re.compile(
