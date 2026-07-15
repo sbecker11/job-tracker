@@ -4,6 +4,16 @@
 **Owner:** `job-tracker` (contacts *data* stays owned by `comms-migration`; see
 [Relationship to comms-migration](#relationship-to-comms-migration)).
 
+**Implementation status (2026-07-14):** UC-1, UC-2, UC-3 (`scripts/add_job.py`),
+UC-4 (`scripts/attach_document.py`), UC-5 (`scripts/log_contact.py --meeting`)
+are built. UC-6's data (`awaiting_response_since` — see the job-tracker
+README's "Whose turn is it" section) and message drafting for it
+(`scripts/generate_message.py --kind status_check_in`, plus `thank_you` for
+post-interview) are built; a standalone periodic "these N jobs have gone
+quiet" sweep report is not yet built (`--waiting` on `list_leads.py` covers
+the on-demand case). UC-7 (offer comparison), UC-8 (market-withdrawal
+drafting), and UC-9 (transition validation) are not yet built.
+
 ## 1. Purpose
 
 `job-tracker` today does one thing well: turn a recruiter email into a scored

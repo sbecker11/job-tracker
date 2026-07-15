@@ -684,3 +684,47 @@ def test_load_candidate_profile_raises_when_missing(monkeypatch, tmp_path):
     monkeypatch.setattr(llm_apply, "_CANDIDATE_PROFILE_PATH", tmp_path / "does_not_exist.md")
     with pytest.raises(llm_apply.LLMApplyError):
         llm_apply._load_candidate_profile()
+
+
+# --- generate_followup_message -------------------------------------------------
+
+
+def test_generate_followup_message_thank_you_returns_stripped_text_and_no_warnings():
+    client = _FakeClient(responses=["Hi Jane,\n\nThanks so much for your time today!\n\nShawn Becker"])
+    result = llm_apply.generate_followup_message(
+        "thank_you", company="Acme", title="Engineer", contact_name="Jane", client=client
+    )
+    assert result.kind == "thank_you"
+    assert result.text == "Hi Jane,\n\nThanks so much for your time today!\n\nShawn Becker"
+    assert result.warnings == []
+    assert result.metrics.step == "generate_followup"
+    # Contact name and role should reach the model as part of the user turn.
+    user_content = client.calls[0]["messages"][0]["content"]
+    assert "Acme" in user_content and "Engineer" in user_content and "Jane" in user_content
+
+
+def test_generate_followup_message_status_check_in_includes_days_since_contact():
+    client = _FakeClient(responses=["Hi,\n\nJust checking in.\n\nShawn Becker"])
+    llm_apply.generate_followup_message(
+        "status_check_in", company="Acme", title="Engineer", days_since_contact=21, client=client
+    )
+    user_content = client.calls[0]["messages"][0]["content"]
+    assert "21" in user_content
+
+
+def test_generate_followup_message_rejects_unknown_kind():
+    with pytest.raises(ValueError):
+        llm_apply.generate_followup_message("subject_line", company="Acme", title="Engineer", client=_FakeClient())
+
+
+def test_generate_followup_message_flags_banned_term_and_comp_figure():
+    client = _FakeClient(responses=["Hi,\n\nSpexture LLC is thrilled. We discussed $90/hr.\n\nShawn Becker"])
+    result = llm_apply.generate_followup_message("thank_you", company="Acme", title="Engineer", client=client)
+    assert any("banned term" in w for w in result.warnings)
+    assert any("compensation" in w for w in result.warnings)
+
+
+def test_generate_followup_message_flags_work_authorization_statement():
+    client = _FakeClient(responses=["Hi,\n\nI am a US citizen and available immediately.\n\nShawn Becker"])
+    result = llm_apply.generate_followup_message("thank_you", company="Acme", title="Engineer", client=client)
+    assert any("work-authorization" in w for w in result.warnings)

@@ -27,6 +27,11 @@ list-leads = "job_tracker.cli.list_leads:main"
 apply-package = "job_tracker.cli.apply_package:main"
 evaluate-backlog = "job_tracker.cli.evaluate_backlog:main"
 triage-recruiter-inbox = "job_tracker.cli.triage_recruiter_inbox:main"
+add-job = "job_tracker.cli.add_job:main"
+log-contact = "job_tracker.cli.log_contact:main"
+attach-document = "job_tracker.cli.attach_document:main"
+list-contacts = "job_tracker.cli.list_contacts:main"
+generate-message = "job_tracker.cli.generate_message:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]

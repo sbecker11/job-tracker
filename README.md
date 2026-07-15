@@ -59,6 +59,11 @@ recruiting Gmail inbox
 | `src/job_tracker/pipeline/triage.py` | Classify → extract → resolve → LLM-evaluate (+ auto-generate on pursue) for one recruiter-inbox message, deciding a PURSUE/SKIP/NEEDS_REVIEW outcome — never touches Gmail or the DB itself |
 | `src/job_tracker/email/gmail_writer.py` | The only place in this repo that writes to Gmail — labels a message `JobTracker/PURSUE\|SKIP\|NEEDS_REVIEW` and archives it |
 | `src/job_tracker/cli/triage_recruiter_inbox.py` | Runs `pipeline/triage.py` over `Category/recruiter_job` inbox mail, persists leads + the message outcome, and relabels/archives via `gmail_writer.py` (`triage-recruiter-inbox`) |
+| `src/job_tracker/cli/add_job.py` | Interactively add a job that didn't come from a triaged email (`add-job`) |
+| `src/job_tracker/cli/log_contact.py` | Log a manual conversation or meeting/interview against an existing job (`log-contact`) |
+| `src/job_tracker/cli/attach_document.py` | Attach a local file or URL (signed RTR, NDA, JD PDF, etc.) to an existing job (`attach-document`) |
+| `src/job_tracker/cli/list_contacts.py` | Report every tracked contact across all jobs — name, company, role, phone, email (`list-contacts`) |
+| `src/job_tracker/cli/generate_message.py` | Draft a thank-you or status-check-in follow-up email via the same LLM pipeline used for résumés/cover letters (`generate-message`) |
 | `config/framework.yaml` | Dealbreakers + skills vocabulary, transcribed from `~/CLAUDE.md` |
 | `docs/JOB_CRM_VISION.md` | Design doc: Job as a first-class object — contacts, conversations, documents, meetings, offers, and the 5 use cases (dedupe alerts, follow-ups, offer comparison, market-withdrawal notice) this is building toward |
 | `docs/CATEGORY_HANDLER_EXTENSIBILITY.md` | Design doc: how the classify → decide → label/archive pattern generalizes beyond `recruiter_job` to future comms-migration categories |
@@ -133,6 +138,55 @@ Run comms-migration's classifier first (or on a schedule) so the label
 exists before job-tracker polls it — this repo never applies that label
 itself.
 
+### Historical backlog: job-lead mail from before the recruiting funnel existed
+
+The recruiting funnel's three source-address forwards (see
+[`routing-inventory.md`](https://github.com/sbecker11/comms-migration/blob/main/routing-inventory.md))
+were only confirmed working as of 2026-07-04 — anything that arrived before
+then never reached `shawnbecker.recruiting@gmail.com`. Two different gaps,
+two different fixes:
+
+1. **Mail that landed on `scbboston@gmail.com` (personal hub) directly** —
+   already sitting in Gmail, just never classified/triaged. Fully
+   recoverable with the tools above, run against a wider window:
+
+   ```bash
+   # comms-migration: label historical mail (any age, any inbox/archive
+   # state — dropping the default in:inbox + 365-day cutoff via --query/
+   # --newer-than 0) as Category/recruiter_job, etc.
+   python scripts/run_classifier.py --account personal_hub --dry-run \
+     --query "after:2026/1/1" --newer-than 0   # preview first
+   python scripts/run_classifier.py --account personal_hub \
+     --query "after:2026/1/1" --newer-than 0   # then for real
+
+   # job-tracker: triage what just got labeled. --account needs its own
+   # one-time gmail.modify consent for personal_hub the first time you
+   # drop --dry-run (separate from comms-migration's own personal_hub
+   # token — see "Write access" below). Drop `in:inbox` from the default
+   # query too: this mail was never archived by anything in this pipeline,
+   # so it may already be read/archived from ordinary personal-inbox use.
+   python scripts/triage_recruiter_inbox.py --account personal_hub --dry-run \
+     --query "label:Category/recruiter_job after:2026/1/1 -label:JobTracker/PURSUE -label:JobTracker/SKIP -label:JobTracker/NEEDS_REVIEW"
+   python scripts/triage_recruiter_inbox.py --account personal_hub \
+     --query "label:Category/recruiter_job after:2026/1/1 -label:JobTracker/PURSUE -label:JobTracker/SKIP -label:JobTracker/NEEDS_REVIEW"
+   ```
+
+2. **Mail that landed at one of the three forwarding *source* addresses**
+   (`shawn.becker@spexture.com` / Hostinger, `scb_boston@yahoo.com` /
+   `shawn.becker@yahoo.com` / Yahoo, `sbecker@alum.mit.edu` / MIT alumni
+   Outlook) **before its forward was set up** — this is the harder gap.
+   That mail never reached *any* Gmail account job-tracker or
+   comms-migration can read via the Gmail API; it's sitting (if it still
+   exists) in Hostinger webmail, Yahoo Mail, or the MIT-hosted Outlook
+   mailbox, none of which this pipeline has API access to.
+   `routing-inventory.md` already flags this as an open "historical
+   backlog risk." There's no automated fix here — check each mailbox by
+   hand for the Jan–Jul 2026 window and, for anything found, either
+   forward it into `shawnbecker.recruiting@gmail.com` (it'll flow through
+   the normal pipeline from there) or record it directly with
+   `scripts/add_job.py` (see "Manual (non-email) job management CLIs"
+   below) if the original message itself isn't worth chasing down.
+
 ### Re-authenticating when a login expires (should be rare now — see below)
 
 **Status as of 2026-07-13: this OAuth app (`job-tracker-desktop`, Google
@@ -203,6 +257,9 @@ python scripts/triage_recruiter_inbox.py --limit 10
 
 # Score only, never spend on résumé/cover-letter generation even on a pursue verdict
 python scripts/triage_recruiter_inbox.py --no-generate
+
+# Widen (or disable, with 0) the rejection-cooldown auto-disqualification window
+python scripts/triage_recruiter_inbox.py --rejection-cooldown-days 30
 ```
 
 - Only looks at mail comms-migration has already labeled
@@ -218,10 +275,16 @@ python scripts/triage_recruiter_inbox.py --no-generate
   tailored résumé + cover letter automatically (unless `--no-generate`),
   advances the lead to `package_generated` (or `pursued` with
   `--no-generate`), and archives the message under `JobTracker/PURSUE`.
-- **SKIP** (classified noise/rejection, or every extracted role scored
-  "pass"): advances the lead to `skipped` and archives under
-  `JobTracker/SKIP` — no Anthropic spend beyond the one evaluate call per
-  role.
+- **SKIP** (classified noise/rejection, every extracted role scored "pass",
+  or a role auto-disqualified by the rejection cooldown below): advances the
+  lead to `skipped` and archives under `JobTracker/SKIP` — no Anthropic spend
+  beyond the one evaluate call per (non-disqualified) role.
+- **Rejection cooldown:** before scoring a role, checks whether that
+  `(company, title)` was already marked `rejected` within the last
+  `--rejection-cooldown-days` (default 90) — if so, skips JD resolution and
+  the two-tier review pipeline entirely and records a `pass` verdict with a
+  `"disqualified: ..."` rationale instead. See the Lifecycle stages section
+  above for how a lead gets marked `rejected` in the first place.
 - **NEEDS_REVIEW** (recruiter outreach with no JD to score, an
   unparseable/incomplete extraction, or a "review" verdict): archived under
   `JobTracker/NEEDS_REVIEW` for a human look; nothing in `job_leads`
@@ -386,6 +449,10 @@ python scripts/list_leads.py --company "Acme" --title "Software Engineer" --show
 # Export everything to CSV for a spreadsheet pass
 python scripts/list_leads.py --csv ~/Desktop/job_leads.csv
 
+# Contacts tracked for a lead, and leads currently awaiting a response
+python scripts/list_leads.py --company "Acme" --title "Software Engineer" --show-contacts
+python scripts/list_leads.py --waiting
+
 # Advance leads through their lifecycle (models.LEAD_STAGES) as real-world progress happens
 python scripts/list_leads.py --verdict pursue --set-status pursued
 python scripts/list_leads.py --company "Acme" --title "Software Engineer" --set-status applied --on 2026-07-10
@@ -408,13 +475,38 @@ you after you've started using it.
 **Lifecycle stages (`models.LEAD_STAGES`):** `new` (unprocessed) → `pursued`
 (triage said pursue) → `package_generated` (résumé + cover letter rendered)
 → `applied` → `following_up` → `interviewing` → `offered` → `accepted` →
-`started`, with `skipped` as the off-ramp at any point. The triage flow
-(below) stamps `pursued`/`package_generated`/`skipped` automatically;
-everything from `applied` onward is real-world progress you report by hand
-with `list_leads.py --set-status <stage> [--on <date>]`. Each stage past
-`new` has its own `<stage>_at` timestamp column (e.g. `applied_at`), stamped
-once and never overwritten by a later re-run, so the DB keeps a timeline —
-not just a current state.
+`started`, with two off-ramps that can happen at any point: `skipped` (**we**
+decided not to pursue it) and `rejected` (**they** declined us). The triage
+flow (below) stamps `pursued`/`package_generated`/`skipped` automatically;
+everything from `applied` onward — including `rejected` — is real-world
+progress you report by hand with `list_leads.py --set-status <stage>
+[--on <date>]`. Each stage past `new` has its own `<stage>_at` timestamp
+column (e.g. `applied_at`), stamped once and never overwritten by a later
+re-run, so the DB keeps a timeline — not just a current state.
+
+```bash
+# Record a rejection you heard about (email, phone call, etc.)
+python scripts/list_leads.py --company "Acme" --title "Software Engineer" --set-status rejected
+```
+
+**Rejection cooldown / auto-disqualification:** a `rejected` lead also feeds
+back into the triage pipeline itself. `pipeline/store.find_recent_rejection()`
+checks, for every extracted role, whether that exact `(company, title)` (or a
+close fuzzy variant — same 0.92 similarity bar as the "multiple recruiters,
+same job" dedup below) was already marked `rejected` within the last N days
+(`--rejection-cooldown-days`, default 90, `0` disables it). If so,
+`triage_recruiter_inbox.py` short-circuits straight to a `pass` verdict —
+skipping the JD resolution and the two-tier review pipeline entirely, so a
+digest re-sending a still-open posting (or a different recruiter surfacing
+the same already-declined role) never re-spends an LLM call or a human's
+attention on it. `pipeline/store.record_rejection()` is the write side —
+`list_leads.py --set-status rejected` calls the same `advance_status()`
+machinery under the hood, so both paths stay in sync. `job_leads` also has
+`rejection_source`/`rejection_email_text`/`rejection_message_id` columns for
+recording the rejection's own details when they're known (currently populated
+by `record_rejection()` directly — auto-extracting these from a detected
+rejection email and staging them for confirmation is a planned follow-up, not
+yet wired into the live pipeline).
 
 Leads persist in `var/leads.db` (gitignored — personal data) across runs, so
 you can classify a batch, step away, and come back to review with
@@ -422,22 +514,21 @@ you can classify a batch, step away, and come back to review with
 
 ## Job CRM foundation (contacts, conversations, documents, meetings, offers)
 
-Full design/use cases: `docs/JOB_CRM_VISION.md`. Summary of what's built so
-far — `var/leads.db` now has five join tables hanging off a job's
-`normalized_key` (`pipeline/store.py`), each with its own dataclass in
-`pipeline/models.py`:
+Full design/use cases: `docs/JOB_CRM_VISION.md`. `var/leads.db` has five join
+tables hanging off a job's `normalized_key` (`pipeline/store.py`), each with
+its own dataclass in `pipeline/models.py`:
 
 | Table | Dataclass | Answers |
 |---|---|---|
-| `job_contacts` | `JobContact` | Who's involved (recruiter/hiring manager/referral). Dedupes on email within a job. |
-| `job_conversations` | `JobConversation` | What was said, when, by which contact. `latest_conversation_at()` backs the (not-yet-built) follow-up nudge report. |
-| `job_documents` | `JobDocument` | JD snapshot, résumé, cover letter, RTR, availability sent — versioned per `doc_type`, auto-incrementing. |
+| `job_contacts` | `JobContact` | Who's involved (recruiter/hiring manager/referral) — name, email, **phone**. Dedupes on email within a job; a repeat call backfills name/phone onto the existing row if it was missing one. |
+| `job_conversations` | `JobConversation` | What was said, when, by which contact, which direction. `latest_conversation_at()` backs the follow-up nudge check. Also drives `job_leads.awaiting_response_since` — see below. |
+| `job_documents` | `JobDocument` | JD snapshot, résumé, cover letter, RTR, availability sent, generated follow-up messages — versioned per `doc_type`, auto-incrementing. |
 | `job_meetings` | `JobMeeting` | Scheduled/completed interviews, linked to a contact. |
 | `job_offers` | `JobOffer` | Comp/benefits/deadline per job, for side-by-side comparison across jobs in `offered` status. |
 
-`triage_recruiter_inbox.py` now records a `JobContact` + `JobConversation`
-for every message it triages, and calls `find_matching_job()` before doing
-so: if a new (company, title) fuzzy-matches an *existing* job well enough
+`triage_recruiter_inbox.py` records a `JobContact` + `JobConversation` for
+every message it triages, and calls `find_matching_job()` before doing so:
+if a new (company, title) fuzzy-matches an *existing* job well enough
 (`find_matching_job` / `find_similar_jobs` in `pipeline/store.py`, same
 `SequenceMatcher`-based approach `contacts/store.py` uses for organization
 dedup — ratio ≥ 0.92 auto-merges, 0.75–0.92 is logged as a candidate but not
@@ -448,10 +539,82 @@ rows themselves are unaffected by this fuzzy match; only the contact/
 conversation linkage uses it, so JD text/scoring never gets silently merged
 between two postings that just have similar titles.
 
-Not yet built (see `JOB_CRM_VISION.md` §5 open questions and the use cases
-without a CLI yet): manual (non-email) job creation, follow-up nudge
-reports, offer-comparison reports, market-withdrawal drafting, and
-transition-validation on `advance_status`.
+### "Whose turn is it" — `awaiting_response_since`
+
+`job_leads.awaiting_response_since` is a nullable timestamp, orthogonal to
+`status`/`LEAD_STAGES` (a lead can be `applied` *and* waiting-on-them, or
+`interviewing` *and* waiting-on-them — it's never a lifecycle stage of its
+own). `store.add_job_conversation()` keeps it in sync as a side effect: an
+`outbound` conversation (you spoke) sets it to that conversation's
+`occurred_at`; an `inbound` one (they spoke) clears it; `direction="other"`
+leaves it untouched. For cases direction alone doesn't capture well (e.g. a
+completed interview logged as a `JobMeeting`, which has no `direction` of
+its own), pass `awaiting_response=True/False` to `add_job_conversation()`
+directly, or call `store.set_awaiting_response()` standalone.
+`list_leads.py`'s default table has a `WAITING` column, and `--waiting`
+filters to just the leads currently awaiting a response.
+
+### Manual (non-email) job management CLIs
+
+Four CLIs cover the use cases that don't come through the triaged-email
+path — manual lead creation, ad-hoc contact logging, and document
+attachment (`JOB_CRM_VISION.md` UC-1/UC-3/UC-4):
+
+```bash
+# Add a job that came from a careers page, a referral, or a conversation —
+# not a triaged email. Purely interactive (prompts for company/title/status/
+# optional contact); no flags to memorize.
+python scripts/add_job.py --db var/leads.db
+
+# Log a manual email/call exchange, or a scheduled/completed interview,
+# against an existing job.
+python scripts/log_contact.py --company Acme --title "Software Engineer" \
+    --conversation --channel email --direction outbound --summary "Sent a follow-up asking about status"
+
+python scripts/log_contact.py --company Acme --title "Software Engineer" \
+    --meeting --kind technical --status completed --notes "Went well" --waiting
+
+# Attach a signed RTR, NDA, or any other local file/URL to a job.
+python scripts/attach_document.py --company Acme --title "Software Engineer" \
+    --doc-type rtr --file ~/Desktop/signed_rtr.pdf
+
+# List every tracked contact across all jobs (name, company, role, phone, email).
+python scripts/list_contacts.py
+python scripts/list_contacts.py --company Acme --csv ~/Desktop/contacts.csv
+```
+
+`log_contact.py`/`attach_document.py` resolve the job by exact
+(company, title) match; if nothing matches, they print `find_similar_jobs()`
+candidates as a "did you mean" hint rather than guessing and silently
+attaching to the wrong job — use `add_job.py` first if it's genuinely new.
+
+### Generated follow-up messages
+
+`scripts/generate_message.py` drafts a short thank-you (post-interview) or
+status-check-in (stale application) email via the same Anthropic pipeline
+that generates résumés/cover letters (`pipeline/llm_apply.py`'s
+`generate_followup_message()`) — same candidate-profile input (`~/CLAUDE.md`)
+and the same mechanical house-rule safety net (no banned terms, no
+work-authorization statements, no compensation figures). It's saved as a
+plain-text file under `--output-root` (default same
+`~/Desktop/Resumes/2026/<Company>/` tree as résumés) and recorded as a
+`JobDocument`, but **never sent automatically** — always printed for review
+first, with any house-rule warnings on stderr:
+
+```bash
+python scripts/generate_message.py --company Acme --title "Software Engineer" --kind thank_you \
+    --context "We discussed the migration to event-driven architecture"
+
+python scripts/generate_message.py --company Acme --title "Software Engineer" --kind status_check_in
+```
+
+The contact name is auto-picked from the job's most-recently-logged
+`JobContact` unless overridden with `--contact-name`; `status_check_in`
+automatically computes "days since contact" from `awaiting_response_since`.
+
+Not yet built (see `JOB_CRM_VISION.md` §5 open questions): offer-comparison
+reports, market-withdrawal drafting, and transition-validation on
+`advance_status`.
 
 ## Limits
 

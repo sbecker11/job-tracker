@@ -10,7 +10,7 @@ from pathlib import Path
 
 from job_tracker.pipeline.llm_apply import EvaluationResult, render_jd_review
 from job_tracker.pipeline.models import LEAD_STAGES
-from job_tracker.pipeline.store import DEFAULT_DB_PATH, advance_status, connect, list_leads
+from job_tracker.pipeline.store import DEFAULT_DB_PATH, advance_status, connect, list_job_contacts, list_leads
 
 _COLUMNS = [
     "company",
@@ -40,6 +40,10 @@ _COLUMNS = [
     "accepted_at",
     "started_at",
     "skipped_at",
+    "rejected_at",
+    "rejection_source",
+    "rejection_message_id",
+    "awaiting_response_since",
     "jd_text",
 ]
 
@@ -110,6 +114,17 @@ def main(argv: list[str] | None = None) -> int:
         "(best combined with --company/--title to narrow to one)",
     )
     ap.add_argument(
+        "--show-contacts",
+        action="store_true",
+        help="Print every tracked contact (name, role, phone, email) for each matching lead "
+        "(best combined with --company/--title to narrow to one)",
+    )
+    ap.add_argument(
+        "--waiting",
+        action="store_true",
+        help="Only show leads currently awaiting a response (awaiting_response_since is set)",
+    )
+    ap.add_argument(
         "--set-status",
         choices=LEAD_STAGES,
         help="Advance all matching rows to this lifecycle stage (e.g. --company Acme --title "
@@ -139,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.title:
         needle = args.title.lower()
         rows = [r for r in rows if needle in r["title"].lower()]
+    if args.waiting:
+        rows = [r for r in rows if r.get("awaiting_response_since")]
 
     if args.set_status:
         for r in rows:
@@ -146,6 +163,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Updated {len(rows)} row(s) to status={args.set_status}")
         conn.close()
         return 0
+
+    contacts_by_key: dict[str, list] = {}
+    if args.show_contacts:
+        for r in rows:
+            contacts_by_key[r["normalized_key"]] = [dict(c) for c in list_job_contacts(conn, r["normalized_key"])]
 
     conn.close()
 
@@ -185,8 +207,24 @@ def main(argv: list[str] | None = None) -> int:
             print(render_jd_review(_row_to_evaluation(r), company=r["company"], title=r["title"]))
         return 0
 
+    if args.show_contacts:
+        for i, r in enumerate(rows):
+            if i:
+                print("\n" + "=" * 70 + "\n")
+            print(f"{r['title']} @ {r['company']}")
+            contacts = contacts_by_key.get(r["normalized_key"], [])
+            if not contacts:
+                print("  (no contacts tracked)")
+                continue
+            for c in contacts:
+                role = f" [{c['role']}]" if c.get("role") else ""
+                phone = f"  {c['phone']}" if c.get("phone") else ""
+                email = f"  {c['email']}" if c.get("email") else ""
+                print(f"  {c.get('name') or '(no name)'}{role}{email}{phone}")
+        return 0
+
     header = (
-        f"{'KW%':>5}  {'KW-VERD':<8} {'LLM%':>5}  {'LLM-VERD':<8} {'STATUS':<9} "
+        f"{'KW%':>5}  {'KW-VERD':<8} {'LLM%':>5}  {'LLM-VERD':<8} {'STATUS':<9} {'WAITING':<10} "
         f"{'COMPANY':<24} {'TITLE':<40}"
     )
     print(header)
@@ -194,11 +232,15 @@ def main(argv: list[str] | None = None) -> int:
     for r in rows:
         llm_pct = f"{r['llm_match_pct']:>4.0f}%" if r.get("llm_match_pct") is not None else "  n/a"
         llm_verdict = r.get("llm_verdict") or "-"
+        waiting = (r.get("awaiting_response_since") or "-")[:10]
         print(
-            f"{r['match_pct']:>4.0f}%  {r['verdict']:<8} {llm_pct}  {llm_verdict:<8} {r['status']:<9} "
+            f"{r['match_pct']:>4.0f}%  {r['verdict']:<8} {llm_pct}  {llm_verdict:<8} {r['status']:<9} {waiting:<10} "
             f"{r['company'][:24]:<24} {r['title'][:40]:<40}"
         )
-    print(f"\n{len(rows)} lead(s). ('KW' = keyword scorer, 'LLM' = CLAUDE.md framework via Anthropic API, n/a = not yet LLM-evaluated)")
+    print(
+        f"\n{len(rows)} lead(s). ('KW' = keyword scorer, 'LLM' = CLAUDE.md framework via Anthropic API, "
+        f"n/a = not yet LLM-evaluated, 'WAITING' = awaiting_response_since date, '-' = not currently waiting)"
+    )
     return 0
 
 

@@ -817,6 +817,20 @@ def _repair_house_rule_violations(
         return content, []
 
 
+def _check_house_rules_text(text: str) -> list[str]:
+    """Same mechanical safety net as `_check_house_rules`, for callers that
+    generate plain text rather than the résumé/cover-letter JSON shape
+    (see `generate_followup_message` below)."""
+    warnings = [f"banned term found: {term!r}" for term in _BANNED_TERMS if term.lower() in text.lower()]
+    if _WORK_AUTH_RE.search(text):
+        warnings.append(
+            "possible work-authorization/citizenship/clearance statement found — remove before sending"
+        )
+    if _COMP_FIGURE_RE.search(text):
+        warnings.append("possible compensation figure/rate/range found — remove before sending")
+    return warnings
+
+
 def _check_house_rules(content: dict, *, company: str) -> list[str]:
     """Mechanical safety net for the house rules the generation prompt states
     in natural language. Returns human-readable warning strings; never
@@ -839,6 +853,80 @@ def _check_house_rules(content: dict, *, company: str) -> list[str]:
         )
 
     return warnings
+
+
+_FOLLOWUP_KINDS = ("thank_you", "status_check_in")
+
+_THANK_YOU_SYSTEM_PROMPT = """You are drafting a short, warm, professional thank-you email from {name} to a \
+contact after a job interview. 3-5 sentences: thank them for their time, reference any specific discussion \
+points given below if there are any, reaffirm genuine interest in the role, and note you're glad to answer any \
+follow-up questions. No subject line. Start with "Hi <FirstName>," (or "Hi," if no name is given) and sign off \
+with "{name}" on its own line at the end — no other placeholder brackets anywhere in the output. Never invent \
+interview details beyond what's given below. Never state a work-authorization/citizenship/clearance position, \
+and never mention a dollar figure, hourly rate, salary, or compensation range.
+
+Candidate background (for tone/context only — do not summarize or dump this into the letter):
+{profile}"""
+
+_STATUS_CHECK_IN_SYSTEM_PROMPT = """You are drafting a brief, polite check-in email from {name} to a recruiter \
+or hiring contact, following up because some time has passed with no update on an application. 2-4 sentences: \
+reference the role by name, note it's been a while since the last update, ask for a status update, and \
+reaffirm continued interest — no pressure, impatience, or ultimatum in tone. No subject line. Start with "Hi \
+<FirstName>," (or "Hi," if no name is given) and sign off with "{name}" on its own line at the end — no other \
+placeholder brackets anywhere in the output. Never state a work-authorization/citizenship/clearance position, \
+and never mention a dollar figure, hourly rate, salary, or compensation range.
+
+Candidate background (for tone/context only — do not summarize or dump this into the letter):
+{profile}"""
+
+
+@dataclass
+class FollowupMessageResult:
+    kind: str  # "thank_you" | "status_check_in"
+    text: str
+    warnings: list[str] = field(default_factory=list)
+    metrics: CallMetrics | None = None
+
+
+def generate_followup_message(
+    kind: str,
+    *,
+    company: str,
+    title: str,
+    contact_name: str = "",
+    context: str = "",
+    days_since_contact: int | None = None,
+    model: str = DEFAULT_MODEL,
+    client=None,
+) -> FollowupMessageResult:
+    """Draft a short follow-up email (never sent automatically — the caller
+    saves/prints it for you to review and send by hand, same human-in-the-
+    loop principle as the withdrawal-note idea in docs/JOB_CRM_VISION.md
+    UC-8). `kind`:
+      - "thank_you": post-interview thank-you note.
+      - "status_check_in": a "haven't heard back in a while" nudge, meant
+        to pair with `store.find_recent_rejection`'s sibling concept —
+        `awaiting_response_since`/UC-6 — for deciding *when* one's overdue.
+    """
+    if kind not in _FOLLOWUP_KINDS:
+        raise ValueError(f"kind must be one of {_FOLLOWUP_KINDS}, got {kind!r}")
+
+    profile = _load_candidate_profile()
+    template = _THANK_YOU_SYSTEM_PROMPT if kind == "thank_you" else _STATUS_CHECK_IN_SYSTEM_PROMPT
+    system = template.format(name=CANDIDATE_NAME, profile=profile)
+
+    user_lines = [f"Company: {company}", f"Role: {title}"]
+    if contact_name:
+        user_lines.append(f"Contact name: {contact_name}")
+    if days_since_contact is not None:
+        user_lines.append(f"Days since last contact: {days_since_contact}")
+    if context:
+        user_lines.append(f"Additional context: {context}")
+
+    text, metrics = _call(
+        system, "\n".join(user_lines), model=model, client=client, max_tokens=1024, step="generate_followup"
+    )
+    return FollowupMessageResult(kind=kind, text=text.strip(), warnings=_check_house_rules_text(text), metrics=metrics)
 
 
 def _safe_filename(name: str) -> str:

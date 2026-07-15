@@ -10,8 +10,8 @@ import pytest
 
 from job_tracker.cli.list_leads import main as list_leads_main
 from job_tracker.pipeline.llm_apply import CallMetrics, EvaluationResult
-from job_tracker.pipeline.models import JobLead
-from job_tracker.pipeline.store import connect, update_llm_evaluation, upsert_lead
+from job_tracker.pipeline.models import JobContact, JobConversation, JobLead
+from job_tracker.pipeline.store import add_job_contact, add_job_conversation, connect, update_llm_evaluation, upsert_lead
 
 
 @pytest.fixture()
@@ -196,3 +196,53 @@ def test_list_leads_show_review_handles_legacy_flat_string_notes(seeded_db: Path
     assert "No C2C-only requirement identified." in out
     assert "Backend APIs -> strong evidence in prior roles." in out
     assert "Recommendation: PURSUE" in out
+
+
+def test_list_leads_show_contacts_prints_tracked_contacts(seeded_db: Path, capsys):
+    conn = connect(seeded_db)
+    key = JobLead(company="Stripe", title="Software Engineer", source_message_id="m1", source_label="single-jd").normalized_key
+    add_job_contact(conn, JobContact(job_key=key, name="Jane Doe", email="jane@stripe.com", phone="555-1234", role="recruiter"))
+    conn.close()
+
+    rc = list_leads_main(["--db", str(seeded_db), "--company", "Stripe", "--show-contacts"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Software Engineer @ Stripe" in out
+    assert "Jane Doe" in out
+    assert "555-1234" in out
+    assert "jane@stripe.com" in out
+
+
+def test_list_leads_show_contacts_handles_no_contacts(seeded_db: Path, capsys):
+    rc = list_leads_main(["--db", str(seeded_db), "--company", "BigCorp", "--show-contacts"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "no contacts tracked" in out
+
+
+def test_list_leads_waiting_filter_only_shows_awaiting_response_leads(seeded_db: Path, capsys):
+    conn = connect(seeded_db)
+    key = JobLead(company="Stripe", title="Software Engineer", source_message_id="m1", source_label="single-jd").normalized_key
+    add_job_conversation(conn, JobConversation(job_key=key, direction="outbound", summary="Applied"))
+    conn.close()
+
+    rc = list_leads_main(["--db", str(seeded_db), "--waiting"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Stripe" in out
+    assert "BigCorp" not in out
+
+
+def test_list_leads_default_table_shows_waiting_column(seeded_db: Path, capsys):
+    conn = connect(seeded_db)
+    key = JobLead(company="Stripe", title="Software Engineer", source_message_id="m1", source_label="single-jd").normalized_key
+    add_job_conversation(
+        conn, JobConversation(job_key=key, direction="outbound", summary="Applied", occurred_at="2026-06-01T00:00:00+00:00")
+    )
+    conn.close()
+
+    rc = list_leads_main(["--db", str(seeded_db)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "WAITING" in out
+    assert "2026-06-01" in out
