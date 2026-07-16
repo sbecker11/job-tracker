@@ -19,3 +19,7 @@ client_secret*.json
 # Generated/personal artifacts (regenerate via scripts/render_pending_actions.py
 # etc.) — derived from leads.db, which is itself gitignored above.
 var/
+
+# Local Mac app build products (install via tools/*/install.sh). Contain
+# absolute machine paths in Resources/config.json — never commit.
+tools/*/build/

@@ -88,13 +88,50 @@ python scripts/render_pending_actions.py
 ```
 
 Regenerates `var/pending-actions.html` — a static, `file://`-bookmarkable
-snapshot with a sortable/filterable "needs your review" table (linked
-straight to each company's résumé folder), plus collapsed sections for
-already-`pass`ed-but-not-`skipped` leads, JD-unresolved (`REVIEW NEEDED`)
-leads, thin/0%-score leads, and everything already past `status='new'`.
-By default it also refreshes every `status='new'` lead's rule-based score
-with the current scorer before rendering (pass `--no-rescore` to skip that
-and just render whatever's already stored). Re-run any time after the
+snapshot laid out as a **sales funnel toward "ready to apply"** (redesigned
+2026-07-15, replacing an earlier flatter needs-review/auto-skipped/unresolved
+split that made "how close am I to actually submitting something" hard to
+answer at a glance). Company-name links open that lead's package folder in
+**Finder** via the local `revealfolder://` helper — install once with
+`tools/reveal-folder/install.sh`. **Regenerate page** re-runs this same
+script via `tools/refresh-pending/install.sh` (`refreshpending://run`).
+Browsers will ask to allow each scheme the first time you click. A
+horizontal strip of 5 boxes runs target-to-farthest, left to right, each
+clickable to jump to its section below:
+
+1. **Ready to apply** (the target) — `llm_verdict='pursue'`, still sitting at
+   `status='package_generated'` (i.e. genuinely not yet acted on), with both
+   a résumé and cover letter confirmed present **on disk**, not just claimed
+   by the DB status.
+2. **Needs your decision (forced package)** — a package already got
+   generated (via `apply_package.py --force`, or the pursue-but-missing-files
+   edge case) despite a non-pursue verdict; read the review, then either
+   submit anyway or mark `skipped`.
+3. **Needs your decision** — a real full-LLM-review ran and came back
+   `review` (or, rarely, a `pursue` that's somehow still stuck at `status=new`
+   instead of already having a package — shown here rather than hidden, since
+   that'd indicate a pipeline bug). This is still the one sortable/filterable
+   table with the "copy prompt" button.
+4. **Awaiting full-LLM-review** — cleared the free rule-based score's
+   `llm_review_min_pct` gate but the real LLM call hasn't run yet; nothing to
+   decide, just wait for the next hourly cycle (or force it manually).
+5. **JD unresolved** — no usable JD text at all yet (`verdict='REVIEW NEEDED'`);
+   nothing downstream can happen until a human finds and pastes in the real
+   posting.
+
+Leads that were never going to clear the LLM-review gate, or that the LLM
+already said `pass` on, are deliberately **not** part of the funnel — they're
+low-priority chaff, not something blocking your target action — and collapse
+into a single small "N leads not prioritized" footnote instead of their own
+section. Separately, and below the funnel entirely, a **"Tracking submitted
+applications"** section groups everything already past `package_generated`
+(`applied`, `interviewing`, `skipped`, `rejected`, etc.) purely for follow-up
+tracking, since nothing needs to happen to make those "ready" — they're
+already resolved one way or another.
+
+By default the script also refreshes every `status='new'` lead's rule-based
+score with the current scorer before rendering (pass `--no-rescore` to skip
+that and just render whatever's already stored). Re-run any time after the
 backlog changes — it's free and local, no API calls.
 
 Every table also shows an **Age (days)** column (days since `first_seen`)

@@ -36,9 +36,18 @@ if str(_SRC) not in sys.path:
 
 from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT, _safe_filename  # noqa: E402
 from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect  # noqa: E402
-from job_tracker.scoring.scorer import score_jd  # noqa: E402
+from job_tracker.scoring.scorer import DEFAULT_FRAMEWORK_PATH, load_framework, score_jd  # noqa: E402
 
 DEFAULT_OUTPUT_HTML = _REPO_ROOT / "var" / "pending-actions.html"
+
+# The same gate `scoring.scorer.should_run_llm_review()` uses to decide
+# whether a `status='new'` lead is worth spending a real LLM call on.
+# Read fresh from config/framework.yaml (not hardcoded) so this page can
+# never silently drift out of sync with the actual pipeline threshold —
+# it's what separates "awaiting LLM review" (cleared the gate, just hasn't
+# been evaluated yet) from "not prioritized" (below the gate, LLM review
+# will never automatically run on it).
+LLM_REVIEW_GATE_PCT = (load_framework(DEFAULT_FRAMEWORK_PATH).get("thresholds") or {}).get("llm_review_min_pct", 70)
 
 # Single source of truth for the "this lead is getting stale" amber-highlight
 # threshold — interpolated into both the JS (STALE_DAYS) and the hint text
@@ -100,6 +109,24 @@ def _lead_folder_and_count(output_root: Path, *, company: str, title: str, multi
     return rel, count
 
 
+def _has_resume_and_cover(folder: Path) -> bool:
+    """True if `folder` already contains both a résumé and a cover-letter
+    docx — the two artifacts `llm_apply.generate_package()` writes on a
+    *pursue* verdict (see CLAUDE.md §11). Matched case-insensitively by
+    substring ("resume" / "cover") rather than the exact
+    `Shawn_Becker_Resume_...` / `Shawn_Becker_coverLetter_...` naming, since
+    the cover-letter file's casing has drifted slightly in practice (e.g.
+    `coverLetter` vs `Cover_Letter`) and this only needs to answer "did the
+    package actually get written," not enforce the naming convention
+    itself. Used to build the "Ready to apply" section below — a DB status
+    of `package_generated` on its own is a claim, not proof; this checks
+    the claim against what's actually on disk."""
+    if not folder.is_dir():
+        return False
+    names = [p.name.lower() for p in folder.glob("*.docx")]
+    return any("resume" in n for n in names) and any("cover" in n for n in names)
+
+
 def _fmt_pct(pct: float | None) -> float:
     return round(pct or 0.0, 1)
 
@@ -130,6 +157,25 @@ def _age_days(first_seen: str | None, now: datetime) -> int:
 
 
 def render(conn, *, output_root: Path, now: datetime) -> dict:
+    """Builds a "sales funnel toward Ready to apply" (added 2026-07-15,
+    replacing the earlier flatter needs-review/auto-skipped/unresolved
+    split): every `status='new'` or `status='package_generated'` lead lands
+    in exactly one bucket below, ordered by how close it is to the one
+    manual action that matters — submitting an application with generated
+    documents:
+
+        JD unresolved -> awaiting LLM review -> needs your decision ->
+        needs your decision (forced package) -> READY TO APPLY (target)
+
+    Leads that were never going to clear the LLM-review gate (rule score
+    below LLM_REVIEW_GATE_PCT) or that the LLM already said "pass" on are
+    deliberately NOT part of this funnel — they're low-priority chaff, not
+    something blocking your target action, and get folded into
+    `not_prioritized` (rendered as a single small footnote link, not a
+    funnel stage). Everything past `package_generated` (pursued/applied/
+    interviewing/etc.) is a separate concern — tracking responses on leads
+    you've *already* submitted — and lands in `manual_handled` instead,
+    unchanged from before."""
     rows = [dict(r) for r in conn.execute(f"SELECT {_LEAD_COLUMNS} FROM job_leads")]
 
     # Per-company distinct titles across ALL rows/statuses (mirrors
@@ -139,25 +185,24 @@ def render(conn, *, output_root: Path, now: datetime) -> dict:
     for r in rows:
         company_titles[r["company"]].add(r["title"])
 
-    pending_review: list[dict] = []
-    auto_skipped: list[dict] = []
-    unresolved: list[dict] = []
-    needs_manual_jd: list[dict] = []
+    jd_unresolved: list[dict] = []
+    awaiting_llm_review: list[dict] = []
+    needs_decision: list[dict] = []
+    needs_decision_forced: list[dict] = []
+    ready_to_apply: list[dict] = []
+    not_prioritized: list[dict] = []
     manual_status: defaultdict[str, Counter] = defaultdict(Counter)
 
     for r in rows:
-        if r["status"] != "new":
-            manual_status[r["status"]][r["company"]] += 1
+        status = r["status"]
+        if status not in ("new", "package_generated"):
+            manual_status[status][r["company"]] += 1
             continue
 
         multi_lead = len(company_titles[r["company"]]) > 1
         folder_path, fc = _lead_folder_and_count(
             output_root, company=r["company"], title=r["title"], multi_lead=multi_lead
         )
-        verdict = r["llm_verdict"] or r["verdict"] or "review"
-        pct = r["llm_match_pct"] if r["llm_match_pct"] is not None else r["match_pct"]
-        pct = _fmt_pct(pct)
-
         entry = {
             "company": r["company"],
             "title": r["title"],
@@ -165,14 +210,41 @@ def render(conn, *, output_root: Path, now: datetime) -> dict:
             "folderPath": folder_path,
             "ageDays": _age_days(r["first_seen"], now),
         }
-        if verdict == "REVIEW NEEDED":
-            needs_manual_jd.append(entry)
-        elif pct > 0 and verdict in ("review", "pursue"):
-            pending_review.append({**entry, "matchPct": pct, "verdict": verdict})
-        elif pct > 0 and verdict == "pass":
-            auto_skipped.append({**entry, "matchPct": pct})
+
+        if status == "package_generated":
+            # "Ready to apply" needs proof, not just the DB's claim: both
+            # docx files actually present on disk (_has_resume_and_cover).
+            # Anything short of that — a non-pursue verdict that got a
+            # package anyway via --force, OR a pursue verdict whose files
+            # are somehow missing — needs a human decision (submit anyway,
+            # regenerate, or discard), so it's "forced", not "ready".
+            pct = _fmt_pct(r["llm_match_pct"])
+            if r["llm_verdict"] == "pursue" and _has_resume_and_cover(output_root / folder_path):
+                ready_to_apply.append({**entry, "matchPct": pct})
+            else:
+                needs_decision_forced.append({**entry, "matchPct": pct, "verdict": r["llm_verdict"] or "review"})
+            continue
+
+        # status == "new" from here down.
+        if r["verdict"] == "REVIEW NEEDED":
+            jd_unresolved.append(entry)
+        elif r["llm_verdict"] in ("review", "pursue"):
+            # A full LLM review already ran and came back review (the
+            # normal case) or — rarely — pursue but the lead is somehow
+            # still stuck at "new" instead of having auto-generated a
+            # package (shouldn't happen; surfaced here rather than hidden
+            # so a pipeline bug would actually be visible).
+            needs_decision.append({**entry, "matchPct": _fmt_pct(r["llm_match_pct"]), "verdict": r["llm_verdict"]})
+        elif not r["llm_verdict"] and (r["match_pct"] or 0) >= LLM_REVIEW_GATE_PCT:
+            # Cleared the cheap-score gate but the real LLM call hasn't run
+            # yet — purely a "wait for the pipeline" (or run it manually)
+            # state, not something requiring a judgment call.
+            awaiting_llm_review.append({**entry, "matchPct": _fmt_pct(r["match_pct"])})
         else:
-            unresolved.append(entry)
+            # Either the LLM already said "pass", or the rule-based score
+            # never cleared the gate in the first place — not worth
+            # spending attention on individually.
+            not_prioritized.append(entry)
 
     manual_handled = [
         {
@@ -188,22 +260,20 @@ def render(conn, *, output_root: Path, now: datetime) -> dict:
     # stale unreviewed belongs at the top, not just the highest-scoring one.
     # The main table remains client-side re-sortable by any column (see the
     # JS below); these server-side orders are just its initial state.
-    pending_review.sort(key=lambda l: (-l["ageDays"], -l["matchPct"]))
-    auto_skipped.sort(key=lambda l: (-l["ageDays"], -l["matchPct"]))
-    unresolved.sort(key=lambda l: (-l["ageDays"], l["company"].lower()))
-    needs_manual_jd.sort(key=lambda l: (-l["ageDays"], l["company"].lower()))
-
-    status_counts = Counter(r["status"] for r in rows)
-    new_verdict_counts = Counter(r["llm_verdict"] or r["verdict"] or "review" for r in rows if r["status"] == "new")
+    jd_unresolved.sort(key=lambda l: (-l["ageDays"], l["company"].lower()))
+    awaiting_llm_review.sort(key=lambda l: (-l["ageDays"], -l["matchPct"]))
+    needs_decision.sort(key=lambda l: (-l["ageDays"], -l["matchPct"]))
+    needs_decision_forced.sort(key=lambda l: (-l["ageDays"], -l["matchPct"]))
+    ready_to_apply.sort(key=lambda l: (-l["ageDays"], -l["matchPct"]))
 
     return {
-        "pending_review": pending_review,
-        "auto_skipped": auto_skipped,
-        "unresolved": unresolved,
-        "needs_manual_jd": needs_manual_jd,
+        "jd_unresolved": jd_unresolved,
+        "awaiting_llm_review": awaiting_llm_review,
+        "needs_decision": needs_decision,
+        "needs_decision_forced": needs_decision_forced,
+        "ready_to_apply": ready_to_apply,
+        "not_prioritized_count": len(not_prioritized),
         "manual_handled": manual_handled,
-        "status_counts": status_counts,
-        "new_verdict_counts": new_verdict_counts,
         "total_leads": len(rows),
         "generated_at": now,
     }
@@ -240,13 +310,35 @@ _TEMPLATE = r"""<!DOCTYPE html>
   h1 { font-size: 22px; margin: 0 0 4px; }
   .subtitle { color: var(--text-secondary); font-size: 13px; margin-bottom: 24px; }
   .subtitle code { color: var(--text); background: var(--panel); padding: 1px 5px; border-radius: 4px; }
-  .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 20px; }
-  .stat { border: 1px solid var(--border); border-radius: 8px; padding: 14px; background: var(--panel); }
-  .stat .value { font-size: 24px; font-weight: 600; }
-  .stat .label { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
-  .stat.warning .value { color: var(--warning); }
-  .stat.danger .value { color: var(--danger); }
-  .stat.success .value { color: var(--success); }
+  .funnel-caption { font-size: 12px; color: var(--text-tertiary); margin-bottom: 8px; }
+  .funnel { display: flex; align-items: stretch; gap: 0; margin-bottom: 8px; overflow-x: auto; }
+  .funnel-box {
+    flex: 1 1 0;
+    min-width: 140px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    background: var(--panel);
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  .funnel-box:hover { border-color: var(--accent); }
+  .funnel-box .value { font-size: 26px; font-weight: 700; }
+  .funnel-box .label { font-size: 11.5px; color: var(--text-secondary); margin-top: 4px; line-height: 1.35; }
+  .funnel-box.target { border: 2px solid var(--success); background: rgba(76,175,125,0.08); }
+  .funnel-box.target .value { color: var(--success); }
+  .funnel-box.blocker .value { color: var(--warning); }
+  .funnel-box.blocker-far .value { color: var(--danger); }
+  .funnel-arrow {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    padding: 0 6px;
+    color: var(--text-tertiary);
+    font-size: 16px;
+  }
+  .funnel-note { font-size: 12px; color: var(--text-tertiary); margin: 4px 0 20px; }
+  .funnel-note a { color: var(--info); cursor: pointer; text-decoration: underline; }
   .callout {
     border: 1px solid var(--border);
     border-left: 3px solid var(--info);
@@ -335,31 +427,82 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .company-link { color: var(--text); text-decoration: none; }
   .company-link:hover { text-decoration: underline; color: var(--info); }
   .file-count { color: var(--text-tertiary); font-weight: 400; font-size: 11px; margin-left: 4px; }
+  .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
+  .page-header h1 { margin: 0; }
+  .regen-btn {
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+    padding: 7px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .regen-btn:hover { border-color: var(--accent); color: var(--info); }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>Pending job-tracker actions</h1>
+  <div class="page-header">
+    <h1>Pending job-tracker actions</h1>
+    <a class="regen-btn" href="refreshpending://run"
+       title="Re-run scripts/render_pending_actions.py (via local RefreshPending helper)">Regenerate page</a>
+  </div>
   <div class="subtitle">
     Live snapshot of <code>leads.db</code>, regenerated ${GENERATED_AT} via
     <code>scripts/render_pending_actions.py</code>.<br/>
-    Static snapshot &mdash; not live-synced. Re-run that script (or ask the agent to) after further changes.
+    Static snapshot &mdash; not live-synced. Use <strong>Regenerate page</strong> (or re-run that script) after further changes.
   </div>
 
-  <div class="stats" id="stats"></div>
-
-  <div class="callout">
-    <div class="title">Why so many are still "review"</div>
-    Most of these came off LinkedIn job-alert digests with only a thin snippet (title/location), not a
-    full JD, so the rule-based/LLM scorers had too little text to confidently recommend pursuing. The
-    rows in "Needs your review" below all have a nonzero, meaningful match score. Leads with a 0% score
-    and no LLM verdict are collapsed further down into "Unresolved" &mdash; probably not worth working
-    through individually unless you want to try resolving their JDs (see PRIMER.md's "Resolving JDs for
-    link-only digest leads" section).
+  <div class="funnel-caption">
+    <strong>Ready to apply</strong> (target) is on the far left. Each box to the right is something
+    currently blocking leads from getting there &mdash; click any box to jump to its list below.
   </div>
+  <div class="funnel" id="funnel"></div>
+  <div class="funnel-note" id="funnel-note"></div>
+
+  <hr class="divider" />
+
+  <details open id="section-ready-to-apply">
+    <summary>1. Ready to apply &mdash; docs generated, nothing done with it yet <span class="count-pill" id="ready-to-apply-count"></span></summary>
+    <div class="card-body">
+      <div class="table-scroll short">
+        <table>
+          <thead><tr><th>Company</th><th>Title</th><th class="num">Match %</th><th class="num">Age (days)</th></tr></thead>
+          <tbody id="ready-to-apply-body"></tbody>
+        </table>
+      </div>
+      <div class="hint">
+        Full-LLM-review verdict is <strong>PURSUE</strong>, status is still <code>package_generated</code>
+        (not yet <code>pursued</code>/<code>applied</code>/<code>skipped</code>/<code>rejected</code>),
+        and both a r&eacute;sum&eacute; and cover letter are confirmed present on disk &mdash; not just
+        claimed by the DB status. <strong>Action: submit the application, then advance its status.</strong>
+      </div>
+    </div>
+  </details>
+
+  <details open id="section-needs-decision-forced">
+    <summary>2. Needs your decision &mdash; package already generated on a non-PURSUE verdict <span class="count-pill" id="needs-decision-forced-count"></span></summary>
+    <div class="card-body">
+      <div class="table-scroll short">
+        <table>
+          <thead><tr><th>Company</th><th>Title</th><th>Verdict</th><th class="num">Match %</th><th class="num">Age (days)</th></tr></thead>
+          <tbody id="needs-decision-forced-body"></tbody>
+        </table>
+      </div>
+      <div class="hint">
+        Someone (you, in an earlier session) ran <code>apply_package.py --force</code> on these despite
+        the LLM saying "review" (or missing entirely), so documents already exist. <strong>Action: read
+        the stored review, then either submit anyway (and it'll behave like #1) or set status to
+        <code>skipped</code> to drop it.</strong>
+      </div>
+    </div>
+  </details>
 
   <h2>
-    <span id="table-heading">Needs your review</span>
+    <span id="table-heading">3. Needs your decision &mdash; full-LLM-review says "review"</span>
     <span class="pills" id="priority-pills"></span>
   </h2>
   <input type="text" id="search" placeholder="Filter by company or title&hellip;" />
@@ -380,72 +523,87 @@ _TEMPLATE = r"""<!DOCTYPE html>
     </table>
   </div>
   <div class="hint">
-    Rows shaded red are already scored <strong>PURSUE</strong> but haven't had a package generated yet.
-    Sorted oldest-first by default (a lead's value decays the longer it sits unreviewed) &mdash; click any
-    column header to re-sort, click again to reverse. Age turns amber at ${STALE_DAYS_THRESHOLD}+ days.
-    "Copy prompt" copies a ready-to-paste request for a new Cursor chat, pre-loaded with that
-    company/title, so the agent can pull its full stored review and &mdash; if you decide to pursue
-    &mdash; generate the r&eacute;sum&eacute; + cover letter for you (with <code>--force</code> for
-    "review" verdicts, since <code>apply_package.py</code> only auto-generates on "pursue").
+    A real LLM review already ran and came back ambiguous &mdash; <strong>your decision, not the
+    pipeline's</strong>: pursue it (which auto-generates the package and moves it to #1) or pass (set
+    status to <code>skipped</code>). Rows shaded red are the rare case the LLM said PURSUE but it's
+    somehow still stuck here instead of already having a package &mdash; worth checking why. Sorted
+    oldest-first by default &mdash; click any column header to re-sort, click again to reverse. Age
+    turns amber at ${STALE_DAYS_THRESHOLD}+ days. "Copy prompt" copies a ready-to-paste request for a
+    new Cursor chat, pre-loaded with that company/title, so the agent can pull its full stored review
+    and act on your decision for you.
   </div>
 
   <hr class="divider" />
 
-  <details open>
-    <summary>JD could not be resolved &mdash; needs manual intervention <span class="count-pill" id="needs-manual-jd-count"></span></summary>
-    <div class="card-body">
-      <div class="table-scroll short">
-        <table>
-          <thead><tr><th>Company</th><th>Title</th><th class="num">Age (days)</th></tr></thead>
-          <tbody id="needs-manual-jd-body"></tbody>
-        </table>
-      </div>
-      <div class="hint">
-        Link-following and a company-careers-page search both failed to turn up a full JD (2026-07-11
-        policy &mdash; see <code>~/CLAUDE.md</code> &sect;11 / PRIMER.md). Scored 0% and marked
-        <code>REVIEW NEEDED</code> instead of leaning on a thin-snippet score.
-      </div>
-    </div>
-  </details>
-
-  <details>
-    <summary>Already scored "pass", not yet marked skipped <span class="count-pill" id="auto-skip-count"></span></summary>
+  <details id="section-awaiting-llm-review">
+    <summary>4. Awaiting full-LLM-review &mdash; cleared the score gate, real review hasn't run yet <span class="count-pill" id="awaiting-llm-review-count"></span></summary>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
           <thead><tr><th>Company</th><th>Title</th><th class="num">Match %</th><th class="num">Age (days)</th></tr></thead>
-          <tbody id="auto-skip-body"></tbody>
+          <tbody id="awaiting-llm-review-body"></tbody>
         </table>
+      </div>
+      <div class="hint">
+        Rule-based score already cleared ${LLM_REVIEW_GATE_PCT}% (the cost gate for spending a real LLM
+        call &mdash; see <code>config/framework.yaml</code>'s <code>llm_review_min_pct</code>), but the
+        automated pipeline hasn't evaluated it yet. <strong>Action: nothing manual required &mdash; the
+        next hourly cycle picks these up &mdash; or run <code>triage_recruiter_inbox.py</code> yourself
+        to force it now.</strong>
       </div>
     </div>
   </details>
 
-  <details>
-    <summary>Unresolved &mdash; thin/no JD, 0% score, not worth reviewing individually <span class="count-pill" id="unresolved-count"></span></summary>
+  <details open id="section-jd-unresolved">
+    <summary>5. JD unresolved &mdash; no usable job-description text yet <span class="count-pill" id="jd-unresolved-count"></span></summary>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
           <thead><tr><th>Company</th><th>Title</th><th class="num">Age (days)</th></tr></thead>
-          <tbody id="unresolved-body"></tbody>
+          <tbody id="jd-unresolved-body"></tbody>
         </table>
+      </div>
+      <div class="hint">
+        Link-following and a company-careers-page search both failed to turn up a full JD (2026-07-11
+        policy &mdash; see <code>~/CLAUDE.md</code> &sect;11 / PRIMER.md). <strong>Action: go find and
+        paste in the real posting text</strong> &mdash; nothing downstream can happen without it.
       </div>
     </div>
   </details>
 
+  <div class="funnel-note" id="not-prioritized-note"></div>
+
+  <hr class="divider" />
+
   <details>
-    <summary>Manually tracked leads &mdash; already past "new"</summary>
-    <div class="card-body" id="manual-handled"></div>
+    <summary>Tracking submitted applications &mdash; already past "package generated"</summary>
+    <div class="card-body">
+      <div class="hint" style="margin-top:0;">
+        Not part of the funnel above &mdash; these already got submitted (or otherwise resolved) at some
+        point. Kept here purely for follow-up tracking (who's waiting on a response, who's mid-interview),
+        not because anything needs to happen to get them "ready."
+      </div>
+      <div class="card-body" id="manual-handled" style="padding-left:0; padding-right:0;"></div>
+    </div>
   </details>
 
   <div class="footer-note">${FOOTER_NOTE}</div>
 </div>
 
 <script>
-const PENDING_REVIEW = ${PENDING_REVIEW_JSON};
-const AUTO_SKIPPED = ${AUTO_SKIPPED_JSON};
-const UNRESOLVED = ${UNRESOLVED_JSON};
-const NEEDS_MANUAL_JD = ${NEEDS_MANUAL_JD_JSON};
+const READY_TO_APPLY = ${READY_TO_APPLY_JSON};
+const NEEDS_DECISION_FORCED = ${NEEDS_DECISION_FORCED_JSON};
+const NEEDS_DECISION = ${NEEDS_DECISION_JSON};
+const AWAITING_LLM_REVIEW = ${AWAITING_LLM_REVIEW_JSON};
+const JD_UNRESOLVED = ${JD_UNRESOLVED_JSON};
+const NOT_PRIORITIZED_COUNT = ${NOT_PRIORITIZED_COUNT_JSON};
 const MANUAL_HANDLED = ${MANUAL_HANDLED_JSON};
+
+// PENDING_REVIEW kept as the name of the main filterable table's backing
+// array (section 3, "Needs your decision") purely so the rest of this
+// script's table/sort/filter/copy-prompt logic below didn't need renaming
+// throughout — it's NEEDS_DECISION under the hood.
+const PENDING_REVIEW = NEEDS_DECISION;
 
 function priorityOf(pct) {
   if (pct >= 50) return "high";
@@ -500,31 +658,61 @@ function escapeHtml(s) {
 // each lead's row links straight to ITS OWN folder, not just the shared
 // company root, and its file count is scoped to that folder alone.
 const FOLDER_ROOT = "${FOLDER_ROOT}";
+// Opens the lead's package folder in Finder via the local RevealFolder
+// helper (tools/reveal-folder/) — browsers cannot open Finder from a
+// static page with file:// alone. Install once: tools/reveal-folder/install.sh
 function folderUrl(folderPath) {
-  return `file://${FOLDER_ROOT}/${encodeURIComponent(folderPath).replace(/%2F/g, "/")}/`;
+  const abs = `${FOLDER_ROOT}/${folderPath}`.replace(/\/+/g, "/");
+  return `revealfolder://reveal?path=${encodeURIComponent(abs)}`;
 }
 function companyCellHtml(company, folderPath, fileCount) {
   const countSuffix = fileCount > 0 ? `<span class="file-count">(${fileCount} file${fileCount === 1 ? "" : "s"})</span>` : "";
-  return `<a class="company-link" href="${folderUrl(folderPath)}" target="_blank" rel="noopener">${escapeHtml(company)}</a>${countSuffix}`;
+  return `<a class="company-link" href="${folderUrl(folderPath)}" title="Open folder in Finder">${escapeHtml(company)}</a>${countSuffix}`;
 }
 
-function renderStats() {
-  const el = document.getElementById("stats");
-  const pursueNotActioned = PENDING_REVIEW.filter(l => l.verdict === "pursue").length;
-  const packageGenerated = (MANUAL_HANDLED.find(g => g.status === "package_generated") || { count: 0 }).count;
-  const interviewing = (MANUAL_HANDLED.find(g => g.status === "interviewing") || { count: 0 }).count;
-  const items = [
-    { value: PENDING_REVIEW.length, label: "Needs review (meaningful score)", cls: "warning" },
-    { value: pursueNotActioned, label: "PURSUE verdict, not yet actioned", cls: "danger" },
-    { value: packageGenerated, label: "Package generated (ready to send)", cls: "success" },
-    { value: interviewing, label: "Interviewing", cls: "success" },
-    { value: NEEDS_MANUAL_JD.length, label: "JD unresolved, needs manual look", cls: "warning" },
-  ];
-  el.innerHTML = items.map(i => `
-    <div class="stat ${i.cls}">
-      <div class="value">${i.value}</div>
-      <div class="label">${i.label}</div>
-    </div>`).join("");
+// Left-to-right = target-to-farthest-blocker, matching the funnel-caption
+// copy above and the numbered section headings below (1-5). Each box jumps
+// to (and opens) its matching <details> section on click.
+const FUNNEL_STEPS = [
+  { count: () => READY_TO_APPLY.length, label: "Ready to apply", cls: "target", sectionId: "section-ready-to-apply" },
+  { count: () => NEEDS_DECISION_FORCED.length, label: "Needs decision (forced package)", cls: "blocker", sectionId: "section-needs-decision-forced" },
+  { count: () => NEEDS_DECISION.length, label: "Needs your decision", cls: "blocker", sectionId: null }, // scrolls to the main table, not a <details>
+  { count: () => AWAITING_LLM_REVIEW.length, label: "Awaiting full-LLM-review", cls: "blocker", sectionId: "section-awaiting-llm-review" },
+  { count: () => JD_UNRESOLVED.length, label: "JD unresolved", cls: "blocker-far", sectionId: "section-jd-unresolved" },
+];
+
+function renderFunnel() {
+  const el = document.getElementById("funnel");
+  el.innerHTML = FUNNEL_STEPS.map((step, idx) => {
+    const box = `<div class="funnel-box ${step.cls}" data-idx="${idx}">
+      <div class="value">${step.count()}</div>
+      <div class="label">${step.label}</div>
+    </div>`;
+    return idx === 0 ? box : `<div class="funnel-arrow">&larr;</div>${box}`;
+  }).join("");
+  el.querySelectorAll(".funnel-box").forEach(box => {
+    box.addEventListener("click", () => {
+      const step = FUNNEL_STEPS[Number(box.dataset.idx)];
+      const targetId = step.sectionId || "table-heading";
+      const target = document.getElementById(targetId);
+      if (!target) return;
+      if (target.tagName === "DETAILS") target.open = true;
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+
+  document.getElementById("funnel-note").innerHTML =
+    `Not shown above: <strong>${NOT_PRIORITIZED_COUNT}</strong> low-score/already-"pass" leads that ` +
+    `were never going to clear the LLM-review gate &mdash; not blocking anything, just not worth ` +
+    `individual attention. <a id="not-prioritized-link">Why these aren't shown &rarr;</a>`;
+  document.getElementById("not-prioritized-link").addEventListener("click", () => {
+    document.getElementById("not-prioritized-note").scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+  document.getElementById("not-prioritized-note").innerHTML =
+    `${NOT_PRIORITIZED_COUNT} leads omitted here: either the full-LLM-review already said "pass," or ` +
+    `the free rule-based score never cleared the ${LLM_REVIEW_GATE_PCT}% gate that decides whether ` +
+    `a real LLM call is even worth spending on it. Use <code>list_leads.py --verdict pass</code> if you ` +
+    `ever want the full list.`;
 }
 
 function renderPills() {
@@ -565,7 +753,7 @@ function renderTable() {
     .filter(l => !q || l.company.toLowerCase().includes(q) || l.title.toLowerCase().includes(q))
     .sort(compareBy(sortKey, sortDir));
 
-  document.getElementById("table-heading").textContent = `Needs your review (${filtered.length} of ${PENDING_REVIEW.length})`;
+  document.getElementById("table-heading").textContent = `3. Needs your decision (${filtered.length} of ${PENDING_REVIEW.length})`;
   renderTableHeaderSortState();
 
   const body = document.getElementById("table-body");
@@ -606,9 +794,9 @@ document.querySelectorAll("#table-header-row th[data-sort]").forEach(th => {
   });
 });
 
-function renderNeedsManualJd() {
-  document.getElementById("needs-manual-jd-count").textContent = NEEDS_MANUAL_JD.length;
-  document.getElementById("needs-manual-jd-body").innerHTML = NEEDS_MANUAL_JD.map(l => `
+function renderJdUnresolved() {
+  document.getElementById("jd-unresolved-count").textContent = JD_UNRESOLVED.length;
+  document.getElementById("jd-unresolved-body").innerHTML = JD_UNRESOLVED.map(l => `
     <tr>
       <td class="company">${companyCellHtml(l.company, l.folderPath, l.fileCount)}</td>
       <td class="title">${escapeHtml(l.title)}</td>
@@ -616,9 +804,9 @@ function renderNeedsManualJd() {
     </tr>`).join("");
 }
 
-function renderAutoSkipped() {
-  document.getElementById("auto-skip-count").textContent = AUTO_SKIPPED.length;
-  document.getElementById("auto-skip-body").innerHTML = AUTO_SKIPPED.map(l => `
+function renderAwaitingLlmReview() {
+  document.getElementById("awaiting-llm-review-count").textContent = AWAITING_LLM_REVIEW.length;
+  document.getElementById("awaiting-llm-review-body").innerHTML = AWAITING_LLM_REVIEW.map(l => `
     <tr>
       <td class="company">${companyCellHtml(l.company, l.folderPath, l.fileCount)}</td>
       <td class="title">${escapeHtml(l.title)}</td>
@@ -627,12 +815,25 @@ function renderAutoSkipped() {
     </tr>`).join("");
 }
 
-function renderUnresolved() {
-  document.getElementById("unresolved-count").textContent = UNRESOLVED.length;
-  document.getElementById("unresolved-body").innerHTML = UNRESOLVED.map(l => `
+function renderNeedsDecisionForced() {
+  document.getElementById("needs-decision-forced-count").textContent = NEEDS_DECISION_FORCED.length;
+  document.getElementById("needs-decision-forced-body").innerHTML = NEEDS_DECISION_FORCED.map(l => `
     <tr>
       <td class="company">${companyCellHtml(l.company, l.folderPath, l.fileCount)}</td>
       <td class="title">${escapeHtml(l.title)}</td>
+      <td><span class="verdict-badge ${l.verdict}">${l.verdict.toUpperCase()}</span></td>
+      <td class="num">${l.matchPct}%</td>
+      ${ageCellHtml(l.ageDays)}
+    </tr>`).join("");
+}
+
+function renderReadyToApply() {
+  document.getElementById("ready-to-apply-count").textContent = READY_TO_APPLY.length;
+  document.getElementById("ready-to-apply-body").innerHTML = READY_TO_APPLY.map(l => `
+    <tr>
+      <td class="company">${companyCellHtml(l.company, l.folderPath, l.fileCount)}</td>
+      <td class="title">${escapeHtml(l.title)}</td>
+      <td class="num">${l.matchPct}%</td>
       ${ageCellHtml(l.ageDays)}
     </tr>`).join("");
 }
@@ -650,12 +851,13 @@ document.getElementById("search").addEventListener("input", (e) => {
   renderTable();
 });
 
-renderStats();
+renderFunnel();
 renderPills();
 renderTable();
-renderNeedsManualJd();
-renderAutoSkipped();
-renderUnresolved();
+renderReadyToApply();
+renderNeedsDecisionForced();
+renderAwaitingLlmReview();
+renderJdUnresolved();
 renderManualHandled();
 </script>
 </body>
@@ -665,30 +867,32 @@ renderManualHandled();
 
 def _render_html(data: dict, *, output_root: Path) -> str:
     footer = (
-        f"Generated as a static bookmarkable snapshot of leads.db. Counts: {data['total_leads']} total leads, "
-        f"{data['status_counts'].get('new', 0)} status=new "
-        f"({data['new_verdict_counts'].get('review', 0)} review / "
-        f"{data['new_verdict_counts'].get('pass', 0)} pass / "
-        f"{data['new_verdict_counts'].get('pursue', 0)} pursue"
-        + (f" / {data['new_verdict_counts']['REVIEW NEEDED']} REVIEW NEEDED" if data['new_verdict_counts'].get('REVIEW NEEDED') else "")
-        + "), "
-        + ", ".join(
-            f"{count} {status}"
-            for status, count in sorted(data["status_counts"].items())
-            if status != "new"
+        f"Generated as a static bookmarkable snapshot of leads.db. {data['total_leads']} total leads. "
+        f"Funnel: {len(data['jd_unresolved'])} JD unresolved, {len(data['awaiting_llm_review'])} awaiting "
+        f"full-LLM-review, {len(data['needs_decision'])} needs your decision, "
+        f"{len(data['needs_decision_forced'])} needs decision (forced package), "
+        f"{len(data['ready_to_apply'])} ready to apply. Plus {data['not_prioritized_count']} not "
+        "prioritized (low score or already-\"pass\"). Tracking (past package_generated): "
+        + (
+            ", ".join(f"{g['count']} {g['status']}" for g in data["manual_handled"])
+            if data["manual_handled"]
+            else "none"
         )
         + "."
     )
     html = _TEMPLATE
     html = html.replace("${GENERATED_AT}", data["generated_at"].strftime("%Y-%m-%d %H:%M %Z") or data["generated_at"].strftime("%Y-%m-%d %H:%M"))
     html = html.replace("${FOOTER_NOTE}", footer)
-    html = html.replace("${PENDING_REVIEW_JSON}", json.dumps(data["pending_review"]))
-    html = html.replace("${AUTO_SKIPPED_JSON}", json.dumps(data["auto_skipped"]))
-    html = html.replace("${UNRESOLVED_JSON}", json.dumps(data["unresolved"]))
-    html = html.replace("${NEEDS_MANUAL_JD_JSON}", json.dumps(data["needs_manual_jd"]))
+    html = html.replace("${READY_TO_APPLY_JSON}", json.dumps(data["ready_to_apply"]))
+    html = html.replace("${NEEDS_DECISION_FORCED_JSON}", json.dumps(data["needs_decision_forced"]))
+    html = html.replace("${NEEDS_DECISION_JSON}", json.dumps(data["needs_decision"]))
+    html = html.replace("${AWAITING_LLM_REVIEW_JSON}", json.dumps(data["awaiting_llm_review"]))
+    html = html.replace("${JD_UNRESOLVED_JSON}", json.dumps(data["jd_unresolved"]))
+    html = html.replace("${NOT_PRIORITIZED_COUNT_JSON}", json.dumps(data["not_prioritized_count"]))
     html = html.replace("${MANUAL_HANDLED_JSON}", json.dumps(data["manual_handled"]))
     html = html.replace("${FOLDER_ROOT}", str(output_root))
     html = html.replace("${STALE_DAYS_THRESHOLD}", str(STALE_DAYS_THRESHOLD))
+    html = html.replace("${LLM_REVIEW_GATE_PCT}", str(LLM_REVIEW_GATE_PCT))
     return html
 
 
@@ -716,7 +920,10 @@ def main(argv: list[str] | None = None) -> int:
     html = _render_html(data, output_root=args.output_root)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(html, encoding="utf-8")
-    print(f"Wrote {args.output} ({data['total_leads']} leads, {len(data['pending_review'])} pending review).")
+    print(
+        f"Wrote {args.output} ({data['total_leads']} leads, {len(data['ready_to_apply'])} ready to apply, "
+        f"{len(data['needs_decision'])} needing a decision)."
+    )
     return 0
 
 

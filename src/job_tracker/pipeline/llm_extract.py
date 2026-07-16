@@ -22,12 +22,21 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 
 from job_tracker.email.models import EmailMessage, ExtractedRole
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = os.environ.get("JOB_TRACKER_LLM_MODEL", "claude-haiku-4-5")
+
+# USD per million tokens: (input, output). Keep in sync with llm_apply.py.
+_MODEL_PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
+    "claude-haiku-4-5": (1.00, 5.00),
+    "claude-sonnet-4-5": (3.00, 15.00),
+    "claude-sonnet-5": (2.00, 10.00),
+    "claude-opus-4-8": (5.00, 25.00),
+}
 
 # Digests rarely need more than this to list every posting; keeping the
 # prompt small keeps both latency and per-call cost down.
@@ -126,17 +135,53 @@ def _parse_response_text(raw: str) -> list[dict]:
     return data
 
 
+def _cost_usd(model: str, input_tokens: int, output_tokens: int) -> float | None:
+    pricing = _MODEL_PRICING_USD_PER_MTOK.get(model)
+    if pricing is None:
+        return None
+    in_rate, out_rate = pricing
+    return (input_tokens / 1_000_000) * in_rate + (output_tokens / 1_000_000) * out_rate
+
+
+def _estimate_tokens(text: str) -> int:
+    return max(1, (len(text) + 3) // 4)
+
+
+def _fmt_usd(cost: float | None) -> str:
+    return f"${cost:.4f}" if cost is not None else "n/a"
+
+
 def _call_llm_raw(message: EmailMessage, *, model: str, client=None) -> list[dict]:
     """Call the LLM and return the raw parsed JSON items. Raises on any
     failure (network, auth, unparseable output) — use `extract_roles_llm`
     for a version that swallows failures and returns [] instead.
     """
     client = client or _client()
+    max_tokens = 4096
+    user_prompt = _build_user_prompt(message)
+    est_in = _estimate_tokens(_SYSTEM_PROMPT) + _estimate_tokens(user_prompt)
+    est_out = max(64, min(max_tokens, max_tokens // 4))
+    pred = _cost_usd(model, est_in, est_out)
+    print(
+        f"    [llm extract] pred ~{_fmt_usd(pred)} (est. {est_in} in / ~{est_out} out)",
+        flush=True,
+    )
+    start = time.monotonic()
     response = client.messages.create(
         model=model,
-        max_tokens=4096,
+        max_tokens=max_tokens,
         system=_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": _build_user_prompt(message)}],
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+    elapsed_s = time.monotonic() - start
+    usage = getattr(response, "usage", None)
+    input_tokens = getattr(usage, "input_tokens", 0) or 0
+    output_tokens = getattr(usage, "output_tokens", 0) or 0
+    cost = _cost_usd(model, input_tokens, output_tokens)
+    print(
+        f"    [llm extract] actual ~{_fmt_usd(cost)} "
+        f"({input_tokens} in / {output_tokens} out, {elapsed_s:.1f}s)",
+        flush=True,
     )
     raw_text = "".join(
         block.text for block in response.content if getattr(block, "type", "") == "text"

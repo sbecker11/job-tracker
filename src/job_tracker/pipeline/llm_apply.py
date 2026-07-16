@@ -258,8 +258,44 @@ def _parse_json_object(raw: str) -> dict:
     return data
 
 
+def _estimate_tokens(text: str) -> int:
+    """Rough English token estimate (~4 chars/token). Good enough for pre-call cost."""
+    return max(1, (len(text) + 3) // 4)
+
+
+def _fmt_usd(cost: float | None) -> str:
+    return f"${cost:.4f}" if cost is not None else "n/a"
+
+
+def _predicted_call_cost(
+    model: str, system: str, user: str, *, max_tokens: int
+) -> tuple[float | None, int, int]:
+    """Pre-call cost estimate: chars/4 for input, ~25% of max_tokens for expected output."""
+    est_in = _estimate_tokens(system) + _estimate_tokens(user)
+    est_out = max(64, min(max_tokens, max_tokens // 4))
+    return _cost_usd(model, est_in, est_out), est_in, est_out
+
+
+def _print_llm_call_pred(step: str, cost: float | None, est_in: int, est_out: int) -> None:
+    print(
+        f"    [llm {step}] pred ~{_fmt_usd(cost)} (est. {est_in} in / ~{est_out} out)",
+        flush=True,
+    )
+
+
+def _print_llm_call_actual(metrics: CallMetrics) -> None:
+    """Emit approximate USD cost immediately after every Anthropic API call."""
+    print(
+        f"    [llm {metrics.step}] actual ~{_fmt_usd(metrics.cost_usd)} "
+        f"({metrics.input_tokens} in / {metrics.output_tokens} out, {metrics.elapsed_s:.1f}s)",
+        flush=True,
+    )
+
+
 def _call(system: str, user: str, *, model: str, client=None, max_tokens: int = 4096, step: str = "call") -> tuple[str, CallMetrics]:
     client = client or _client()
+    pred_cost, est_in, est_out = _predicted_call_cost(model, system, user, max_tokens=max_tokens)
+    _print_llm_call_pred(step, pred_cost, est_in, est_out)
     start = time.monotonic()
     response = client.messages.create(
         model=model,
@@ -276,6 +312,7 @@ def _call(system: str, user: str, *, model: str, client=None, max_tokens: int = 
         step=step, model=model, input_tokens=input_tokens, output_tokens=output_tokens,
         elapsed_s=elapsed_s, cost_usd=_cost_usd(model, input_tokens, output_tokens),
     )
+    _print_llm_call_actual(metrics)
     return text, metrics
 
 
