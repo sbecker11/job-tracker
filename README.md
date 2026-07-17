@@ -456,8 +456,22 @@ python scripts/list_leads.py --waiting
 # Advance leads through their lifecycle (models.LEAD_STAGES) as real-world progress happens
 python scripts/list_leads.py --verdict pursue --set-status pursued
 python scripts/list_leads.py --company "Acme" --title "Software Engineer" --set-status applied --on 2026-07-10
+
+# Soft-delete a lead (junk/duplicate — hides from default list; keeps CRM history)
+python scripts/delete_lead.py --company "Acme" --title "Software Engineer" --reason "duplicate"
+# Req closed / filled / withdrawn
+python scripts/delete_lead.py --company "Acme" --title "Software Engineer" --unavailable
+# Already hired (you took another offer, or this req hired someone else)
+python scripts/delete_lead.py --company "Acme" --title "Software Engineer" --already-hired
+# List hidden leads
+python scripts/list_leads.py --status deleted
+python scripts/list_leads.py --status unavailable
+python scripts/list_leads.py --status hired
+# Hard-purge (irreversible — removes lead + contacts/conversations/docs/meetings/offers)
+python scripts/delete_lead.py --company "Acme" --title "Software Engineer" --purge --yes
 python scripts/list_leads.py --company "Acme" --title "Software Engineer" --set-status interviewing
 ```
+
 
 **Stored JD text:** each lead's `jd_text` column keeps the full description
 text the score was computed against — the real ATS posting when
@@ -475,14 +489,18 @@ you after you've started using it.
 **Lifecycle stages (`models.LEAD_STAGES`):** `new` (unprocessed) → `pursued`
 (triage said pursue) → `package_generated` (résumé + cover letter rendered)
 → `applied` → `following_up` → `interviewing` → `offered` → `accepted` →
-`started`, with two off-ramps that can happen at any point: `skipped` (**we**
-decided not to pursue it) and `rejected` (**they** declined us). The triage
-flow (below) stamps `pursued`/`package_generated`/`skipped` automatically;
-everything from `applied` onward — including `rejected` — is real-world
-progress you report by hand with `list_leads.py --set-status <stage>
-[--on <date>]`. Each stage past `new` has its own `<stage>_at` timestamp
-column (e.g. `applied_at`), stamped once and never overwritten by a later
-re-run, so the DB keeps a timeline — not just a current state.
+`started`, with off-ramps that can happen at any point: `skipped` (**we**
+decided not to pursue it), `rejected` (**they** declined us), `deleted`
+(junk/duplicate you removed), `unavailable` (req closed/filled/withdrawn),
+and `hired` (you took another offer, or this req already hired someone —
+distinct from `accepted`/`started` on *this* lead). The triage flow (below)
+stamps `pursued`/`package_generated`/`skipped` automatically; everything from
+`applied` onward — including `rejected` — is real-world progress you report
+by hand with `list_leads.py --set-status <stage> [--on <date>]` (or
+`delete_lead.py` / `--unavailable` / `--already-hired` for the hide
+off-ramps). Each stage past `new` has its own `<stage>_at` timestamp column
+(e.g. `applied_at`), stamped once and never overwritten by a later re-run,
+so the DB keeps a timeline — not just a current state.
 
 ```bash
 # Record a rejection you heard about (email, phone call, etc.)

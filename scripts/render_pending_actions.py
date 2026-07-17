@@ -92,21 +92,29 @@ def _rescore_new_leads(conn) -> int:
     return updated
 
 
-def _lead_folder_and_count(output_root: Path, *, company: str, title: str, multi_lead: bool) -> tuple[str, int]:
-    """This one lead's own folder (relative to `output_root`) plus a file
-    count scoped to just that folder — mirrors `llm_apply._job_folder`'s
-    naming rules (flat `<Company>/` for a single-lead company, nested
-    `<Company>/<Company>_<Title>/` once a second lead exists) without its
-    mkdir/migration side effects, since this only reads state to render a
-    static page. 0 files if the folder doesn't exist yet (e.g. a
-    multi-lead company whose sibling hasn't triggered the on-disk
-    migration out of the old flat layout yet — self-heals next time the
-    real pipeline runs for that lead)."""
+def _lead_folder_and_count(output_root: Path, *, company: str, title: str, multi_lead: bool) -> tuple[str, str, int]:
+    """This lead's package folder + the company root folder (both relative
+    to `output_root`) plus a file count scoped to just the package folder.
+
+    Mirrors `llm_apply._job_folder`'s naming rules (flat `<Company>/` for a
+    single-lead company, nested `<Company>/<Company>_<Title>/` once a
+    second lead exists) without its mkdir/migration side effects, since
+    this only reads state to render a static page. 0 files if the package
+    folder doesn't exist yet (e.g. a multi-lead company whose sibling
+    hasn't triggered the on-disk migration out of the old flat layout yet
+    — self-heals next time the real pipeline runs for that lead).
+
+    Returns `(package_rel, company_rel, file_count)` so the page can link
+    the company name to the shared company root and the title to this
+    lead's own package folder.
+    """
     company_safe = _safe_filename(company)
-    rel = f"{company_safe}/{_safe_filename(f'{company}_{title}')}" if multi_lead else company_safe
-    lead_dir = output_root / rel
+    package_rel = (
+        f"{company_safe}/{_safe_filename(f'{company}_{title}')}" if multi_lead else company_safe
+    )
+    lead_dir = output_root / package_rel
     count = sum(1 for p in lead_dir.rglob("*") if p.is_file()) if lead_dir.is_dir() else 0
-    return rel, count
+    return package_rel, company_safe, count
 
 
 def _has_resume_and_cover(folder: Path) -> bool:
@@ -200,7 +208,7 @@ def render(conn, *, output_root: Path, now: datetime) -> dict:
             continue
 
         multi_lead = len(company_titles[r["company"]]) > 1
-        folder_path, fc = _lead_folder_and_count(
+        folder_path, company_folder_path, fc = _lead_folder_and_count(
             output_root, company=r["company"], title=r["title"], multi_lead=multi_lead
         )
         entry = {
@@ -208,6 +216,7 @@ def render(conn, *, output_root: Path, now: datetime) -> dict:
             "title": r["title"],
             "fileCount": fc,
             "folderPath": folder_path,
+            "companyFolderPath": company_folder_path,
             "ageDays": _age_days(r["first_seen"], now),
         }
 
@@ -424,8 +433,8 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .manual-row { display: flex; gap: 8px; align-items: baseline; padding: 6px 0; }
   .manual-status { border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
   .footer-note { font-size: 11px; color: var(--text-tertiary); margin-top: 32px; }
-  .company-link { color: var(--text); text-decoration: none; }
-  .company-link:hover { text-decoration: underline; color: var(--info); }
+  .company-link, .title-link { color: var(--text); text-decoration: none; }
+  .company-link:hover, .title-link:hover { text-decoration: underline; color: var(--info); }
   .file-count { color: var(--text-tertiary); font-weight: 400; font-size: 11px; margin-left: 4px; }
   .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
   .page-header h1 { margin: 0; }
@@ -650,24 +659,28 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-// folderPath is precomputed server-side per LEAD (not per company) — see
-// render_pending_actions._lead_folder_and_count, which mirrors
+// folderPath / companyFolderPath are precomputed server-side per LEAD —
+// see render_pending_actions._lead_folder_and_count, which mirrors
 // job_tracker.pipeline.llm_apply._safe_filename()/_job_folder()'s naming
 // rules: a single-lead company's files sit flat in <Company>/, a
-// multi-lead company's land in <Company>/<Company>_<Title>/ instead — so
-// each lead's row links straight to ITS OWN folder, not just the shared
-// company root, and its file count is scoped to that folder alone.
+// multi-lead company's land in <Company>/<Company>_<Title>/ instead.
+// The company-name link opens the shared <Company>/ root; the title link
+// opens THIS lead's own package folder. File count is scoped to the
+// package folder alone.
 const FOLDER_ROOT = "${FOLDER_ROOT}";
-// Opens the lead's package folder in Finder via the local RevealFolder
-// helper (tools/reveal-folder/) — browsers cannot open Finder from a
-// static page with file:// alone. Install once: tools/reveal-folder/install.sh
+// Opens a package folder in Finder via the local RevealFolder helper
+// (tools/reveal-folder/) — browsers cannot open Finder from a static
+// page with file:// alone. Install once: tools/reveal-folder/install.sh
 function folderUrl(folderPath) {
   const abs = `${FOLDER_ROOT}/${folderPath}`.replace(/\/+/g, "/");
   return `revealfolder://reveal?path=${encodeURIComponent(abs)}`;
 }
-function companyCellHtml(company, folderPath, fileCount) {
+function companyCellHtml(company, companyFolderPath) {
+  return `<a class="company-link" href="${folderUrl(companyFolderPath)}" title="Open company folder in Finder">${escapeHtml(company)}</a>`;
+}
+function titleCellHtml(title, folderPath, fileCount) {
   const countSuffix = fileCount > 0 ? `<span class="file-count">(${fileCount} file${fileCount === 1 ? "" : "s"})</span>` : "";
-  return `<a class="company-link" href="${folderUrl(folderPath)}" title="Open folder in Finder">${escapeHtml(company)}</a>${countSuffix}`;
+  return `<a class="title-link" href="${folderUrl(folderPath)}" title="Open this role's folder in Finder">${escapeHtml(title)}</a>${countSuffix}`;
 }
 
 // Left-to-right = target-to-farthest-blocker, matching the funnel-caption
@@ -759,8 +772,8 @@ function renderTable() {
   const body = document.getElementById("table-body");
   body.innerHTML = filtered.map((lead, idx) => `
     <tr class="${lead.verdict === "pursue" ? "pursue" : (priorityOf(lead.matchPct) === "high" ? "high" : "")}">
-      <td class="company">${companyCellHtml(lead.company, lead.folderPath, lead.fileCount)}</td>
-      <td class="title">${escapeHtml(lead.title)}</td>
+      <td class="company">${companyCellHtml(lead.company, lead.companyFolderPath)}</td>
+      <td class="title">${titleCellHtml(lead.title, lead.folderPath, lead.fileCount)}</td>
       <td class="num">${lead.matchPct}%</td>
       <td><span class="verdict-badge ${lead.verdict}">${lead.verdict.toUpperCase()}</span></td>
       ${ageCellHtml(lead.ageDays)}
@@ -798,8 +811,8 @@ function renderJdUnresolved() {
   document.getElementById("jd-unresolved-count").textContent = JD_UNRESOLVED.length;
   document.getElementById("jd-unresolved-body").innerHTML = JD_UNRESOLVED.map(l => `
     <tr>
-      <td class="company">${companyCellHtml(l.company, l.folderPath, l.fileCount)}</td>
-      <td class="title">${escapeHtml(l.title)}</td>
+      <td class="company">${companyCellHtml(l.company, l.companyFolderPath)}</td>
+      <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount)}</td>
       ${ageCellHtml(l.ageDays)}
     </tr>`).join("");
 }
@@ -808,8 +821,8 @@ function renderAwaitingLlmReview() {
   document.getElementById("awaiting-llm-review-count").textContent = AWAITING_LLM_REVIEW.length;
   document.getElementById("awaiting-llm-review-body").innerHTML = AWAITING_LLM_REVIEW.map(l => `
     <tr>
-      <td class="company">${companyCellHtml(l.company, l.folderPath, l.fileCount)}</td>
-      <td class="title">${escapeHtml(l.title)}</td>
+      <td class="company">${companyCellHtml(l.company, l.companyFolderPath)}</td>
+      <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount)}</td>
       <td class="num">${l.matchPct}%</td>
       ${ageCellHtml(l.ageDays)}
     </tr>`).join("");
@@ -819,8 +832,8 @@ function renderNeedsDecisionForced() {
   document.getElementById("needs-decision-forced-count").textContent = NEEDS_DECISION_FORCED.length;
   document.getElementById("needs-decision-forced-body").innerHTML = NEEDS_DECISION_FORCED.map(l => `
     <tr>
-      <td class="company">${companyCellHtml(l.company, l.folderPath, l.fileCount)}</td>
-      <td class="title">${escapeHtml(l.title)}</td>
+      <td class="company">${companyCellHtml(l.company, l.companyFolderPath)}</td>
+      <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount)}</td>
       <td><span class="verdict-badge ${l.verdict}">${l.verdict.toUpperCase()}</span></td>
       <td class="num">${l.matchPct}%</td>
       ${ageCellHtml(l.ageDays)}
@@ -831,8 +844,8 @@ function renderReadyToApply() {
   document.getElementById("ready-to-apply-count").textContent = READY_TO_APPLY.length;
   document.getElementById("ready-to-apply-body").innerHTML = READY_TO_APPLY.map(l => `
     <tr>
-      <td class="company">${companyCellHtml(l.company, l.folderPath, l.fileCount)}</td>
-      <td class="title">${escapeHtml(l.title)}</td>
+      <td class="company">${companyCellHtml(l.company, l.companyFolderPath)}</td>
+      <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount)}</td>
       <td class="num">${l.matchPct}%</td>
       ${ageCellHtml(l.ageDays)}
     </tr>`).join("");

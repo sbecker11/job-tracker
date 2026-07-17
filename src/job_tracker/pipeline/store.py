@@ -207,6 +207,14 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     ("job_leads", "rejection_source", "ALTER TABLE job_leads ADD COLUMN rejection_source TEXT"),
     ("job_leads", "rejection_email_text", "ALTER TABLE job_leads ADD COLUMN rejection_email_text TEXT"),
     ("job_leads", "rejection_message_id", "ALTER TABLE job_leads ADD COLUMN rejection_message_id TEXT"),
+    # Soft-delete (2026-07-16) — "deleted" LEAD_STAGES off-ramp; hides from
+    # default list/pending views while keeping the row + CRM children.
+    ("job_leads", "deleted_at", "ALTER TABLE job_leads ADD COLUMN deleted_at TEXT"),
+    # Req no longer available (2026-07-16) — closed/filled/withdrawn.
+    ("job_leads", "unavailable_at", "ALTER TABLE job_leads ADD COLUMN unavailable_at TEXT"),
+    # Already hired (2026-07-16) — you took another offer, or this req hired
+    # someone else. Distinct from accepted_at/started_at (this lead's offer).
+    ("job_leads", "hired_at", "ALTER TABLE job_leads ADD COLUMN hired_at TEXT"),
     # "Whose turn is it" (2026-07-14) — orthogonal to `status`/LEAD_STAGES
     # (see models.py): a lead can be `applied` *and* waiting-on-them, or
     # `interviewing` *and* waiting-on-them, so this isn't a stage of its
@@ -232,6 +240,9 @@ _STAGE_DATE_COLUMNS: dict[str, str] = {
     "started": "started_at",
     "skipped": "skipped_at",
     "rejected": "rejected_at",
+    "deleted": "deleted_at",
+    "unavailable": "unavailable_at",
+    "hired": "hired_at",
 }
 
 
@@ -379,15 +390,36 @@ def set_llm_cache(conn: sqlite3.Connection, message_id: str, model: str, items: 
     conn.commit()
 
 
-def list_leads(conn: sqlite3.Connection, *, verdict: str | None = None) -> list[sqlite3.Row]:
+def list_leads(
+    conn: sqlite3.Connection,
+    *,
+    verdict: str | None = None,
+    include_deleted: bool = False,
+) -> list[sqlite3.Row]:
+    """All leads, optionally filtered by keyword-scorer verdict.
+
+    Soft-deleted / unavailable / hired leads (`status` in
+    `deleted`/`unavailable`/`hired`) are omitted by default so day-to-day
+    review CLIs and pending-actions don't keep resurfacing duplicates, junk,
+    closed reqs, or leads closed because someone was already hired. Pass
+    `include_deleted=True` (or filter `--status deleted` /
+    `--status unavailable` / `--status hired` in list_leads.py) when you
+    need them back.
+    """
+    clauses: list[str] = []
+    params: list[str] = []
     if verdict:
-        return list(
-            conn.execute(
-                "SELECT * FROM job_leads WHERE verdict = ? ORDER BY match_pct DESC, last_seen DESC",
-                (verdict,),
-            )
+        clauses.append("verdict = ?")
+        params.append(verdict)
+    if not include_deleted:
+        clauses.append("status NOT IN ('deleted', 'unavailable', 'hired')")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    return list(
+        conn.execute(
+            f"SELECT * FROM job_leads {where} ORDER BY match_pct DESC, last_seen DESC",
+            params,
         )
-    return list(conn.execute("SELECT * FROM job_leads ORDER BY match_pct DESC, last_seen DESC"))
+    )
 
 
 def get_job(conn: sqlite3.Connection, company: str, title: str) -> sqlite3.Row | None:
@@ -484,6 +516,130 @@ def record_rejection(
         (source, email_text, message_id, normalized_key),
     )
     conn.commit()
+
+
+def mark_lead_deleted(
+    conn: sqlite3.Connection,
+    normalized_key: str,
+    *,
+    when: str | None = None,
+    reason: str = "",
+) -> None:
+    """Soft-delete a lead: set status='deleted' (stamping deleted_at) and
+    optionally log a conversation note with `reason`. CRM children are kept.
+    Clears awaiting_response_since so deleted leads don't show up as waiting.
+    """
+    _mark_lead_hidden(
+        conn,
+        normalized_key,
+        stage="deleted",
+        when=when,
+        reason=reason,
+        summary_prefix="deleted",
+    )
+
+
+def mark_lead_unavailable(
+    conn: sqlite3.Connection,
+    normalized_key: str,
+    *,
+    when: str | None = None,
+    reason: str = "",
+) -> None:
+    """Mark a lead no-longer-available (req closed/filled/withdrawn):
+    status='unavailable' (stamping unavailable_at). CRM children kept.
+    Clears awaiting_response_since.
+    """
+    _mark_lead_hidden(
+        conn,
+        normalized_key,
+        stage="unavailable",
+        when=when,
+        reason=reason or "no longer available",
+        summary_prefix="unavailable",
+    )
+
+
+def mark_lead_hired(
+    conn: sqlite3.Connection,
+    normalized_key: str,
+    *,
+    when: str | None = None,
+    reason: str = "",
+) -> None:
+    """Mark a lead already-hired (you took another offer, or this req hired
+    someone else): status='hired' (stamping hired_at). Distinct from
+    accepted/started on *this* lead's offer. CRM children kept.
+    Clears awaiting_response_since.
+    """
+    _mark_lead_hidden(
+        conn,
+        normalized_key,
+        stage="hired",
+        when=when,
+        reason=reason or "already hired",
+        summary_prefix="hired",
+    )
+
+
+def _mark_lead_hidden(
+    conn: sqlite3.Connection,
+    normalized_key: str,
+    *,
+    stage: str,
+    when: str | None,
+    reason: str,
+    summary_prefix: str,
+) -> None:
+    advance_status(conn, normalized_key, stage, when=when)
+    conn.execute(
+        "UPDATE job_leads SET awaiting_response_since = NULL WHERE normalized_key = ?",
+        (normalized_key,),
+    )
+    if reason:
+        from job_tracker.pipeline.models import JobConversation
+
+        add_job_conversation(
+            conn,
+            JobConversation(
+                job_key=normalized_key,
+                channel="other",
+                direction="other",
+                summary=f"{summary_prefix}: {reason}",
+                occurred_at=when or utc_now_iso(),
+            ),
+            awaiting_response=False,
+        )
+    else:
+        conn.commit()
+
+
+def purge_lead(conn: sqlite3.Connection, normalized_key: str) -> dict[str, int]:
+    """Hard-delete a lead and all CRM children (contacts, conversations,
+    documents, meetings, offers). Irreversible. Returns per-table delete counts.
+    """
+    counts = {
+        "conversations": conn.execute(
+            "DELETE FROM job_conversations WHERE job_key = ?", (normalized_key,)
+        ).rowcount,
+        "contacts": conn.execute(
+            "DELETE FROM job_contacts WHERE job_key = ?", (normalized_key,)
+        ).rowcount,
+        "documents": conn.execute(
+            "DELETE FROM job_documents WHERE job_key = ?", (normalized_key,)
+        ).rowcount,
+        "meetings": conn.execute(
+            "DELETE FROM job_meetings WHERE job_key = ?", (normalized_key,)
+        ).rowcount,
+        "offers": conn.execute(
+            "DELETE FROM job_offers WHERE job_key = ?", (normalized_key,)
+        ).rowcount,
+        "leads": conn.execute(
+            "DELETE FROM job_leads WHERE normalized_key = ?", (normalized_key,)
+        ).rowcount,
+    }
+    conn.commit()
+    return counts
 
 
 def is_message_processed(conn: sqlite3.Connection, message_id: str) -> bool:

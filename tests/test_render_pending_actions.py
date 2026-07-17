@@ -1,6 +1,7 @@
 """Tests for scripts/render_pending_actions.py's age-based display/sort
 (added 2026-07-15: a lead's value decays the longer it sits unreviewed, so
-the pending-actions page needs to show + default-sort by days-since-received).
+the pending-actions page needs to show + default-sort by days-since-received)
+and Finder folder links (company root vs per-title package folder).
 
 render_pending_actions.py lives in scripts/, not src/job_tracker/, so it
 isn't on pytest's `pythonpath = ["src"]` — loaded here via importlib instead
@@ -15,7 +16,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from job_tracker.pipeline.models import JobLead
-from job_tracker.pipeline.store import connect, upsert_lead
+from job_tracker.pipeline.store import connect, update_llm_evaluation, upsert_lead
+from job_tracker.pipeline.llm_apply import CallMetrics, EvaluationResult
 
 _SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "render_pending_actions.py"
 _spec = importlib.util.spec_from_file_location("render_pending_actions", _SCRIPT_PATH)
@@ -48,7 +50,7 @@ def test_age_days_treats_naive_timestamp_as_utc():
     assert render_pending_actions._age_days(naive_five_days_ago, NOW) == 5
 
 
-def _make_lead(conn, *, company: str, title: str, match_pct: float, verdict: str, first_seen: str) -> None:
+def _make_lead(conn, *, company: str, title: str, match_pct: float, verdict: str, first_seen: str) -> JobLead:
     lead = JobLead(
         company=company,
         title=title,
@@ -63,43 +65,136 @@ def _make_lead(conn, *, company: str, title: str, match_pct: float, verdict: str
         "UPDATE job_leads SET first_seen = ? WHERE normalized_key = ?", (first_seen, lead.normalized_key)
     )
     conn.commit()
+    return lead
 
 
-def test_render_sorts_pending_review_oldest_first_by_default(tmp_path: Path):
+def _set_llm_review(conn, lead: JobLead, *, llm_verdict: str, llm_match_pct: float) -> None:
+    update_llm_evaluation(
+        conn,
+        lead.normalized_key,
+        EvaluationResult(
+            verdict=llm_verdict,
+            match_pct=llm_match_pct,
+            job_summary="test",
+            dealbreaker_checks=[],
+            skills_alignment=[],
+            flags=[],
+            rationale="test",
+            framing_guidance=[],
+            metrics=CallMetrics(
+                step="evaluate", model="test", input_tokens=1, output_tokens=1, cost_usd=0.0
+            ),
+        ),
+    )
+
+
+def test_render_sorts_needs_decision_oldest_first_by_default(tmp_path: Path):
     db_path = tmp_path / "leads.db"
     conn = connect(db_path)
-    _make_lead(
+    newer = _make_lead(
         conn, company="Newer Co", title="Engineer", match_pct=80.0, verdict="pursue",
         first_seen=(NOW - timedelta(days=2)).isoformat(),
     )
-    _make_lead(
+    older = _make_lead(
         conn, company="Older Co", title="Engineer", match_pct=40.0, verdict="review",
         first_seen=(NOW - timedelta(days=20)).isoformat(),
     )
+    _set_llm_review(conn, newer, llm_verdict="pursue", llm_match_pct=80.0)
+    _set_llm_review(conn, older, llm_verdict="review", llm_match_pct=40.0)
 
     data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
     conn.close()
 
-    companies_in_order = [entry["company"] for entry in data["pending_review"]]
+    companies_in_order = [entry["company"] for entry in data["needs_decision"]]
     assert companies_in_order == ["Older Co", "Newer Co"]
-    assert data["pending_review"][0]["ageDays"] == 20
-    assert data["pending_review"][1]["ageDays"] == 2
+    assert data["needs_decision"][0]["ageDays"] == 20
+    assert data["needs_decision"][1]["ageDays"] == 2
 
 
-def test_render_populates_age_days_on_every_new_lead_bucket(tmp_path: Path):
+def test_render_populates_age_days_on_funnel_buckets(tmp_path: Path):
     db_path = tmp_path / "leads.db"
     conn = connect(db_path)
     _make_lead(
         conn, company="Auto Skip Co", title="Engineer", match_pct=10.0, verdict="pass",
         first_seen=(NOW - timedelta(days=3)).isoformat(),
     )
-    _make_lead(
-        conn, company="Unresolved Co", title="Engineer", match_pct=0.0, verdict="review",
+    unresolved = _make_lead(
+        conn, company="Unresolved Co", title="Engineer", match_pct=0.0, verdict="REVIEW NEEDED",
         first_seen=(NOW - timedelta(days=7)).isoformat(),
     )
+    # verdict REVIEW NEEDED is what lands in jd_unresolved; clear jd so gate logic doesn't confuse.
+    conn.execute(
+        "UPDATE job_leads SET jd_text = '' WHERE normalized_key = ?", (unresolved.normalized_key,)
+    )
+    conn.commit()
 
     data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
     conn.close()
 
-    assert data["auto_skipped"][0]["ageDays"] == 3
-    assert data["unresolved"][0]["ageDays"] == 7
+    assert data["not_prioritized_count"] >= 1
+    assert data["jd_unresolved"][0]["ageDays"] == 7
+    assert data["jd_unresolved"][0]["company"] == "Unresolved Co"
+
+
+def test_lead_folder_paths_single_vs_multi_lead(tmp_path: Path):
+    """Company link uses the shared company root; title link uses the
+    lead package folder (nested under company once a second title exists)."""
+    package, company, count = render_pending_actions._lead_folder_and_count(
+        tmp_path, company="Acme", title="Senior SWE", multi_lead=False
+    )
+    assert company == "Acme"
+    assert package == "Acme"
+    assert count == 0
+
+    package, company, count = render_pending_actions._lead_folder_and_count(
+        tmp_path, company="Acme", title="Senior SWE", multi_lead=True
+    )
+    assert company == "Acme"
+    assert package == "Acme/Acme_Senior_SWE"
+    assert count == 0
+
+
+def test_render_multi_lead_company_exposes_distinct_folder_paths(tmp_path: Path):
+    db_path = tmp_path / "leads.db"
+    conn = connect(db_path)
+    backend = _make_lead(
+        conn, company="Acme", title="Backend Engineer", match_pct=80.0, verdict="pursue",
+        first_seen=NOW.isoformat(),
+    )
+    frontend = _make_lead(
+        conn, company="Acme", title="Frontend Engineer", match_pct=75.0, verdict="pursue",
+        first_seen=NOW.isoformat(),
+    )
+    _set_llm_review(conn, backend, llm_verdict="review", llm_match_pct=80.0)
+    _set_llm_review(conn, frontend, llm_verdict="review", llm_match_pct=75.0)
+
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    conn.close()
+
+    by_title = {e["title"]: e for e in data["needs_decision"]}
+    assert by_title["Backend Engineer"]["companyFolderPath"] == "Acme"
+    assert by_title["Frontend Engineer"]["companyFolderPath"] == "Acme"
+    assert by_title["Backend Engineer"]["folderPath"] == "Acme/Acme_Backend_Engineer"
+    assert by_title["Frontend Engineer"]["folderPath"] == "Acme/Acme_Frontend_Engineer"
+
+
+def test_html_wires_title_and_company_finder_links(tmp_path: Path):
+    db_path = tmp_path / "leads.db"
+    conn = connect(db_path)
+    lead = _make_lead(
+        conn, company="Acme", title="Engineer", match_pct=80.0, verdict="pursue",
+        first_seen=NOW.isoformat(),
+    )
+    _set_llm_review(conn, lead, llm_verdict="review", llm_match_pct=80.0)
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    conn.close()
+
+    text = render_pending_actions._render_html(data, output_root=tmp_path)
+    assert "function titleCellHtml(" in text
+    assert "companyFolderPath" in text
+    assert "Open this role's folder in Finder" in text
+    assert "Open company folder in Finder" in text
+    assert "titleCellHtml(lead.title, lead.folderPath, lead.fileCount)" in text
+    assert "companyCellHtml(lead.company, lead.companyFolderPath)" in text
+    assert '"companyFolderPath": "Acme"' in text
+    assert '"folderPath": "Acme"' in text

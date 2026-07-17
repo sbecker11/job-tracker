@@ -79,6 +79,11 @@ python scripts/list_leads.py --verdict pursue
 python scripts/list_leads.py --verdict review
 python scripts/list_leads.py --company "Acme" --title "Software Engineer"   # one lead, full detail
 python scripts/list_leads.py --verdict pursue --csv ~/Desktop/job_leads.csv  # spreadsheet pass
+
+# Hide a lead from default list / pending-actions (keeps CRM history)
+python scripts/delete_lead.py --company "Acme" --title "Software Engineer" --reason "duplicate"
+python scripts/delete_lead.py --company "Acme" --title "Software Engineer" --unavailable
+python scripts/delete_lead.py --company "Acme" --title "Software Engineer" --already-hired
 ```
 
 For a single bookmarkable overview instead of one-off queries:
@@ -91,8 +96,10 @@ Regenerates `var/pending-actions.html` — a static, `file://`-bookmarkable
 snapshot laid out as a **sales funnel toward "ready to apply"** (redesigned
 2026-07-15, replacing an earlier flatter needs-review/auto-skipped/unresolved
 split that made "how close am I to actually submitting something" hard to
-answer at a glance). Company-name links open that lead's package folder in
-**Finder** via the local `revealfolder://` helper — install once with
+answer at a glance). Company-name links open the shared `<Company>/` folder in
+**Finder**; title links open that lead's own package folder (`<Company>/` for
+a single-lead company, `<Company>/<Company>_<Title>/` when the company has
+multiple leads) via the local `revealfolder://` helper — install once with
 `tools/reveal-folder/install.sh`. **Regenerate page** re-runs this same
 script via `tools/refresh-pending/install.sh` (`refreshpending://run`).
 Browsers will ask to allow each scheme the first time you click. A

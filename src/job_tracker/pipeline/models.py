@@ -38,6 +38,19 @@ LEAD_STAGES: tuple[str, ...] = (
     # pipeline.store.find_recent_rejection() checks to auto-disqualify a
     # resurfacing posting for the same role within its cooldown window.
     "rejected",
+    # Soft-delete off-ramp (2026-07-16): hide from default list/pending views
+    # without erasing CRM history. Use scripts/delete_lead.py (or
+    # list_leads.py --set-status deleted). Hard purge of the row + children
+    # is opt-in via delete_lead.py --purge.
+    "deleted",
+    # Req closed / filled / withdrawn (2026-07-16) — distinct from "deleted"
+    # (junk/duplicate you removed) and from "skipped"/"rejected". Hide from
+    # default list views; scripts/delete_lead.py --unavailable.
+    "unavailable",
+    # Already hired (2026-07-16) — you took another offer, or this req already
+    # hired someone else. Distinct from `accepted`/`started` (those mean *this*
+    # lead's offer). Hide from default lists; delete_lead.py --already-hired.
+    "hired",
 )
 
 

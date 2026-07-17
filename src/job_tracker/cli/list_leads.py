@@ -41,6 +41,9 @@ _COLUMNS = [
     "started_at",
     "skipped_at",
     "rejected_at",
+    "deleted_at",
+    "unavailable_at",
+    "hired_at",
     "rejection_source",
     "rejection_message_id",
     "awaiting_response_since",
@@ -125,6 +128,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Only show leads currently awaiting a response (awaiting_response_since is set)",
     )
     ap.add_argument(
+        "--include-deleted",
+        action="store_true",
+        help="Include soft-deleted / unavailable / hired leads. "
+        "Implied when --status is deleted, unavailable, or hired.",
+    )
+    ap.add_argument(
         "--set-status",
         choices=LEAD_STAGES,
         help="Advance all matching rows to this lifecycle stage (e.g. --company Acme --title "
@@ -143,7 +152,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     conn = connect(args.db)
-    rows = [_row_to_dict(r) for r in list_leads(conn, verdict=args.verdict)]
+    include_deleted = (
+        args.include_deleted
+        or args.status in ("deleted", "unavailable", "hired")
+        # Restoring a hidden lead via --set-status must see deleted/unavailable/hired rows.
+        or args.set_status is not None
+    )
+    rows = [_row_to_dict(r) for r in list_leads(conn, verdict=args.verdict, include_deleted=include_deleted)]
     if args.llm_verdict:
         rows = [r for r in rows if r["llm_verdict"] == args.llm_verdict]
     if args.status:

@@ -32,6 +32,7 @@ log-contact = "job_tracker.cli.log_contact:main"
 attach-document = "job_tracker.cli.attach_document:main"
 list-contacts = "job_tracker.cli.list_contacts:main"
 generate-message = "job_tracker.cli.generate_message:main"
+delete-lead = "job_tracker.cli.delete_lead:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
