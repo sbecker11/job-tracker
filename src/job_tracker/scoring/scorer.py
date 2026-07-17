@@ -32,6 +32,9 @@ class DealbreakerHit:
 class ScoreResult:
     match_pct: float
     matched_skills: list[str] = field(default_factory=list)
+    # Generic tech-vocabulary terms present in the JD but not covered by the
+    # candidate `skills:` list — the "missing" side of the JD-relative match.
+    unmatched_jd_skills: list[str] = field(default_factory=list)
     dealbreaker_hits: list[DealbreakerHit] = field(default_factory=list)
     verdict: str = "review"  # "pursue" | "review" | "pass"
     rationale: list[str] = field(default_factory=list)
@@ -40,6 +43,17 @@ class ScoreResult:
     # match_pct is low-confidence/noisy (see MIN_RELEVANT_WEIGHT) rather
     # than a genuine signal of poor fit.
     relevant_weight: float = 0.0
+
+
+@dataclass
+class RuleCheck:
+    """One deterministic framework rule evaluated against JD text (no LLM)."""
+
+    id: str
+    label: str
+    status: str  # "passed" | "failed"
+    reason: str
+    category: str  # "dealbreaker" | "not_dealbreaker" | "skills" | "threshold"
 
 
 @lru_cache(maxsize=4)
@@ -170,7 +184,7 @@ def _weighted_hits(text: str, terms: list[dict[str, Any]]) -> tuple[float, list[
 MIN_RELEVANT_WEIGHT = 5.0
 
 
-def _skills_alignment(text: str, framework: dict[str, Any]) -> tuple[float, list[str], float]:
+def _skills_alignment(text: str, framework: dict[str, Any]) -> tuple[float, list[str], list[str], float]:
     """JD-relative skills match %: of the technical vocabulary this JD
     actually mentions — both required *and* nice-to-have, since a JD's own
     "nice to have" skills are still real signal about its stack, unlike the
@@ -189,18 +203,20 @@ def _skills_alignment(text: str, framework: dict[str, Any]) -> tuple[float, list
     stated stack happens to be things the candidate knows can score near
     100%, and 70% is a real, discriminating bar — guarded by
     MIN_RELEVANT_WEIGHT so a near-empty JD can't fake a high score.
+
+    Returns `(match_pct, matched_skills, unmatched_jd_skills, relevant_weight)`.
     """
     skills = framework.get("skills") or []
     generic_terms = framework.get("generic_tech_vocabulary") or []
 
     matched_weight, matched = _weighted_hits(text, skills)
-    generic_weight, _ = _weighted_hits(text, generic_terms)
+    generic_weight, unmatched = _weighted_hits(text, generic_terms)
 
     relevant_weight = matched_weight + generic_weight
     if relevant_weight < MIN_RELEVANT_WEIGHT:
-        return 0.0, matched, relevant_weight
+        return 0.0, matched, unmatched, relevant_weight
     match_pct = round(matched_weight / relevant_weight * 100, 1)
-    return match_pct, matched, relevant_weight
+    return match_pct, matched, unmatched, relevant_weight
 
 
 def score_jd(
@@ -213,7 +229,7 @@ def score_jd(
     text = jd_text or ""
 
     dealbreaker_hits = _dealbreaker_sweep(text, framework)
-    match_pct, matched_skills, relevant_weight = _skills_alignment(text, framework)
+    match_pct, matched_skills, unmatched_jd_skills, relevant_weight = _skills_alignment(text, framework)
 
     load_bearing_hits = [h for h in dealbreaker_hits if h.load_bearing]
     mention_only_hits = [h for h in dealbreaker_hits if not h.load_bearing]
@@ -256,11 +272,215 @@ def score_jd(
     return ScoreResult(
         match_pct=match_pct,
         matched_skills=matched_skills,
+        unmatched_jd_skills=unmatched_jd_skills,
         dealbreaker_hits=dealbreaker_hits,
         verdict=verdict,
         rationale=rationale,
         relevant_weight=relevant_weight,
     )
+
+
+def rule_checklist(
+    jd_text: str,
+    *,
+    score: ScoreResult | None = None,
+    framework_path: Path = DEFAULT_FRAMEWORK_PATH,
+) -> list[RuleCheck]:
+    """Evaluate every deterministic framework rule against JD text.
+
+    Covers: each `dealbreakers:` entry (pass if not load-bearing, fail if
+    load-bearing), each `not_dealbreakers:` entry when its keywords appear
+    (always pass — these are explicit fits), JD-relative skill terms
+    (matched = passed, unmatched generic = failed), and threshold gates
+    (relevant-weight floor, pursue/review bands, LLM-review gate).
+
+    Pass a precomputed `score` to avoid double-scoring when the caller
+    already ran `score_jd`.
+    """
+    framework = load_framework(framework_path)
+    text = jd_text or ""
+    if score is None:
+        score = score_jd(text, framework_path=framework_path)
+
+    hard_text, soft_text = _split_hard_soft(text)
+    hits_by_id = {h.id: h for h in score.dealbreaker_hits}
+    checks: list[RuleCheck] = []
+
+    for entry in framework.get("dealbreakers") or []:
+        rid = entry["id"]
+        label = entry.get("label") or rid
+        hit = hits_by_id.get(rid)
+        if hit is None:
+            checks.append(
+                RuleCheck(
+                    id=rid,
+                    label=label,
+                    status="passed",
+                    reason="No keyword hits in hard- or soft-requirement text",
+                    category="dealbreaker",
+                )
+            )
+        elif hit.load_bearing:
+            checks.append(
+                RuleCheck(
+                    id=rid,
+                    label=label,
+                    status="failed",
+                    reason=f"Load-bearing hit ({hit.hit_count} mention(s)): {hit.verdict}",
+                    category="dealbreaker",
+                )
+            )
+        else:
+            checks.append(
+                RuleCheck(
+                    id=rid,
+                    label=label,
+                    status="passed",
+                    reason=(
+                        f"Mentioned {hit.hit_count}x but below load-bearing threshold "
+                        f"(soft-section and/or < min_hits) — not a dealbreaker"
+                    ),
+                    category="dealbreaker",
+                )
+            )
+
+    for entry in framework.get("not_dealbreakers") or []:
+        rid = entry["id"]
+        label = entry.get("label") or rid
+        keywords = entry.get("keywords") or []
+        note = (entry.get("note") or "Explicitly not a dealbreaker — clear fit").strip()
+        if not keywords:
+            continue
+        hard_count = _count_hits(hard_text, keywords)
+        soft_count = _count_hits(soft_text, keywords)
+        total = hard_count + soft_count
+        if total == 0:
+            continue
+        checks.append(
+            RuleCheck(
+                id=rid,
+                label=label,
+                status="passed",
+                reason=f"Detected in JD ({total} mention(s)) — {note}",
+                category="not_dealbreaker",
+            )
+        )
+
+    for skill in sorted(score.matched_skills):
+        checks.append(
+            RuleCheck(
+                id=f"skill:{skill}",
+                label=f"Skill match: {skill}",
+                status="passed",
+                reason="Candidate skill keyword present in JD",
+                category="skills",
+            )
+        )
+    for skill in sorted(score.unmatched_jd_skills):
+        checks.append(
+            RuleCheck(
+                id=f"skill_gap:{skill}",
+                label=f"JD skill gap: {skill}",
+                status="failed",
+                reason="Recognized in JD via generic tech vocabulary; not in candidate skills list",
+                category="skills",
+            )
+        )
+
+    thresholds = framework.get("thresholds") or {}
+    pursue_min = thresholds.get("pursue_min_pct", 15)
+    review_min = thresholds.get("review_min_pct", 5)
+    llm_gate = thresholds.get("llm_review_min_pct", 70)
+
+    if score.relevant_weight >= MIN_RELEVANT_WEIGHT:
+        checks.append(
+            RuleCheck(
+                id="threshold:min_relevant_weight",
+                label="JD tech vocabulary floor",
+                status="passed",
+                reason=(
+                    f"Recognized JD tech weight {score.relevant_weight:.0f} "
+                    f">= {MIN_RELEVANT_WEIGHT:.0f}"
+                ),
+                category="threshold",
+            )
+        )
+    else:
+        checks.append(
+            RuleCheck(
+                id="threshold:min_relevant_weight",
+                label="JD tech vocabulary floor",
+                status="failed",
+                reason=(
+                    f"Recognized JD tech weight {score.relevant_weight:.0f} "
+                    f"< {MIN_RELEVANT_WEIGHT:.0f} — match_pct forced to 0"
+                ),
+                category="threshold",
+            )
+        )
+
+    if score.match_pct >= pursue_min:
+        checks.append(
+            RuleCheck(
+                id="threshold:pursue_min_pct",
+                label=f"Pursue match threshold (>={pursue_min}%)",
+                status="passed",
+                reason=f"Match {score.match_pct:.0f}% >= {pursue_min}%",
+                category="threshold",
+            )
+        )
+    elif score.match_pct >= review_min:
+        checks.append(
+            RuleCheck(
+                id="threshold:pursue_min_pct",
+                label=f"Pursue match threshold (>={pursue_min}%)",
+                status="failed",
+                reason=f"Match {score.match_pct:.0f}% is below pursue ({pursue_min}%) but >= review ({review_min}%)",
+                category="threshold",
+            )
+        )
+        checks.append(
+            RuleCheck(
+                id="threshold:review_min_pct",
+                label=f"Review match threshold (>={review_min}%)",
+                status="passed",
+                reason=f"Match {score.match_pct:.0f}% >= {review_min}%",
+                category="threshold",
+            )
+        )
+    else:
+        checks.append(
+            RuleCheck(
+                id="threshold:review_min_pct",
+                label=f"Review match threshold (>={review_min}%)",
+                status="failed",
+                reason=f"Match {score.match_pct:.0f}% < {review_min}%",
+                category="threshold",
+            )
+        )
+
+    if score.match_pct >= llm_gate:
+        checks.append(
+            RuleCheck(
+                id="threshold:llm_review_min_pct",
+                label=f"Full-LLM-review gate (>={llm_gate}%)",
+                status="passed",
+                reason=f"Match {score.match_pct:.0f}% clears the free-tier gate for an LLM review",
+                category="threshold",
+            )
+        )
+    else:
+        checks.append(
+            RuleCheck(
+                id="threshold:llm_review_min_pct",
+                label=f"Full-LLM-review gate (>={llm_gate}%)",
+                status="failed",
+                reason=f"Match {score.match_pct:.0f}% below {llm_gate}% — no LLM review warranted by score alone",
+                category="threshold",
+            )
+        )
+
+    return checks
 
 
 def should_run_llm_review(score: ScoreResult, *, framework_path: Path = DEFAULT_FRAMEWORK_PATH) -> bool:

@@ -81,6 +81,11 @@ python scripts/list_leads.py --verdict review
 python scripts/list_leads.py --company "Acme" --title "Software Engineer"   # one lead, full detail
 python scripts/list_leads.py --verdict pursue --csv ~/Desktop/job_leads.csv  # spreadsheet pass
 
+# Deterministic no-LLM review for one lead (re-score + passed/failed rules + VERDICT)
+python scripts/no_llm_review.py --company "Acme" --title "Software Engineer"
+python scripts/no_llm_review.py --company "Acme" --title "Software Engineer" --json
+python scripts/no_llm_review.py --company "Acme" --title "Software Engineer" --write
+
 # Hide a lead from default list / pending-actions (keeps CRM history)
 python scripts/delete_lead.py --company "Acme" --title "Software Engineer" --reason "duplicate"
 python scripts/delete_lead.py --company "Acme" --title "Software Engineer" --unavailable

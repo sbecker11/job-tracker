@@ -55,6 +55,7 @@ recruiting Gmail inbox
 | `src/job_tracker/pipeline/store.py` | SQLite dedup store (`var/leads.db`, gitignored) |
 | `src/job_tracker/pipeline/run.py` | Orchestrator: classify → extract → resolve → score → store |
 | `src/job_tracker/cli/list_leads.py` | Review/export/update stored leads without re-running the pipeline |
+| `src/job_tracker/cli/no_llm_review.py` | Print (and optionally rewrite) the deterministic rule-based review for one lead — verdict, match %, passed/failed rules; no LLM (`no-llm-review`) |
 | `src/job_tracker/cli/apply_package.py` | Evaluate one stored lead + generate résumé/cover letter on a pursue verdict (`apply-package`) |
 | `src/job_tracker/pipeline/triage.py` | Classify → extract → resolve → LLM-evaluate (+ auto-generate on pursue) for one recruiter-inbox message, deciding a PURSUE/SKIP/NEEDS_REVIEW outcome — never touches Gmail or the DB itself |
 | `src/job_tracker/email/gmail_writer.py` | The only place in this repo that writes to Gmail — labels a message `JobTracker/PURSUE\|SKIP\|NEEDS_REVIEW` and archives it |
@@ -456,6 +457,12 @@ python scripts/list_leads.py --verdict pursue --json
 
 # Print the full stored JD text for a specific lead (e.g. before writing a cover letter)
 python scripts/list_leads.py --company "Acme" --title "Software Engineer" --show-jd-text
+
+# Rule-based (no-LLM) review for one lead — re-scores jd_text, prints VERDICT + match %
+# plus every passed/failed framework rule (dealbreakers, not_dealbreakers, skills, thresholds)
+python scripts/no_llm_review.py --company "Magnet Forensics" --title "Senior Software Engineer"
+python scripts/no_llm_review.py --company "Magnet Forensics" --title "Senior Software Engineer" --json
+python scripts/no_llm_review.py --company "Magnet Forensics" --title "Senior Software Engineer" --write
 
 # Export everything to CSV for a spreadsheet pass
 python scripts/list_leads.py --csv ~/Desktop/job_leads.csv

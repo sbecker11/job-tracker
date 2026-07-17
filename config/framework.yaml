@@ -92,11 +92,35 @@ dealbreakers:
 # fires on `dealbreakers:` above. Citizenship / no-sponsorship is also
 # enforced as ✅ fit in llm_apply.py's `_EVAL_SYSTEM_PROMPT` and ~/CLAUDE.md.
 not_dealbreakers:
+  # Optional `keywords` let the deterministic rule checklist (scorer.rule_checklist
+  # / scripts/no_llm_review.py) surface these as PASSED when the JD mentions them.
+  # The keyword scorer's dealbreaker sweep still ignores this list entirely.
   - id: w2_only
     label: "W2-only"
+    keywords:
+      - "w2 only"
+      - "w-2 only"
+      - "must be w2"
+      - "must be w-2"
+      - "w2 required"
+      - "w-2 required"
+      - "on w2"
+      - "\\bw2\\b"
+      - "\\bw-2\\b"
     note: "This is a fit, not a concern"
   - id: us_citizen_or_no_sponsorship
     label: "US citizen required / authorized to work without sponsorship"
+    keywords:
+      - "us citizen"
+      - "u\\.s\\. citizen"
+      - "united states citizen"
+      - "must be a citizen"
+      - "citizens only"
+      - "without sponsorship"
+      - "no sponsorship"
+      - "sponsorship (is )?(not )?(required|needed|available)"
+      - "authorized to work"
+      - "work authorization"
     note: >-
       Clear fit (candidate is a US citizen; no sponsorship needed).
       Evaluation/targeting only — never write citizenship or sponsorship
