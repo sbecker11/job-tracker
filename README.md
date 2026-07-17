@@ -294,6 +294,24 @@ python scripts/triage_recruiter_inbox.py --rejection-cooldown-days 30
   `accepted`, `started`) is reported by hand — see `list_leads.py
   --set-status` above.
 
+## Tests & coverage
+
+```bash
+# Full suite with line + branch coverage (uses .venv when present; installs
+# pytest-cov into that env if missing). Exits non-zero on test failure.
+./scripts/coverage.sh
+
+# Or a focused subset without coverage:
+pytest tests/test_classifier.py tests/test_gmail_reader.py -v
+```
+
+For a rollup across `job-tracker`, `comms-migration`, and `recruiting-automation`:
+
+```bash
+../report-coverage.sh
+# or: ../recruiting-automation/scripts/report-coverage-all.sh
+```
+
 ## Classify recruiting inbox
 
 ```bash

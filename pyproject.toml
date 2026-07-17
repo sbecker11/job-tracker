@@ -36,7 +36,7 @@ generate-message = "job_tracker.cli.generate_message:main"
 delete-lead = "job_tracker.cli.delete_lead:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
