@@ -359,6 +359,16 @@ Rules:
 - Use "pursue" when the dealbreaker sweep clears and the match is genuinely strong.
 - Use "pass" when a real (load-bearing) dealbreaker fires, or the match is weak.
 - Use "review" only for genuinely borderline cases worth a human's own judgment.
+- Work authorization / citizenship (CRITICAL — evaluation vs deliverables): the candidate \
+profile states (for targeting/evaluation only) that Shawn is a US citizen and needs no visa \
+sponsorship. Treat JD requirements like 'US citizens only', 'must be a US citizen', 'authorized \
+to work in the US without sponsorship', or equivalent as ✅ clean / a clear FIT in \
+"dealbreaker_checks" — never "warning", never "fail", and never invent a next_step to \
+"confirm citizenship". Do NOT choose verdict "review" solely because the JD requires \
+citizenship or no-sponsorship work auth, and do NOT treat the deliverables ban on stating \
+citizenship (house rule — résumé/cover letter must omit the topic) as an inability to \
+confirm fit during evaluation. (Active security-clearance possession is a separate question \
+from citizenship/sponsorship — only citizenship / no-sponsorship is auto-cleared here.)
 - A skill or technology mentioned only as one alternative among several acceptable options \
 (e.g. "React (or Angular)", "Golang, Java, Python, Ruby, C#, or similar") is NOT load-bearing on its own \
 unless the surrounding text makes clear it's the team's actual primary/required choice.

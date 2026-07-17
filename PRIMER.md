@@ -32,7 +32,7 @@ Category/recruiter_job inbox mail  →  LLM score + auto-generate on pursue  →
 - Gmail OAuth for `shawnbecker.recruiting@gmail.com`: `~/.config/job-tracker/credentials.json` + `token.json` — present.
 - Optional second account `personal_hub` (`scbboston@gmail.com`, reads `Category/recruiter_job` mail comms-migration's classifier applies there): `~/.config/job-tracker/personal_hub/` — present.
 - `ANTHROPIC_API_KEY` in `.env` — required for Stage 2 and Stage 4 (both call the LLM). Without it, only Stage 1's keyword scoring works.
-- Candidate profile / JD Match Framework: `~/CLAUDE.md` (dealbreakers, skills vocabulary, banned terms, contact info) and `config/framework.yaml` (the same framework, machine-readable, used by the keyword scorer). Keep these two in sync if the framework changes.
+- Candidate profile / JD Match Framework: `~/CLAUDE.md` (dealbreakers, not-dealbreakers, skills vocabulary, banned terms, contact info) and `config/framework.yaml` (the same framework, machine-readable, used by the keyword scorer; LLM evaluate also honors `not_dealbreakers` via `_EVAL_SYSTEM_PROMPT`). Keep these two in sync if the framework changes. In particular: US citizen / no-sponsorship JD requirements are ✅ fit at evaluation; packages still omit work-auth language (§4 rule 11).
 - `var/leads.db` — SQLite dedup store, created automatically on first run. Already has real data from prior runs.
 
 Activate the venv first: `source .venv/bin/activate` (from the repo root).
@@ -70,6 +70,7 @@ python scripts/evaluate_backlog.py --limit 20
 
 - Only touches leads with `jd_text` on file that don't yet have an `llm_verdict` — safe to re-run anytime, never re-bills an already-evaluated lead.
 - Writes `llm_verdict`, `llm_match_pct`, `llm_dealbreaker_notes`, `llm_skills_alignment`, `llm_rationale` onto the same row, alongside (not overwriting) the keyword scorer's columns.
+- Citizenship / "no sponsorship" JD requirements are evaluated as a clear fit (same as W2-only) — not a soft REVIEW gate. Do not confuse that with the package house rule that still forbids writing work-auth status into résumé/cover letter.
 - Ends with a `=== PURSUE ===` / `=== REVIEW ===` printout and the exact next command for each.
 
 ## Stage 3 — Review scored leads

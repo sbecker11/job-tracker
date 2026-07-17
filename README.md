@@ -64,7 +64,7 @@ recruiting Gmail inbox
 | `src/job_tracker/cli/attach_document.py` | Attach a local file or URL (signed RTR, NDA, JD PDF, etc.) to an existing job (`attach-document`) |
 | `src/job_tracker/cli/list_contacts.py` | Report every tracked contact across all jobs — name, company, role, phone, email (`list-contacts`) |
 | `src/job_tracker/cli/generate_message.py` | Draft a thank-you or status-check-in follow-up email via the same LLM pipeline used for résumés/cover letters (`generate-message`) |
-| `config/framework.yaml` | Dealbreakers + skills vocabulary, transcribed from `~/CLAUDE.md` |
+| `config/framework.yaml` | Dealbreakers, `not_dealbreakers` (e.g. W2-only, US citizen / no sponsorship), + skills vocabulary — transcribed from `~/CLAUDE.md` |
 | `docs/JOB_CRM_VISION.md` | Design doc: Job as a first-class object — contacts, conversations, documents, meetings, offers, and the 5 use cases (dedupe alerts, follow-ups, offer comparison, market-withdrawal notice) this is building toward |
 | `docs/CATEGORY_HANDLER_EXTENSIBILITY.md` | Design doc: how the classify → decide → label/archive pattern generalizes beyond `recruiter_job` to future comms-migration categories |
 
@@ -411,9 +411,20 @@ How it stays cheap and safe:
   before; this is purely additive.
 
 **Tuning the framework:** edit `config/framework.yaml` directly — dealbreakers,
-skills vocabulary/weights, and the `pursue_min_pct` / `review_min_pct`
-thresholds are all data, not code. Keep it in sync with `~/CLAUDE.md`
-§3 (dealbreakers) and §8–9 (skills) when those change.
+`not_dealbreakers`, skills vocabulary/weights, and the `pursue_min_pct` /
+`review_min_pct` thresholds are all data, not code. Keep it in sync with
+`~/CLAUDE.md` §3 (dealbreakers / not-dealbreakers) and §8–9 (skills) when
+those change.
+
+**Evaluation vs deliverables (citizenship / sponsorship):** JD lines like
+"US citizens only" or "authorized to work without sponsorship" are a clear
+**fit** at evaluation time (`not_dealbreakers.us_citizen_or_no_sponsorship`
++ `llm_apply.py`'s `_EVAL_SYSTEM_PROMPT`) — never a reason to force
+`REVIEW` or invent a "confirm citizenship" next step. Résumés and cover
+letters still **never** state citizenship, sponsorship, or other
+work-authorization status (CLAUDE.md §4 rule 11; mechanical `_WORK_AUTH_RE`
+check). Active security-clearance *possession* is a separate question from
+citizenship / no-sponsorship.
 
 **Limitation (by design, v1):** matching is keyword-based, not an LLM read of
 the JD — it's the "rule engine" layer from the runbook's architecture

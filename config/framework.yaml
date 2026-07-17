@@ -88,10 +88,20 @@ dealbreakers:
     verdict: "Dealbreaker — onsite-only, not in/near Lehi, UT"
 
 # Explicitly NOT a dealbreaker (CLAUDE.md §3) — never flagged.
+# Documentation for humans + LLM-facing sync; the keyword scorer only
+# fires on `dealbreakers:` above. Citizenship / no-sponsorship is also
+# enforced as ✅ fit in llm_apply.py's `_EVAL_SYSTEM_PROMPT` and ~/CLAUDE.md.
 not_dealbreakers:
   - id: w2_only
     label: "W2-only"
     note: "This is a fit, not a concern"
+  - id: us_citizen_or_no_sponsorship
+    label: "US citizen required / authorized to work without sponsorship"
+    note: >-
+      Clear fit (candidate is a US citizen; no sponsorship needed).
+      Evaluation/targeting only — never write citizenship or sponsorship
+      status into résumé/cover letter (CLAUDE.md §4 rule 11). Added
+      2026-07-16 after Magnet Forensics was incorrectly gated to REVIEW.
 
 # Skills vocabulary pulled from CLAUDE.md §8 (portfolio projects) and §9
 # (technical anchors by engagement), weighted toward the most current stack
