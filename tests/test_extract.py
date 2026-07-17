@@ -196,3 +196,57 @@ def test_sender_domain_fallback_ignores_known_job_boards():
     # an incomplete role (empty company) rather than fabricate one from the
     # job board's own sender domain.
     assert roles and roles[0].company == ""
+
+
+def test_token_to_company_and_ats_matches():
+    from job_tracker.pipeline import extract as ex
+
+    assert ex._token_to_company("stripe-inc") == "Stripe Inc"
+    text = "Apply https://boards.greenhouse.io/stripe/jobs/1 and https://jobs.lever.co/acme/abc"
+    matches = ex._find_ats_matches(text)
+    assert any(m[0] == "greenhouse" for m in matches)
+    assert any(m[0] == "lever" for m in matches)
+
+
+def test_company_from_text_truncates_sentence_bleed():
+    from job_tracker.pipeline.extract import _company_from_text
+
+    # "at DTN. We are hiring" should not swallow "We"
+    text = "Join the team at DTN. We are hiring great people."
+    company = _company_from_text(text)
+    if company:
+        assert "We" not in company
+
+
+def test_ref_no_and_more_details_edge_helpers():
+    from job_tracker.pipeline import extract as ex
+
+    # too few chunks
+    assert ex._extract_ref_no_digest_roles("no markers here") == []
+    # short title skipped
+    text = "hdr Ref no.: 0123456789abcdef0123456789abcdef\nShort\nRef no.: 0123456789abcdef0123456789abcdef\nfooter"
+    # Short is < 8 chars -> skipped; need at least one valid if we want non-empty
+    assert ex._extract_ref_no_digest_roles(text) == []
+
+    text2 = (
+        "hdr Ref no.: 0123456789abcdef0123456789abcdef\n"
+        "Senior Backend Engineer Role\nAcme Corp\n"
+        "Ref no.: 0123456789abcdef0123456789abcdef\nfooter"
+    )
+    roles = ex._extract_ref_no_digest_roles(text2)
+    assert roles and "Senior Backend" in roles[0].title
+
+    # more-details: too few lines skipped; job-board company skipped
+    assert ex._extract_more_details_digest_roles("only one more details") == []
+
+
+def test_company_from_sender_and_clean_bullet():
+    from job_tracker.pipeline.extract import _clean_bullet_title, _company_from_sender, _first_title
+
+    assert _company_from_sender("") is None
+    assert _company_from_sender("noreply@greenhouse.io") is None
+    assert _company_from_sender("person@gmail.com") is None
+    assert _company_from_sender("talent@acme-corp.com") == "Acme Corp"
+    assert _first_title("We need a Senior Software Engineer ASAP") is not None
+    assert _clean_bullet_title("random text without role words") is None
+    assert _clean_bullet_title("Senior Engineer — backend focus") == "Senior Engineer"

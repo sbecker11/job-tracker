@@ -10,7 +10,7 @@ import pytest
 from job_tracker.cli.no_llm_review import format_no_llm_review, main as no_llm_review_main
 from job_tracker.pipeline.models import JobLead
 from job_tracker.pipeline.store import connect, upsert_lead
-from job_tracker.scoring.scorer import load_framework, rule_checklist, score_jd
+from job_tracker.scoring.scorer import DealbreakerHit, RuleCheck, load_framework, rule_checklist, score_jd, ScoreResult
 
 
 @pytest.fixture()
@@ -119,3 +119,58 @@ def test_cli_stdout_and_json(seeded_db: Path, capsys, tmp_path: Path):
     assert isinstance(payload["failed_rules"], list)
     assert payload["wrote_docx"] is True
     assert Path(payload["no_llm_review_path"]).is_file()
+
+
+def test_cli_missing_db(tmp_path: Path, capsys):
+    rc = no_llm_review_main(
+        ["--db", str(tmp_path / "missing.db"), "--company", "X", "--title", "Y"]
+    )
+    assert rc == 1
+    assert "No leads DB" in capsys.readouterr().err
+
+
+def test_cli_unknown_job_and_similar(seeded_db: Path, capsys):
+    rc = no_llm_review_main(
+        ["--db", str(seeded_db), "--company", "Acme", "--title", "Senior Software Enginer"]
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "Did you mean" in err
+
+
+def test_cli_no_jd_text(tmp_path: Path, capsys):
+    db = tmp_path / "leads.db"
+    conn = connect(db)
+    upsert_lead(
+        conn,
+        JobLead(company="Bare", title="Role", source_message_id="m", source_label="manual"),
+    )
+    conn.close()
+    rc = no_llm_review_main(["--db", str(db), "--company", "Bare", "--title", "Role"])
+    assert rc == 1
+    assert "No jd_text" in capsys.readouterr().err
+
+
+def test_format_dealbreaker_and_missing_skills_branches():
+    from job_tracker.scoring.scorer import DealbreakerHit
+
+    score = ScoreResult(
+        match_pct=10.0,
+        matched_skills=[],
+        unmatched_jd_skills=["golang"],
+        dealbreaker_hits=[
+            DealbreakerHit(id="golang", label="Go/Golang", verdict="fail", hit_count=2, load_bearing=True),
+            DealbreakerHit(id="w2", label="W2", verdict="clean", hit_count=1, load_bearing=False),
+        ],
+        verdict="pass",
+        rationale=["too far"],
+        relevant_weight=5.0,
+    )
+    checks = [
+        RuleCheck(id="golang", label="Go", status="failed", reason="hit", category="dealbreaker"),
+    ]
+    text = format_no_llm_review(score, checks, company="X", title="Y", review_path=Path("/tmp/missing.docx"))
+    assert "hard dealbreaker" in text
+    assert "Missing:" in text
+    assert "not on disk yet" in text
+    assert "Tip: re-run with --write" in text

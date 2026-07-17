@@ -98,8 +98,9 @@ def _print_result(result, *, dry_run: bool) -> None:
         print(f"    {role_outcome.lead.title} @ {role_outcome.lead.company}: {ev.verdict.upper()} ({ev.match_pct:.0f}%)")
         if role_outcome.package.jd_path:
             print(f"      folder:       {role_outcome.package.jd_path.parent}")
-        if role_outcome.package.review_path:
-            print(f"      review:       {role_outcome.package.review_path}")
+        review = role_outcome.package.full_llm_review_path or role_outcome.package.no_llm_review_path
+        if review:
+            print(f"      review:       {review}")
         if role_outcome.package.resume_path:
             print(f"      resume:       {role_outcome.package.resume_path}")
             print(f"      cover letter: {role_outcome.package.cover_letter_path}")
@@ -426,7 +427,11 @@ def main(argv: list[str] | None = None) -> int:
                                 "verdict": ro.package.evaluation.verdict,
                                 "match_pct": ro.package.evaluation.match_pct,
                                 "jd_path": str(ro.package.jd_path) if ro.package.jd_path else None,
-                                "review_path": str(ro.package.review_path) if ro.package.review_path else None,
+                                "review_path": str(
+                                    ro.package.full_llm_review_path or ro.package.no_llm_review_path
+                                )
+                                if (ro.package.full_llm_review_path or ro.package.no_llm_review_path)
+                                else None,
                                 "resume_path": str(ro.package.resume_path) if ro.package.resume_path else None,
                                 "cover_letter_path": str(ro.package.cover_letter_path)
                                 if ro.package.cover_letter_path

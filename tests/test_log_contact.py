@@ -138,3 +138,16 @@ def test_log_contact_unknown_job_reports_error(seeded_db: Path, capsys):
     assert rc == 1
     err = capsys.readouterr().err
     assert "No job found" in err
+
+
+def test_log_contact_unknown_job_with_similar_suggestion(seeded_db: Path, capsys):
+    rc = log_contact_main(
+        [
+            "--db", str(seeded_db), "--company", "Acme", "--title", "Software Enginer",
+            "--conversation", "--direction", "outbound", "--summary", "n/a",
+        ]
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "Did you mean" in err
+    assert "Software Engineer" in err

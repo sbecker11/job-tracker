@@ -154,3 +154,24 @@ def test_generate_message_unknown_job_reports_error(seeded_db: Path, tmp_path: P
     assert rc == 1
     assert "No job found" in capsys.readouterr().err
     assert fake_generate == []
+
+
+def test_days_since_helpers():
+    from job_tracker.cli.generate_message import _days_since
+
+    assert _days_since(None) is None
+    assert _days_since("not-a-date") is None
+    # naive ISO gets UTC
+    assert _days_since("2020-01-01T00:00:00") is not None
+    assert _days_since("2020-01-01T00:00:00+00:00") is not None
+
+
+def test_generate_message_unknown_job_with_similar(seeded_db: Path, tmp_path: Path, fake_generate, capsys):
+    rc = generate_message_main(
+        [
+            "--db", str(seeded_db), "--company", "Acme", "--title", "Software Enginer",
+            "--kind", "thank_you", "--output-root", str(tmp_path / "out"),
+        ]
+    )
+    assert rc == 1
+    assert "Did you mean" in capsys.readouterr().err

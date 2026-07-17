@@ -98,3 +98,17 @@ def test_attach_document_unknown_job_reports_error(seeded_db: Path, tmp_path: Pa
     )
     assert rc == 1
     assert "No job found" in capsys.readouterr().err
+
+
+def test_attach_document_unknown_job_with_similar_suggestion(seeded_db: Path, tmp_path: Path, capsys):
+    f = tmp_path / "rtr.pdf"
+    f.write_text("x", encoding="utf-8")
+    rc = attach_document_main(
+        [
+            "--db", str(seeded_db), "--company", "Acme", "--title", "Software Enginer",
+            "--doc-type", "rtr", "--file", str(f),
+        ]
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "Did you mean" in err

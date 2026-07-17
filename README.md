@@ -299,11 +299,14 @@ python scripts/triage_recruiter_inbox.py --rejection-cooldown-days 30
 ```bash
 # Full suite with line + branch coverage (uses .venv when present; installs
 # pytest-cov into that env if missing). Exits non-zero on test failure.
+# Also prints a soft per-file ≥90% report (see COVERAGE.md).
 ./scripts/coverage.sh
 
 # Or a focused subset without coverage:
 pytest tests/test_classifier.py tests/test_gmail_reader.py -v
 ```
+
+Coverage policy, omit allowlist, and per-file helper: [`COVERAGE.md`](COVERAGE.md).
 
 For a rollup across `job-tracker`, `comms-migration`, and `recruiting-automation`:
 
