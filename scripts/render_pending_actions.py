@@ -489,8 +489,9 @@ _TEMPLATE = r"""<!DOCTYPE html>
   </div>
 
   <div class="funnel-caption">
-    <strong>Ready to apply</strong> (target) is on the far left. Each box to the right is something
-    currently blocking leads from getting there &mdash; click any box to jump to its list below.
+    <strong>Ready to apply</strong> (target) is on the far left. Boxes 2-5 are things currently blocking
+    leads from getting there; box 6 (unmatched communications) is a separate signal &mdash; a recruiter
+    reply that couldn't be auto-linked to any lead yet. Click any box to jump to its list below.
   </div>
   <div class="funnel" id="funnel"></div>
   <div class="funnel-note" id="funnel-note"></div>
@@ -608,7 +609,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <hr class="divider" />
 
   <details id="section-unmatched-communications">
-    <summary>Unmatched communications &mdash; couldn't auto-link to a tracked job <span class="count-pill" id="unmatched-communications-count"></span></summary>
+    <summary>6. Unmatched communications &mdash; couldn't auto-link to a tracked job <span class="count-pill" id="unmatched-communications-count"></span></summary>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
@@ -731,14 +732,20 @@ function titleCellHtml(title, folderPath, fileCount) {
 }
 
 // Left-to-right = target-to-farthest-blocker, matching the funnel-caption
-// copy above and the numbered section headings below (1-5). Each box jumps
-// to (and opens) its matching <details> section on click.
+// copy above and the numbered section headings below (1, 2, 4, 5 — 3 is
+// the main table, no <details> of its own). #6 (unmatched communications)
+// is deliberately tacked on at the far end rather than woven into that
+// ordering: it's not a *lead* funnel stage (see render()'s docstring) — a
+// parked message might resolve onto a lead already sitting in any of the
+// other 5 boxes, or onto a brand-new one — it's just surfaced here too
+// since it's real, actionable signal.
 const FUNNEL_STEPS = [
   { count: () => READY_TO_APPLY.length, label: "Ready to apply", cls: "target", sectionId: "section-ready-to-apply" },
   { count: () => NEEDS_DECISION_FORCED.length, label: "Needs decision (forced package)", cls: "blocker", sectionId: "section-needs-decision-forced" },
   { count: () => NEEDS_DECISION.length, label: "Needs your decision", cls: "blocker", sectionId: null }, // scrolls to the main table, not a <details>
   { count: () => AWAITING_LLM_REVIEW.length, label: "Awaiting full-LLM-review", cls: "blocker", sectionId: "section-awaiting-llm-review" },
   { count: () => JD_UNRESOLVED.length, label: "JD unresolved", cls: "blocker-far", sectionId: "section-jd-unresolved" },
+  { count: () => UNMATCHED_COMMUNICATIONS.length, label: "Unmatched communications", cls: "blocker-far", sectionId: "section-unmatched-communications" },
 ];
 
 function renderFunnel() {
