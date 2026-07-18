@@ -65,6 +65,10 @@ recruiting Gmail inbox
 | `src/job_tracker/cli/attach_document.py` | Attach a local file or URL (signed RTR, NDA, JD PDF, etc.) to an existing job (`attach-document`) |
 | `src/job_tracker/cli/list_contacts.py` | Report every tracked contact across all jobs — name, company, role, phone, email (`list-contacts`) |
 | `src/job_tracker/cli/generate_message.py` | Draft a thank-you or status-check-in follow-up email via the same LLM pipeline used for résumés/cover letters (`generate-message`) |
+| `src/job_tracker/pipeline/comms_match.py` | Tiered matching (thread id → contact email → opt-in LLM extraction) that attaches a communication to the right job |
+| `src/job_tracker/cli/scan_communications.py` | Archives LinkedIn message replies (and, with `--include-sent`, your own Sent-folder replies) that `triage_recruiter_inbox.py` never sees (`scan-communications`) |
+| `src/job_tracker/cli/resolve_communication.py` | Manually resolve a parked `unmatched_messages` row onto a real (or brand-new) job (`resolve-communication`) |
+| `src/job_tracker/cli/export_communications.py` | Render one job's full communications history to an on-demand PDF (`export-communications`) |
 | `config/framework.yaml` | Dealbreakers, `not_dealbreakers` (e.g. W2-only, US citizen / no sponsorship), + skills vocabulary — transcribed from `~/CLAUDE.md` |
 | `docs/JOB_CRM_VISION.md` | Design doc: Job as a first-class object — contacts, conversations, documents, meetings, offers, and the 5 use cases (dedupe alerts, follow-ups, offer comparison, market-withdrawal notice) this is building toward |
 | `docs/CATEGORY_HANDLER_EXTENSIBILITY.md` | Design doc: how the classify → decide → label/archive pattern generalizes beyond `recruiter_job` to future comms-migration categories |
@@ -672,6 +676,89 @@ automatically computes "days since contact" from `awaiting_response_since`.
 Not yet built (see `JOB_CRM_VISION.md` §5 open questions): offer-comparison
 reports, market-withdrawal drafting, and transition-validation on
 `advance_status`.
+
+## Communications archival (catches what triage never sees)
+
+**Why this exists (2026-07-17):** `triage_recruiter_inbox.py` only reads
+mail comms-migration has labeled `Category/recruiter_job`. LinkedIn
+"Message replied: ..." notifications — the actual back-and-forth on an
+*existing* recruiter conversation — are deliberately routed to
+`Category/social` instead (a standing comms-migration rule, kept that way on
+purpose so ordinary InMail traffic doesn't clutter the job funnel). The side
+effect: that traffic was invisible to job-tracker entirely, even when it
+carried real signal (a recruiter confirming W2 vs. C2C, naming the actual
+end client, or quoting a rate). `scripts/scan_communications.py` is the fix.
+
+```bash
+# Read-only against Gmail — writes only to var/leads.db, never touches
+# labels/archiving. Scans hit-reply@/inmail-hit-reply@linkedin.com (the two
+# senders that carry real message text) plus, with --include-sent, your own
+# Sent-folder replies (Tier-1 thread/contact match only — see below).
+python scripts/scan_communications.py --llm-fallback --include-sent
+
+# See what's still parked, unmatched:
+python scripts/resolve_communication.py --list
+
+# Attach one to the job it's actually about (--create makes a new stub lead
+# if this is a genuinely new opportunity with no JD yet):
+python scripts/resolve_communication.py --message-id <id> \
+    --company "<company>" --title "<title>" --contact-name "<name>"
+
+# On-demand full communications history for one job, rendered fresh from
+# whatever's in job_conversations right now (not a series of dated snapshots):
+python scripts/export_communications.py --company "<company>" --title "<title>"
+```
+
+Matching (`pipeline/comms_match.py`) tries progressively more expensive
+tiers, cheapest first:
+
+1. **Thread id** already linked to a job (`job_conversations.thread_id`) — free.
+2. **Contact email** already on file (`job_contacts.email`, across *all*
+   jobs, not just one) — free.
+3. **LLM extraction** (opt-in via `--llm-fallback`, one cached-by-message_id
+   Haiku call) — reuses `pipeline/llm_extract.py`'s existing "pull a
+   company/title out of this email" extractor, then fuzzy-matches the result
+   against `job_leads` the same way `find_matching_job()` does. A
+   company-only extraction (no title — e.g. "confirming W2, end client is GE
+   Healthcare") only auto-attaches if it fuzzy-matches **exactly one**
+   existing job for that company; more than one is genuinely ambiguous and
+   left for a human.
+4. **A full (company, title) pair extracted, matching nothing on file**
+   (`llm_new_lead` tier / `MatchOutcome.is_new_lead_candidate`) — distinct
+   from genuinely "couldn't tell." Deliberately **not** the full triage
+   happy path: `scan_communications.py` creates a brand-new stub lead
+   (scored with the free rule-based pass only — no ATS lookup, no LLM
+   review, no résumé/cover letter) so it's visible on the dashboard, but
+   getting it reviewed and packaged is still a separate, explicit
+   `apply_package.py` run.
+5. **Unmatched** — parked in the `unmatched_messages` table for
+   `resolve_communication.py`.
+
+**Whenever both a company and a title are extracted** (tiers 3's
+`llm_company_title` match and tier 4's brand-new lead — never tiers 1/2,
+which don't run an extraction at all), two more things happen automatically:
+the raw message is saved as a `.txt` `JobDocument` (`doc_type="email_txt"`)
+in that job's folder (`communications/Email_<message_id>.txt`, same
+folder convention as `export_communications.py`'s PDF), and the extracted
+text is folded into that lead's `jd_text` — appended for an existing lead,
+set outright for a new one. Both only touch a lead while it's still
+`status="new"`; once a human has triaged it, `store.upsert_lead`'s standing
+guard leaves its `jd_text` alone.
+
+Sent-folder scanning (`--include-sent`) deliberately only ever uses Tier 1
+— an outbound message with no thread/contact match is silently skipped, not
+parked, since a Sent folder carries plenty of ordinary non-recruiting mail
+and parking every unrecognized outgoing email would flood the review queue.
+This is also why replying in-thread and naming the company/title in cold
+outreach (rather than composing a brand-new email) matters in practice: it's
+what keeps future replies on Tier 1 instead of falling through to Tier 3/4.
+
+Wired into `recruiting-automation/run_cycle.sh`'s hourly cycle already;
+`var/pending-actions.html`'s "Unmatched communications" section (rendered by
+`scripts/render_pending_actions.py`) surfaces whatever's still waiting on a
+human. Every linked/resolved message is archived verbatim in
+`job_conversations.body_text` — cheap and searchable by default; the PDF
+export above is only for when you actually need a document to hand someone.
 
 ## Limits
 

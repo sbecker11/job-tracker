@@ -35,7 +35,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT, _safe_filename  # noqa: E402
-from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect  # noqa: E402
+from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect, list_unmatched_messages  # noqa: E402
 from job_tracker.scoring.scorer import DEFAULT_FRAMEWORK_PATH, load_framework, score_jd  # noqa: E402
 
 DEFAULT_OUTPUT_HTML = _REPO_ROOT / "var" / "pending-actions.html"
@@ -275,6 +275,20 @@ def render(conn, *, output_root: Path, now: datetime) -> dict:
     needs_decision_forced.sort(key=lambda l: (-l["ageDays"], -l["matchPct"]))
     ready_to_apply.sort(key=lambda l: (-l["ageDays"], -l["matchPct"]))
 
+    unmatched_communications = [
+        {
+            "messageId": r["message_id"],
+            "direction": r["direction"],
+            "fromAddress": r["from_address"] or "",
+            "toAddress": r["to_address"] or "",
+            "subject": r["subject"] or "(no subject)",
+            "preview": (r["body_text"] or "").strip().replace("\n", " ")[:180],
+            "ageDays": _age_days(r["detected_at"], now),
+        }
+        for r in list_unmatched_messages(conn)
+    ]
+    unmatched_communications.sort(key=lambda m: -m["ageDays"])
+
     return {
         "jd_unresolved": jd_unresolved,
         "awaiting_llm_review": awaiting_llm_review,
@@ -283,6 +297,15 @@ def render(conn, *, output_root: Path, now: datetime) -> dict:
         "ready_to_apply": ready_to_apply,
         "not_prioritized_count": len(not_prioritized),
         "manual_handled": manual_handled,
+        # scripts/scan_communications.py's parking lot (2026-07-17) — a
+        # LinkedIn reply (or Sent-folder message) that couldn't be
+        # auto-linked to any tracked job. Deliberately NOT part of the
+        # lead funnel above (it's about communications, not leads — a row
+        # here might resolve onto a lead already sitting in any funnel
+        # stage, or onto a brand-new one that doesn't exist yet), but
+        # still surfaced prominently since it's real, actionable signal
+        # sitting untracked otherwise. See resolve_communication.py.
+        "unmatched_communications": unmatched_communications,
         "total_leads": len(rows),
         "generated_at": now,
     }
@@ -584,6 +607,29 @@ _TEMPLATE = r"""<!DOCTYPE html>
 
   <hr class="divider" />
 
+  <details id="section-unmatched-communications">
+    <summary>Unmatched communications &mdash; couldn't auto-link to a tracked job <span class="count-pill" id="unmatched-communications-count"></span></summary>
+    <div class="card-body">
+      <div class="table-scroll short">
+        <table>
+          <thead><tr><th>Direction</th><th>Subject</th><th>From / To</th><th>Preview</th><th class="num">Age (days)</th></tr></thead>
+          <tbody id="unmatched-communications-body"></tbody>
+        </table>
+      </div>
+      <div class="hint">
+        Found by <code>scripts/scan_communications.py</code> (LinkedIn message replies routed to
+        <code>Category/social</code> that <code>triage_recruiter_inbox.py</code> never sees, plus optionally
+        your own Sent-folder replies) but couldn't be matched to any job by thread id, known contact
+        address, or (if <code>--llm-fallback</code> was used) an LLM-extracted company/title.
+        <strong>Action:</strong> run <code>python3 scripts/resolve_communication.py --list</code> to see the
+        full text, then <code>resolve_communication.py --message-id &lt;id&gt; --company "&hellip;" --title
+        "&hellip;"</code> (add <code>--create</code> if it's a genuinely new lead with no JD yet).
+      </div>
+    </div>
+  </details>
+
+  <hr class="divider" />
+
   <details>
     <summary>Tracking submitted applications &mdash; already past "package generated"</summary>
     <div class="card-body">
@@ -607,6 +653,7 @@ const AWAITING_LLM_REVIEW = ${AWAITING_LLM_REVIEW_JSON};
 const JD_UNRESOLVED = ${JD_UNRESOLVED_JSON};
 const NOT_PRIORITIZED_COUNT = ${NOT_PRIORITIZED_COUNT_JSON};
 const MANUAL_HANDLED = ${MANUAL_HANDLED_JSON};
+const UNMATCHED_COMMUNICATIONS = ${UNMATCHED_COMMUNICATIONS_JSON};
 
 // PENDING_REVIEW kept as the name of the main filterable table's backing
 // array (section 3, "Needs your decision") purely so the rest of this
@@ -851,6 +898,18 @@ function renderReadyToApply() {
     </tr>`).join("");
 }
 
+function renderUnmatchedCommunications() {
+  document.getElementById("unmatched-communications-count").textContent = UNMATCHED_COMMUNICATIONS.length;
+  document.getElementById("unmatched-communications-body").innerHTML = UNMATCHED_COMMUNICATIONS.map(m => `
+    <tr>
+      <td>${escapeHtml(m.direction)}</td>
+      <td class="title">${escapeHtml(m.subject)}</td>
+      <td class="title">${escapeHtml(m.fromAddress || m.toAddress)}</td>
+      <td class="title">${escapeHtml(m.preview)}</td>
+      ${ageCellHtml(m.ageDays)}
+    </tr>`).join("");
+}
+
 function renderManualHandled() {
   document.getElementById("manual-handled").innerHTML = MANUAL_HANDLED.map(group => `
     <div class="manual-row">
@@ -871,6 +930,7 @@ renderReadyToApply();
 renderNeedsDecisionForced();
 renderAwaitingLlmReview();
 renderJdUnresolved();
+renderUnmatchedCommunications();
 renderManualHandled();
 </script>
 </body>
@@ -891,7 +951,7 @@ def _render_html(data: dict, *, output_root: Path) -> str:
             if data["manual_handled"]
             else "none"
         )
-        + "."
+        + f". {len(data['unmatched_communications'])} unmatched communication(s) awaiting manual resolution."
     )
     html = _TEMPLATE
     html = html.replace("${GENERATED_AT}", data["generated_at"].strftime("%Y-%m-%d %H:%M %Z") or data["generated_at"].strftime("%Y-%m-%d %H:%M"))
@@ -903,6 +963,7 @@ def _render_html(data: dict, *, output_root: Path) -> str:
     html = html.replace("${JD_UNRESOLVED_JSON}", json.dumps(data["jd_unresolved"]))
     html = html.replace("${NOT_PRIORITIZED_COUNT_JSON}", json.dumps(data["not_prioritized_count"]))
     html = html.replace("${MANUAL_HANDLED_JSON}", json.dumps(data["manual_handled"]))
+    html = html.replace("${UNMATCHED_COMMUNICATIONS_JSON}", json.dumps(data["unmatched_communications"]))
     html = html.replace("${FOLDER_ROOT}", str(output_root))
     html = html.replace("${STALE_DAYS_THRESHOLD}", str(STALE_DAYS_THRESHOLD))
     html = html.replace("${LLM_REVIEW_GATE_PCT}", str(LLM_REVIEW_GATE_PCT))

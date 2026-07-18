@@ -21,6 +21,7 @@ from job_tracker.pipeline.models import (
     JobLead,
     JobMeeting,
     JobOffer,
+    UnmatchedMessage,
     normalize_key,
     utc_now_iso,
 )
@@ -139,6 +140,26 @@ CREATE TABLE IF NOT EXISTS job_offers (
     received_at TEXT,
     decision TEXT DEFAULT 'pending'
 );
+
+-- pipeline/comms_match.py's parking lot (2026-07-17) for a communication
+-- that couldn't be confidently attached to any tracked job — see
+-- models.UnmatchedMessage. message_id is the primary key so a re-scan is
+-- naturally idempotent (INSERT OR IGNORE); resolved_job_key/resolved_at
+-- stay NULL until scripts/resolve_communication.py (or a later scan that
+-- resolves the same thread_id) fills them in. Rows are never deleted, even
+-- once resolved, so the manual-resolution history stays auditable.
+CREATE TABLE IF NOT EXISTS unmatched_messages (
+    message_id TEXT PRIMARY KEY,
+    thread_id TEXT,
+    direction TEXT DEFAULT 'inbound',
+    from_address TEXT,
+    to_address TEXT,
+    subject TEXT,
+    body_text TEXT,
+    detected_at TEXT,
+    resolved_job_key TEXT,
+    resolved_at TEXT
+);
 """
 
 # Columns added after the initial release. New databases get them via
@@ -225,6 +246,10 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # cleanly fit that rule (e.g. a phone call logged after the fact).
     ("job_leads", "awaiting_response_since", "ALTER TABLE job_leads ADD COLUMN awaiting_response_since TEXT"),
     ("job_contacts", "phone", "ALTER TABLE job_contacts ADD COLUMN phone TEXT"),
+    # Communications archival (2026-07-17) — see models.JobConversation and
+    # pipeline/comms_match.py's Tier-1 thread-id matching.
+    ("job_conversations", "thread_id", "ALTER TABLE job_conversations ADD COLUMN thread_id TEXT"),
+    ("job_conversations", "body_text", "ALTER TABLE job_conversations ADD COLUMN body_text TEXT"),
 ]
 
 # models.LEAD_STAGES -> the timestamp column stamped when a lead enters that
@@ -797,8 +822,9 @@ def add_job_conversation(
     cursor = conn.execute(
         """
         INSERT INTO job_conversations (
-            job_key, contact_id, message_id, channel, direction, summary, occurred_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            job_key, contact_id, message_id, channel, direction, summary, occurred_at,
+            thread_id, body_text
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             conversation.job_key,
@@ -808,6 +834,8 @@ def add_job_conversation(
             conversation.direction,
             conversation.summary,
             conversation.occurred_at,
+            conversation.thread_id,
+            conversation.body_text,
         ),
     )
 
@@ -1013,6 +1041,194 @@ def find_matching_job(conn: sqlite3.Connection, company: str, title: str) -> Job
     if candidates and candidates[0].combined_score >= AUTO_MATCH_THRESHOLD:
         return candidates[0]
     return None
+
+
+def find_company_only_matches(conn: sqlite3.Connection, company: str) -> list[JobMatch]:
+    """Every job_leads row whose company fuzzy-matches `company` at
+    AUTO_MATCH_THRESHOLD, ignoring title entirely — the fallback for
+    `pipeline/comms_match.py`'s Tier 2 when a reply names an employer
+    (e.g. "GE health care") but no title (a bare `find_similar_jobs` call
+    would score title_ratio against an empty string and never clear
+    AMBIGUOUS_THRESHOLD, even for the right company). Callers should only
+    auto-attach on exactly one match; more than one is genuinely ambiguous
+    (which of this company's tracked roles is this about?) and belongs in
+    the unmatched queue for a human to pick."""
+    matches: list[JobMatch] = []
+    for row in conn.execute("SELECT normalized_key, company, title FROM job_leads"):
+        company_ratio = _ratio(company, row["company"])
+        if company_ratio >= AUTO_MATCH_THRESHOLD:
+            matches.append(JobMatch(row["normalized_key"], row["company"], row["title"], company_ratio, 0.0, company_ratio))
+    matches.sort(key=lambda m: m.combined_score, reverse=True)
+    return matches
+
+
+# --- Communications archival (pipeline/comms_match.py, 2026-07-17) --------
+# Tier-1 matching: once any message on a thread, or from a known contact's
+# address, has been linked to a job once, every later message on that same
+# thread/address attaches for free — no fuzzy-matching or LLM call needed.
+
+# LinkedIn's own relay addresses — every InMail/message-reply notification
+# comes FROM one of these regardless of which actual recruiter sent it.
+# Found live 2026-07-17: an earlier job_contacts row had one of these on
+# file as "the contact," which made comms_match's Tier 2 spuriously match
+# EVERY unrelated LinkedIn message onto that one job. Never store one of
+# these as a job_contacts.email (scan_communications.py,
+# resolve_unmatched_message below), and never let a match against one count
+# as a real contact-identity match (comms_match.match_message_to_job).
+GENERIC_RELAY_ADDRESSES = frozenset(
+    {
+        "hit-reply@linkedin.com",
+        "inmail-hit-reply@linkedin.com",
+        "messaging-digest-noreply@linkedin.com",
+    }
+)
+
+
+def find_job_by_thread_id(conn: sqlite3.Connection, thread_id: str) -> str | None:
+    """The job_key of the most recent job_conversations row already using
+    this thread_id, if any. Empty/blank thread_id never matches (some
+    senders omit it) — deliberately not treated as a wildcard."""
+    if not thread_id:
+        return None
+    row = conn.execute(
+        "SELECT job_key FROM job_conversations WHERE thread_id = ? ORDER BY occurred_at DESC LIMIT 1",
+        (thread_id,),
+    ).fetchone()
+    return row["job_key"] if row else None
+
+
+def find_job_by_contact_email(conn: sqlite3.Connection, email: str) -> str | None:
+    """The job_key of a job_contacts row already on file for this email
+    address, across ALL jobs (unlike add_job_contact's dedupe check, which
+    is scoped to one job_key). If the same address is a contact on more
+    than one job (e.g. a recruiter who's pitched you twice for different
+    roles), the most recently contacted one wins — better than refusing to
+    guess, since Tier 2/3 would have even less to go on."""
+    email = (email or "").strip().lower()
+    if not email:
+        return None
+    row = conn.execute(
+        "SELECT job_key FROM job_contacts WHERE lower(email) = ? ORDER BY last_contacted_at DESC LIMIT 1",
+        (email,),
+    ).fetchone()
+    return row["job_key"] if row else None
+
+
+def is_communication_seen(conn: sqlite3.Connection, message_id: str) -> bool:
+    """True if `message_id` has already been handled by any path that
+    touches communications: the recruiter-inbox triage flow
+    (processed_messages), a resolved-or-unmatched conversation
+    (job_conversations.message_id), or a prior comms scan that already
+    parked it (unmatched_messages). scripts/scan_communications.py checks
+    this before matching so a re-run never double-logs the same message."""
+    for table, column in (
+        ("processed_messages", "message_id"),
+        ("job_conversations", "message_id"),
+        ("unmatched_messages", "message_id"),
+    ):
+        row = conn.execute(f"SELECT 1 FROM {table} WHERE {column} = ?", (message_id,)).fetchone()
+        if row is not None:
+            return True
+    return False
+
+
+def record_unmatched_message(conn: sqlite3.Connection, msg: UnmatchedMessage) -> None:
+    """Park a communication that couldn't be matched to any job. Idempotent
+    on message_id (INSERT OR IGNORE) — a re-scan that finds the same
+    unresolved message again is a no-op rather than an error."""
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO unmatched_messages (
+            message_id, thread_id, direction, from_address, to_address,
+            subject, body_text, detected_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            msg.message_id,
+            msg.thread_id,
+            msg.direction,
+            msg.from_address,
+            msg.to_address,
+            msg.subject,
+            msg.body_text,
+            msg.detected_at,
+        ),
+    )
+    conn.commit()
+
+
+def get_unmatched_message(conn: sqlite3.Connection, message_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM unmatched_messages WHERE message_id = ?", (message_id,)
+    ).fetchone()
+
+
+def list_unmatched_messages(conn: sqlite3.Connection, *, include_resolved: bool = False) -> list[sqlite3.Row]:
+    where = "" if include_resolved else "WHERE resolved_at IS NULL"
+    return list(
+        conn.execute(f"SELECT * FROM unmatched_messages {where} ORDER BY detected_at DESC")
+    )
+
+
+def resolve_unmatched_message(
+    conn: sqlite3.Connection,
+    message_id: str,
+    job_key: str,
+    *,
+    contact_name: str = "",
+    contact_email: str = "",
+    contact_role: str = "recruiter",
+    when: str | None = None,
+) -> int:
+    """Turn a parked `unmatched_messages` row into a real JobContact +
+    JobConversation on `job_key` (scripts/resolve_communication.py's write
+    side), then stamp resolved_job_key/resolved_at on the original row —
+    kept, not deleted, as an audit trail of what was once unmatched and how
+    it got resolved. Returns the new JobConversation's id.
+
+    Raises ValueError if `message_id` isn't a known unmatched message (call
+    `get_unmatched_message` first if you need to distinguish "already
+    resolved" from "never existed")."""
+    row = get_unmatched_message(conn, message_id)
+    if row is None:
+        raise ValueError(f"no unmatched_messages row for message_id={message_id!r}")
+
+    fallback_address = row["from_address"] if row["direction"] == "inbound" else ""
+    if fallback_address and fallback_address.strip().lower() in GENERIC_RELAY_ADDRESSES:
+        fallback_address = ""
+    contact_id = None
+    if contact_name or contact_email or fallback_address:
+        contact_id = add_job_contact(
+            conn,
+            JobContact(
+                job_key=job_key,
+                name=contact_name,
+                email=contact_email or fallback_address,
+                role=contact_role,
+                source_message_id=message_id,
+            ),
+        )
+
+    conversation_id = add_job_conversation(
+        conn,
+        JobConversation(
+            job_key=job_key,
+            contact_id=contact_id,
+            message_id=message_id,
+            channel="email",
+            direction=row["direction"],
+            summary=row["subject"] or "(resolved communication)",
+            thread_id=row["thread_id"] or "",
+            body_text=row["body_text"] or "",
+        ),
+    )
+
+    conn.execute(
+        "UPDATE unmatched_messages SET resolved_job_key = ?, resolved_at = ? WHERE message_id = ?",
+        (job_key, when or utc_now_iso(), message_id),
+    )
+    conn.commit()
+    return conversation_id
 
 
 # --- Rejection cooldown / disqualification --------------------------------

@@ -125,6 +125,41 @@ class JobConversation:
     summary: str = ""
     id: int | None = None
     occurred_at: str = field(default_factory=utc_now_iso)
+    # Added 2026-07-17 (pipeline/comms_match.py): the underlying mail
+    # thread/conversation id (Gmail threadId — which LinkedIn InMail replies
+    # also share across a whole back-and-forth) and the full message text.
+    # thread_id is what makes Tier-1 matching in comms_match.py free after
+    # the first message on a thread is linked once; body_text is the actual
+    # archived content (summary stays a short human-readable label — e.g.
+    # the subject line — so list views don't have to truncate a wall of
+    # email text).
+    thread_id: str = ""
+    body_text: str = ""
+
+
+@dataclass
+class UnmatchedMessage:
+    """A communication `pipeline/comms_match.py` couldn't confidently attach
+    to any tracked job (docs/JOB_CRM_VISION.md follow-up, added 2026-07-17
+    after 3 real recruiter replies were found sitting untracked in
+    Category/social — see chat history). Parked here for manual review via
+    `scripts/resolve_communication.py` rather than silently dropped or
+    guessed at. `resolved_job_key`/`resolved_at` are set once a human (or a
+    later thread-id match) resolves it; the row is kept either way as an
+    audit trail rather than deleted.
+    """
+
+    message_id: str
+    thread_id: str = ""
+    direction: str = "inbound"  # inbound | outbound
+    from_address: str = ""
+    to_address: str = ""
+    subject: str = ""
+    body_text: str = ""
+    detected_at: str = field(default_factory=utc_now_iso)
+    resolved_job_key: str | None = None
+    resolved_at: str | None = None
+    id: int | None = None
 
 
 @dataclass

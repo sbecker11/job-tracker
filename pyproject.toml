@@ -17,6 +17,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "anthropic>=0.40.0",
     "python-docx>=1.1.0",
+    "fpdf2>=2.8.0",
 ]
 
 [project.scripts]
@@ -34,6 +35,9 @@ attach-document = "job_tracker.cli.attach_document:main"
 list-contacts = "job_tracker.cli.list_contacts:main"
 generate-message = "job_tracker.cli.generate_message:main"
 delete-lead = "job_tracker.cli.delete_lead:main"
+scan-communications = "job_tracker.cli.scan_communications:main"
+resolve-communication = "job_tracker.cli.resolve_communication:main"
+export-communications = "job_tracker.cli.export_communications:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-cov>=5.0"]

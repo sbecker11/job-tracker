@@ -23,6 +23,10 @@ run_pipeline.py      (same command)     evaluate_backlog.py  list_leads.py   app
 Stage 5 (~$0.10-0.30/msg, fully automatic — see "Triage the recruiter inbox" in README.md)
 Category/recruiter_job inbox mail  →  LLM score + auto-generate on pursue  →  relabel + archive
                               triage_recruiter_inbox.py (requires gmail.modify OAuth, one-time consent)
+
+Stage 6 (free–$0.01/msg, runs alongside Stage 5 in the hourly cycle — see "Archive communications" below)
+LinkedIn replies (Category/social) + Sent folder  →  tiered match  →  job_conversations, or unmatched queue
+                              scan_communications.py (read-only Gmail; see docs/JOB_CRM_VISION.md)
 ```
 
 ---
@@ -271,7 +275,66 @@ python scripts/apply_package.py --company "<company>" --title "<title>"
 | 3 (`list_leads.py`) | Local SQLite only | Free |
 | 4 (`apply_package.py`) | Local rule-based score always; Anthropic API only past each gate | Free (`no-LLM-review.docx`) → ~$0.05–0.10/lead for the full LLM review only once the free score clears 70% → +~$0.10–0.20 more for résumé/cover letter only on a pursue verdict |
 | 5 (`triage_recruiter_inbox.py`) | Gmail (**read/write** — `gmail.modify`), Anthropic API | ~$0.02–0.04/message (evaluate), +~$0.10–0.30 more only on a pursue verdict; relabels + archives the message |
+| 6 (`scan_communications.py`) | Gmail (read-only), Anthropic API only with `--llm-fallback` | Free (thread-id/contact-email matching) + ~$0.001–0.01/message with `--llm-fallback` (Haiku, cached per message_id) |
 
 Nothing in this pipeline applies, replies to, or sends anything to an
 employer on your behalf — it only surfaces, scores, and drafts documents for
 you to review and use yourself.
+
+---
+
+## Stage 6 — Archive communications the triage flow never sees
+
+Background (2026-07-17): comms-migration deliberately routes LinkedIn
+"Message replied: ..." notifications to `Category/social`, not
+`Category/recruiter_job` — so `triage_recruiter_inbox.py` (Stage 5) never
+even sees that traffic, even when it's a real recruiter confirming details
+that matter (W2 vs. C2C, the actual end client, rate). Three such messages
+were found sitting completely untracked before this stage existed.
+
+```bash
+# Read-only against Gmail — no labels/archiving touched, only var/leads.db written.
+python scripts/scan_communications.py --llm-fallback --include-sent
+
+# See what couldn't be auto-matched:
+python scripts/resolve_communication.py --list
+
+# Attach one to the right job (add --create for a genuinely new lead):
+python scripts/resolve_communication.py --message-id <id> --company "<company>" --title "<title>"
+
+# On-demand PDF of one job's full communications history:
+python scripts/export_communications.py --company "<company>" --title "<title>"
+```
+
+Matching is tiered, cheapest first: thread id already linked to a job → a
+known `job_contacts.email` → (opt-in) one cached LLM call to extract a
+company/title and fuzzy-match it → otherwise parked in the
+`unmatched_messages` queue for a human. See
+`src/job_tracker/pipeline/comms_match.py`'s module docstring for the full
+tier breakdown, and `scan_communications.py`'s docstring for why Sent-folder
+scanning only ever uses Tier 1 (never bills an LLM call, never parks an
+unmatched outbound message — Sent folders carry plenty of non-recruiting
+mail).
+
+**Deliberately no "happy path" for what Tier 3 extracts (2026-07-17
+refinement).** If the LLM extraction can't confidently pull out a company
+*and* a title, the message stays parked for a human — same as always. But
+if it *can* pull out both:
+- **Matches an existing lead** (`llm_company_title` tier): the excerpt is
+  appended to that lead's `jd_text` (only while it's still `status="new"` —
+  same "don't silently overwrite a triaged lead" guard `store.upsert_lead`
+  applies everywhere), and the raw message is archived as a `.txt`
+  `JobDocument` (`doc_type="email_txt"`) in that job's folder.
+- **Matches nothing on file** (`llm_new_lead` tier,
+  `MatchOutcome.is_new_lead_candidate`): a brand-new stub lead is created
+  (scored with the free rule-based pass only) — but that's *all* that
+  happens. No ATS lookup, no `no-LLM-review`/`full-LLM-review` docx, no
+  résumé/cover-letter generation. Getting from there to an actual reviewed,
+  packaged lead is still `apply_package.py` (or the next
+  `render_pending_actions.py` rescore for the free score) — a deliberate
+  choice so a vague LinkedIn pitch never turns into a fully-packaged
+  application with nobody having read the JD.
+
+Wired into `recruiting-automation/run_cycle.sh`'s hourly cycle
+already; `var/pending-actions.html`'s "Unmatched communications" section
+surfaces whatever's still waiting.

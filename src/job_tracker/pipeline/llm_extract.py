@@ -129,7 +129,16 @@ def _parse_response_text(raw: str) -> list[dict]:
         text = text.strip("`").strip()
         if text.lower().startswith("json"):
             text = text[4:].strip()
-    data = json.loads(text)
+    # `raw_decode` (rather than `json.loads`) tolerates trailing prose after
+    # the JSON array — observed live 2026-07-17 scanning non-digest content
+    # (a recruiter reply, not this module's usual job-digest input): the
+    # model closed the array correctly but appended an explanatory sentence
+    # on the next line with no fence around it, which json.loads rejects
+    # outright as "Extra data" even though the actual answer parsed fine.
+    try:
+        data, _end = json.JSONDecoder().raw_decode(text)
+    except json.JSONDecodeError:
+        data = json.loads(text)  # re-raise the original, clearer error
     if not isinstance(data, list):
         raise LLMExtractionError(f"expected a JSON array, got {type(data).__name__}")
     return data

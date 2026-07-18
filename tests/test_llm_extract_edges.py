@@ -21,6 +21,21 @@ def test_parse_response_rejects_non_list():
         llm_extract._parse_response_text('{"company": "Acme"}')
 
 
+def test_parse_response_tolerates_trailing_prose():
+    """Regression test (found live 2026-07-17 via scan_communications.py on
+    non-digest content): a model can close the JSON array correctly and
+    then add an unfenced explanatory sentence afterward — that's still a
+    usable answer, not a parse failure."""
+    text = '[{"company": "Acme", "title": "SWE", "confidence": 0.9}]\nHope that helps!'
+    data = llm_extract._parse_response_text(text)
+    assert data == [{"company": "Acme", "title": "SWE", "confidence": 0.9}]
+
+
+def test_parse_response_still_raises_on_genuinely_invalid_json():
+    with pytest.raises(json.JSONDecodeError):
+        llm_extract._parse_response_text("not json at all")
+
+
 def test_cost_usd_unknown_model():
     assert llm_extract._cost_usd("unknown-model", 100, 50) is None
 
