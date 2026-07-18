@@ -50,6 +50,13 @@ separate, explicit step (`apply_package.py`, or the next
 `render_pending_actions.py` rescore for the free score) so a vague LinkedIn
 pitch never silently turns into a fully-reviewed, packaged lead with nobody
 having read it.
+
+Contact enrichment (2026-07-17): every matched/linked inbound message also
+runs `pipeline/signature.py` against the body to pull a real recruiter
+name/email/phone out of the sign-off block, if one's there — the `From:`
+header alone is useless for this (always a generic LinkedIn relay
+address), and this is the difference between a contact record you can
+actually use to follow up and one that's empty.
 """
 
 from __future__ import annotations
@@ -71,6 +78,7 @@ from job_tracker.pipeline.comms_match import match_message_to_job
 from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT, _job_folder, _safe_filename
 from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_EXTRACT_MODEL
 from job_tracker.pipeline.models import JobContact, JobConversation, JobDocument, JobLead, UnmatchedMessage
+from job_tracker.pipeline.signature import parse_signature
 from job_tracker.pipeline.store import (
     DEFAULT_DB_PATH,
     GENERIC_RELAY_ADDRESSES,
@@ -231,14 +239,34 @@ def _scan_one(
     if job_key is not None:
         contact_id = None
         other_address = message.from_address if direction == "inbound" else message.to_address
-        # Never record a LinkedIn relay address as *the* contact — see
-        # comms_match._GENERIC_RELAY_ADDRESSES; it identifies the platform,
-        # not the recruiter, and would otherwise poison Tier 2 for every
-        # future message from ANY recruiter that happens to land on this job.
-        if other_address and other_address.strip().lower() not in GENERIC_RELAY_ADDRESSES:
+        # Real recruiter name/email/phone often sit in the message body
+        # itself (LinkedIn's sender-block template, or the recruiter's own
+        # typed sign-off) even though the `From:` header is always a
+        # generic relay address for InMail — see pipeline/signature.py.
+        # Inbound only: an outbound (Sent-folder) message is Shawn's own
+        # writing, and parsing it here could mistake his own sign-off for
+        # the recruiter's.
+        detected = parse_signature(message.combined_text) if direction == "inbound" else None
+        contact_email = ""
+        if detected and detected.email:
+            contact_email = detected.email
+        elif other_address and other_address.strip().lower() not in GENERIC_RELAY_ADDRESSES:
+            # Never record a LinkedIn relay address as *the* contact — see
+            # comms_match._GENERIC_RELAY_ADDRESSES; it identifies the
+            # platform, not the recruiter, and would otherwise poison Tier 2
+            # for every future message from ANY recruiter landing on this job.
+            contact_email = other_address
+        if contact_email or (detected and (detected.name or detected.phone)):
             contact_id = add_job_contact(
                 conn,
-                JobContact(job_key=job_key, email=other_address, role="recruiter", source_message_id=message_id),
+                JobContact(
+                    job_key=job_key,
+                    name=detected.name if detected else "",
+                    email=contact_email,
+                    phone=detected.phone if detected else "",
+                    role="recruiter",
+                    source_message_id=message_id,
+                ),
             )
         add_job_conversation(
             conn,

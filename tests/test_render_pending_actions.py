@@ -15,8 +15,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from job_tracker.pipeline.models import JobLead
-from job_tracker.pipeline.store import connect, update_llm_evaluation, upsert_lead
+from job_tracker.pipeline.models import JobLead, UnmatchedMessage
+from job_tracker.pipeline.store import connect, record_unmatched_message, update_llm_evaluation, upsert_lead
 from job_tracker.pipeline.llm_apply import CallMetrics, EvaluationResult
 
 _SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "render_pending_actions.py"
@@ -198,3 +198,44 @@ def test_html_wires_title_and_company_finder_links(tmp_path: Path):
     assert "companyCellHtml(lead.company, lead.companyFolderPath)" in text
     assert '"companyFolderPath": "Acme"' in text
     assert '"folderPath": "Acme"' in text
+
+
+def test_unmatched_communications_carries_full_body_alongside_preview(tmp_path: Path):
+    """2026-07-17: the table's "Preview" cell is truncated to 180 chars, but
+    the page has no live DB access to fetch the rest on demand — the full
+    text has to already be embedded in `body` so the dashboard's click-to-
+    expand can show it (with From/To/Subject/Message-Id repeated above it,
+    so the expanded block reads standalone)."""
+    db_path = tmp_path / "leads.db"
+    conn = connect(db_path)
+    long_body = "This is the full message body. " * 20  # > 180 chars
+    record_unmatched_message(
+        conn,
+        UnmatchedMessage(
+            message_id="msg-abc",
+            direction="inbound",
+            from_address="radha@clevanoo.example",
+            to_address="me@example.com",
+            subject="Exciting opportunity",
+            body_text=long_body,
+        ),
+    )
+
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    conn.close()
+
+    assert len(data["unmatched_communications"]) == 1
+    entry = data["unmatched_communications"][0]
+    assert entry["messageId"] == "msg-abc"
+    assert entry["body"] == long_body
+    assert len(entry["preview"]) <= 180
+    assert entry["preview"] in long_body
+
+    text = render_pending_actions._render_html(data, output_root=tmp_path)
+    assert "preview-cell" in text
+    assert "preview-full" in text
+    assert '"body": "This is the full message body.' in text
+    assert 'headerLine("Message-Id"' in text
+    assert 'headerLine("Subject"' in text
+    assert 'headerLine("From"' in text
+    assert 'headerLine("To"' in text

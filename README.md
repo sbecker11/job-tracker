@@ -696,8 +696,13 @@ end client, or quoting a rate). `scripts/scan_communications.py` is the fix.
 # Sent-folder replies (Tier-1 thread/contact match only — see below).
 python scripts/scan_communications.py --llm-fallback --include-sent
 
-# See what's still parked, unmatched:
+# See what's still parked, unmatched (a ~160-char preview per message):
 python scripts/resolve_communication.py --list
+
+# Read one in full before deciding how to resolve it (var/pending-actions.html's
+# "Unmatched communications" table also has a click-to-expand full preview,
+# with From/To/Subject/Message-Id repeated above the body, for the same reason):
+python scripts/resolve_communication.py --message-id <id> --show
 
 # Attach one to the job it's actually about (--create makes a new stub lead
 # if this is a genuinely new opportunity with no JD yet):
@@ -759,6 +764,29 @@ Wired into `recruiting-automation/run_cycle.sh`'s hourly cycle already;
 human. Every linked/resolved message is archived verbatim in
 `job_conversations.body_text` — cheap and searchable by default; the PDF
 export above is only for when you actually need a document to hand someone.
+
+### Recruiter contact extraction (2026-07-17)
+
+A LinkedIn InMail's `From:` header is always a generic relay address
+(`inmail-hit-reply@linkedin.com`) — no use as a contact record — but a real
+name, and often a real email/phone, are usually sitting in the body itself:
+LinkedIn's own template renders a short sender block (`<Name> / Reply /
+<thread URL>`), and a meaningful minority of recruiters also sign off with
+their own `Name | Company` / `Title` / `Email: ... | Cell: ...` block.
+`src/job_tracker/pipeline/signature.py`'s `parse_signature()` — plain
+regex, no LLM call, so it runs on every message for free — pulls both
+signals out (preferring the recruiter's own fuller sign-off name over
+LinkedIn's sometimes-truncated display name), and both
+`scan_communications.py` and `resolve_communication.py` populate
+`job_contacts` from it automatically now. Deliberately does **not** attempt
+to recover a LinkedIn profile URL — the only link in these messages is a
+private "reply to this thread" URL, not the sender's public profile; there's
+nothing there to parse. See what's been captured for a job without opening
+Gmail at all:
+
+```bash
+list-leads --company "<company>" --title "<title>" --show-contacts
+```
 
 ## Limits
 

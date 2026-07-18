@@ -732,31 +732,46 @@ def record_message_processed(
 
 
 def add_job_contact(conn: sqlite3.Connection, contact: JobContact) -> int:
-    """Insert a JobContact, or — if `email` already exists for this job_key —
-    just bump `last_contacted_at` (and backfill `name`/`phone` if this call
-    supplies one the stored row doesn't have yet — e.g. a manual
+    """Insert a JobContact, or — if a matching row already exists for this
+    job_key — just bump `last_contacted_at` (and backfill `name`/`phone` if
+    this call supplies one the stored row doesn't have yet — e.g. a manual
     `log_contact.py` call filling in a phone number for a contact
     auto-created from an email that never had one) and return the existing
     row's id. This is what makes UC-1 (ingest) and UC-2 (dedupe) safe to call
-    repeatedly for the same sender without piling up duplicate contact rows."""
+    repeatedly for the same sender without piling up duplicate contact rows.
+
+    Two dedupe keys, tried in order: (job_key, email) when this call has an
+    email; falling back to (job_key, name) among the job's other
+    email-less contacts when it doesn't — added 2026-07-17 after
+    `pipeline/signature.py` backfilling from several messages for the same
+    job (each with a name but no email) started piling up duplicate
+    name-only rows that the email-only key never caught."""
     email = (contact.email or "").strip().lower()
+    name = (contact.name or "").strip().lower()
+    existing = None
     if email:
         existing = conn.execute(
             "SELECT id, name, phone FROM job_contacts WHERE job_key = ? AND lower(email) = ?",
             (contact.job_key, email),
         ).fetchone()
-        if existing is not None:
-            conn.execute(
-                "UPDATE job_contacts SET last_contacted_at = ?, name = ?, phone = ? WHERE id = ?",
-                (
-                    utc_now_iso(),
-                    contact.name or existing["name"],
-                    contact.phone or existing["phone"],
-                    existing["id"],
-                ),
-            )
-            conn.commit()
-            return existing["id"]
+    if existing is None and not email and name:
+        existing = conn.execute(
+            "SELECT id, name, phone FROM job_contacts WHERE job_key = ? AND lower(name) = ? "
+            "AND (email IS NULL OR email = '')",
+            (contact.job_key, name),
+        ).fetchone()
+    if existing is not None:
+        conn.execute(
+            "UPDATE job_contacts SET last_contacted_at = ?, name = ?, phone = ? WHERE id = ?",
+            (
+                utc_now_iso(),
+                contact.name or existing["name"],
+                contact.phone or existing["phone"],
+                existing["id"],
+            ),
+        )
+        conn.commit()
+        return existing["id"]
 
     cursor = conn.execute(
         """
@@ -1177,6 +1192,7 @@ def resolve_unmatched_message(
     *,
     contact_name: str = "",
     contact_email: str = "",
+    contact_phone: str = "",
     contact_role: str = "recruiter",
     when: str | None = None,
 ) -> int:
@@ -1197,13 +1213,14 @@ def resolve_unmatched_message(
     if fallback_address and fallback_address.strip().lower() in GENERIC_RELAY_ADDRESSES:
         fallback_address = ""
     contact_id = None
-    if contact_name or contact_email or fallback_address:
+    if contact_name or contact_email or contact_phone or fallback_address:
         contact_id = add_job_contact(
             conn,
             JobContact(
                 job_key=job_key,
                 name=contact_name,
                 email=contact_email or fallback_address,
+                phone=contact_phone,
                 role=contact_role,
                 source_message_id=message_id,
             ),

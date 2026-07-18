@@ -283,6 +283,12 @@ def render(conn, *, output_root: Path, now: datetime) -> dict:
             "toAddress": r["to_address"] or "",
             "subject": r["subject"] or "(no subject)",
             "preview": (r["body_text"] or "").strip().replace("\n", " ")[:180],
+            # Full text too (not just the 180-char preview) — this page is a
+            # static file with no live DB access, so the only way to read a
+            # message in full from the dashboard itself is to have it already
+            # embedded; the table row's "Preview" cell expands to show it
+            # (see renderUnmatchedCommunications()/`.preview-cell` below).
+            "body": r["body_text"] or "",
             "ageDays": _age_days(r["detected_at"], now),
         }
         for r in list_unmatched_messages(conn)
@@ -445,6 +451,34 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .copy-btn.copied { color: var(--success); border-color: var(--success); }
   .hint { font-size: 12px; color: var(--text-tertiary); margin-top: 10px; }
   .divider { border: none; border-top: 1px solid var(--border); margin: 28px 0; }
+  /* Overrides the card-level `summary`/`details` rules below for the
+     inline "click to read the full message" toggle in the unmatched-
+     communications table — those are sized for a whole collapsible card,
+     not one table cell. */
+  .preview-cell details { border: none; background: transparent; margin: 0; }
+  .preview-cell summary {
+    padding: 0;
+    display: list-item;
+    list-style: revert;
+    cursor: pointer;
+    color: var(--text);
+    font-size: 13px;
+  }
+  .preview-cell summary::marker { color: var(--info); }
+  .preview-cell .preview-full {
+    margin-top: 8px;
+    padding: 10px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    max-height: 360px;
+    overflow-y: auto;
+  }
+  .preview-cell .preview-full strong { color: var(--text); font-weight: 600; }
+  .preview-cell .preview-body { white-space: pre-wrap; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
   details { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); margin-bottom: 12px; }
   summary { padding: 12px 14px; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: space-between; list-style: none; }
   summary::-webkit-details-marker { display: none; }
@@ -907,14 +941,38 @@ function renderReadyToApply() {
 
 function renderUnmatchedCommunications() {
   document.getElementById("unmatched-communications-count").textContent = UNMATCHED_COMMUNICATIONS.length;
-  document.getElementById("unmatched-communications-body").innerHTML = UNMATCHED_COMMUNICATIONS.map(m => `
+  document.getElementById("unmatched-communications-body").innerHTML = UNMATCHED_COMMUNICATIONS.map(m => {
+    // The 180-char preview is all that fits in a table cell; click it to
+    // expand the full stored body inline (no live DB access from this
+    // static page, so the full text has to already be embedded — see
+    // render_pending_actions.render()'s "body" field). The expanded block
+    // repeats From/To/Subject above the body so it's self-contained —
+    // readable on its own without having to look back at the row's other
+    // columns (which can also be truncated/off-screen on a narrow window).
+    const hasMore = (m.body || "").length > m.preview.length;
+    const headerLine = (label, value) => value ? `<div><strong>${label}:</strong> ${escapeHtml(value)}</div>` : "";
+    const fullBlock = hasMore
+      ? `<div class="preview-full">
+          ${headerLine("Message-Id", m.messageId)}
+          ${headerLine("Subject", m.subject)}
+          ${headerLine("From", m.fromAddress)}
+          ${headerLine("To", m.toAddress)}
+          <div class="preview-body">${escapeHtml(m.body)}</div>
+        </div>`
+      : "";
+    return `
     <tr>
       <td>${escapeHtml(m.direction)}</td>
       <td class="title">${escapeHtml(m.subject)}</td>
       <td class="title">${escapeHtml(m.fromAddress || m.toAddress)}</td>
-      <td class="title">${escapeHtml(m.preview)}</td>
+      <td class="title preview-cell">
+        ${hasMore
+          ? `<details><summary>${escapeHtml(m.preview)}&hellip;</summary>${fullBlock}</details>`
+          : escapeHtml(m.preview || "(empty)")}
+      </td>
       ${ageCellHtml(m.ageDays)}
-    </tr>`).join("");
+    </tr>`;
+  }).join("");
 }
 
 function renderManualHandled() {

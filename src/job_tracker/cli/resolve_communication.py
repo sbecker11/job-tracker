@@ -3,8 +3,16 @@
 against a real job, creating the JobContact/JobConversation Tier 1/2/3
 matching couldn't create automatically.
 
-Use `--list` first to see what's waiting; the message_id it prints is what
-`--message-id` below expects.
+Use `--list` first to see what's waiting (a ~160-char preview per message);
+the message_id it prints is what `--message-id` below expects. Use
+`--message-id <id> --show` to read one in full before deciding how (or
+whether) to resolve it.
+
+Recruiter contact info (name/email/phone) is auto-detected from the
+message body via `pipeline/signature.py` (2026-07-17) whenever
+--contact-name/--contact-email/--contact-phone are all left blank — pass
+any of those explicitly to override, or --no-auto-signature to skip
+detection entirely.
 """
 
 from __future__ import annotations
@@ -14,6 +22,7 @@ import sys
 from pathlib import Path
 
 from job_tracker.pipeline.models import JobLead
+from job_tracker.pipeline.signature import parse_signature
 from job_tracker.pipeline.store import (
     DEFAULT_DB_PATH,
     connect,
@@ -38,13 +47,36 @@ def _print_unmatched_list(conn) -> None:
         print(f"    from={row['from_address']!r}  to={row['to_address']!r}")
         preview = (row["body_text"] or "").strip().replace("\n", " ")[:160]
         print(f"    preview: {preview!r}\n")
+    print("Use --message-id <id> --show to read one in full.")
+
+
+def _print_full_message(row) -> None:
+    """The `--list` preview above is deliberately truncated to ~160 chars so
+    the list itself stays scannable — this is the "actually read the whole
+    thing" counterpart, for deciding what --company/--title (and --create)
+    to resolve it with."""
+    print(f"message_id: {row['message_id']}")
+    print(f"thread_id:  {row['thread_id'] or '(none)'}")
+    print(f"direction:  {row['direction']}")
+    print(f"from:       {row['from_address'] or '(none)'}")
+    print(f"to:         {row['to_address'] or '(none)'}")
+    print(f"subject:    {row['subject']}")
+    print(f"detected:   {row['detected_at']}")
+    print()
+    print(row["body_text"] or "(no body text stored)")
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     ap.add_argument("--list", action="store_true", help="List all unresolved unmatched communications and exit")
-    ap.add_argument("--message-id", help="The unmatched message to resolve")
+    ap.add_argument(
+        "--show",
+        action="store_true",
+        help="Print the full stored text for --message-id and exit (no resolving) — --list's preview is "
+        "truncated to ~160 chars; this is the full body",
+    )
+    ap.add_argument("--message-id", help="The unmatched message to resolve (or to --show in full)")
     ap.add_argument("--company", help="Company of the job this message belongs to")
     ap.add_argument("--title", help="Title of the job this message belongs to")
     ap.add_argument(
@@ -54,8 +86,19 @@ def main(argv: list[str] | None = None) -> int:
         "(use for a genuinely brand-new lead surfaced only through this communication, e.g. a vague first "
         "pitch with no JD yet)",
     )
-    ap.add_argument("--contact-name", default="")
+    ap.add_argument(
+        "--contact-name",
+        default="",
+        help="Overrides whatever pipeline.signature auto-detects from the message body (see --show to preview it)",
+    )
     ap.add_argument("--contact-email", default="")
+    ap.add_argument("--contact-phone", default="")
+    ap.add_argument(
+        "--no-auto-signature",
+        action="store_true",
+        help="Skip the automatic name/email/phone signature-block detection entirely, even when --contact-* "
+        "flags are also left blank (rare — e.g. a signature block that misfired)",
+    )
     ap.add_argument("--contact-role", default="recruiter", choices=("recruiter", "hiring_manager", "referral", "other"))
     args = ap.parse_args(argv)
 
@@ -63,6 +106,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.list:
             _print_unmatched_list(conn)
+            return 0
+
+        if args.show:
+            if not args.message_id:
+                ap.error("--message-id is required with --show")
+            unmatched = get_unmatched_message(conn, args.message_id)
+            if unmatched is None:
+                print(f"No unmatched_messages row for message_id={args.message_id!r}.", file=sys.stderr)
+                print("Run with --list to see what's actually waiting.", file=sys.stderr)
+                return 1
+            _print_full_message(unmatched)
             return 0
 
         if not args.message_id or not args.company or not args.title:
@@ -107,12 +161,24 @@ def main(argv: list[str] | None = None) -> int:
         else:
             job_key = job["normalized_key"]
 
+        contact_name, contact_email, contact_phone = args.contact_name, args.contact_email, args.contact_phone
+        if not args.no_auto_signature and not (contact_name or contact_email or contact_phone):
+            detected = parse_signature(unmatched["body_text"] or "")
+            if detected:
+                contact_name, contact_email, contact_phone = detected.name, detected.email, detected.phone
+                print(
+                    f"Auto-detected from message body: name={contact_name!r} email={contact_email!r} "
+                    f"phone={contact_phone!r} (pass --contact-name/--contact-email/--contact-phone to override, "
+                    "or --no-auto-signature to skip)."
+                )
+
         conversation_id = resolve_unmatched_message(
             conn,
             args.message_id,
             job_key,
-            contact_name=args.contact_name,
-            contact_email=args.contact_email,
+            contact_name=contact_name,
+            contact_email=contact_email,
+            contact_phone=contact_phone,
             contact_role=args.contact_role,
         )
         print(f"Resolved message_id={args.message_id!r} -> {job_key!r} (conversation id={conversation_id}).")

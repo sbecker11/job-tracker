@@ -299,6 +299,10 @@ python scripts/scan_communications.py --llm-fallback --include-sent
 # See what couldn't be auto-matched:
 python scripts/resolve_communication.py --list
 
+# Read one in full (var/pending-actions.html's own "Unmatched communications"
+# table also has a click-to-expand full preview, headers included):
+python scripts/resolve_communication.py --message-id <id> --show
+
 # Attach one to the right job (add --create for a genuinely new lead):
 python scripts/resolve_communication.py --message-id <id> --company "<company>" --title "<title>"
 
@@ -338,3 +342,19 @@ if it *can* pull out both:
 Wired into `recruiting-automation/run_cycle.sh`'s hourly cycle
 already; `var/pending-actions.html`'s "Unmatched communications" section
 surfaces whatever's still waiting.
+
+**Recruiter contact extraction (2026-07-17).** LinkedIn InMail's `From:`
+header is always a generic relay address (`inmail-hit-reply@linkedin.com`)
+— useless for a contact record — but the actual recruiter's name, and
+often their real email/phone, sit right in the message body: LinkedIn's
+own template always renders a short "sender block" (`<Name> / Reply /
+<thread URL>`), and many recruiters also sign off with a free-text block
+like `Name | Company` / `Title` / `Email: ... | Cell: ...`.
+`src/job_tracker/pipeline/signature.py`'s `parse_signature()` pulls both
+signals out with plain regex (no LLM call) and both `scan_communications.py`
+and `resolve_communication.py` now populate `job_contacts` from it
+automatically. See it without touching Gmail:
+
+```bash
+list-leads --company "<company>" --title "<title>" --show-contacts
+```

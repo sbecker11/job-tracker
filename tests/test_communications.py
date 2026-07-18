@@ -151,6 +151,30 @@ def test_resolve_unmatched_message_creates_contact_and_conversation(seeded_db: P
     conn.close()
 
 
+def test_add_job_contact_dedupes_name_only_contacts_without_email(seeded_db: Path):
+    """2026-07-17 signature-backfill fix: `add_job_contact`'s dedupe key was
+    email-only, so repeated calls for the same job with a name but no email
+    (the common case for a recruiter whose sign-off had no labeled email/
+    phone line) piled up duplicate rows instead of updating one."""
+    conn = connect(seeded_db)
+    key = _key(seeded_db, "Clevanoo LLC", "Senior Full Stack AI/ML Engineer")
+
+    first_id = add_job_contact(conn, JobContact(job_key=key, name="Amit Gupta", role="recruiter"))
+    second_id = add_job_contact(conn, JobContact(job_key=key, name="Amit Gupta", role="recruiter"))
+    assert first_id == second_id
+
+    rows = conn.execute(
+        "SELECT * FROM job_contacts WHERE job_key = ? AND name = 'Amit Gupta'", (key,)
+    ).fetchall()
+    assert len(rows) == 1
+
+    # A DIFFERENT name-only contact on the same job still gets its own row —
+    # the dedupe key is (job_key, name), not just "any email-less contact".
+    third_id = add_job_contact(conn, JobContact(job_key=key, name="Someone Else", role="recruiter"))
+    assert third_id != first_id
+    conn.close()
+
+
 def test_resolve_unmatched_message_unknown_id_raises(seeded_db: Path):
     conn = connect(seeded_db)
     with pytest.raises(ValueError):
@@ -347,6 +371,31 @@ def _raw_message(mid: str, *, from_addr: str, subject: str, thread_id: str = "")
     }
 
 
+def _raw_message_with_body(mid: str, *, from_addr: str, subject: str, body: str, thread_id: str = "") -> dict:
+    """Like `_raw_message`, but with a real, base64url-encoded plain-text
+    body — needed for anything exercising `pipeline/signature.py`, since
+    that parses `message.combined_text`, not the headers `_raw_message`
+    alone provides."""
+    import base64
+
+    encoded = base64.urlsafe_b64encode(body.encode("utf-8")).decode("ascii")
+    return {
+        "id": mid,
+        "threadId": thread_id or mid,
+        "snippet": "",
+        "labelIds": ["INBOX"],
+        "payload": {
+            "headers": [
+                {"name": "From", "value": from_addr},
+                {"name": "To", "value": "me@example.com"},
+                {"name": "Subject", "value": subject},
+            ],
+            "mimeType": "text/plain",
+            "body": {"data": encoded},
+        },
+    }
+
+
 class _FakeGmailService:
     def __init__(self, inbound_ids: list[str], messages: dict[str, dict], sent_ids: list[str] | None = None):
         self.inbound_ids = inbound_ids
@@ -395,6 +444,44 @@ def test_scan_communications_links_via_thread_id(mock_gmail, seeded_db: Path, ca
     convos = conn.execute("SELECT * FROM job_conversations WHERE job_key = ?", (key,)).fetchall()
     assert len(convos) == 2  # the seeded one + the newly linked one
     assert any(c["message_id"] == "msg-1" for c in convos)
+    conn.close()
+
+
+def test_scan_communications_enriches_contact_from_signature(mock_gmail, seeded_db: Path):
+    """2026-07-17 signature-parsing follow-up: a Tier-1 (thread_id) match
+    still has a generic relay `From:` address, but the message body has a
+    real recruiter sign-off — that should end up as a JobContact, not
+    nothing, even though the header alone gives us no usable email."""
+    conn = connect(seeded_db)
+    key = _key(seeded_db, "Clevanoo LLC", "Senior Full Stack AI/ML Engineer")
+    add_job_conversation(conn, JobConversation(job_key=key, direction="inbound", summary="x", thread_id="thread-sig"))
+    conn.close()
+
+    body = (
+        "Exciting opportunity for your skills\r\n"
+        "\r\n      Priya Nair\r\n        Reply\r\n"
+        "        https://www.linkedin.com/messaging/thread/2-sig==/\r\n"
+        "\r\nHi Shawn,\r\n\r\nBest regards,\r\nPriya\r\n\r\n"
+        "Priya Nair\r\nTechnical Recruiter\r\nAcme Staffing\r\n"
+        "Email: priya.nair@acmestaffing.example | Cell: 212-555-0100\r\n"
+    )
+    raw = _raw_message_with_body(
+        "msg-sig", from_addr="inmail-hit-reply@linkedin.com", subject="Message replied: follow-up",
+        body=body, thread_id="thread-sig",
+    )
+    mock_gmail(_FakeGmailService(["msg-sig"], {"msg-sig": raw}))
+
+    rc = scan_main(["--db", str(seeded_db)])
+    assert rc == 0
+
+    conn = connect(seeded_db)
+    contact = conn.execute(
+        "SELECT * FROM job_contacts WHERE job_key = ? AND lower(email) = ?",
+        (key, "priya.nair@acmestaffing.example"),
+    ).fetchone()
+    assert contact is not None
+    assert contact["name"] == "Priya Nair"
+    assert contact["phone"] == "212-555-0100"
     conn.close()
 
 
@@ -641,6 +728,87 @@ def test_resolve_communication_create_makes_stub_lead(seeded_db: Path):
     conn.close()
 
 
+def test_resolve_communication_auto_detects_signature_when_no_contact_flags_given(seeded_db: Path, capsys):
+    conn = connect(seeded_db)
+    body = (
+        "\r\n      Priya Nair\r\n        Reply\r\n"
+        "        https://www.linkedin.com/messaging/thread/2-sig==/\r\n"
+        "\r\nBest regards,\r\nPriya\r\n\r\n"
+        "Priya Nair\r\nTechnical Recruiter\r\nAcme Staffing\r\n"
+        "Email: priya.nair@acmestaffing.example | Cell: 212-555-0100\r\n"
+    )
+    record_unmatched_message(
+        conn, UnmatchedMessage(message_id="u8", direction="inbound", subject="pitch", body_text=body)
+    )
+    conn.close()
+
+    rc = resolve_main(
+        ["--db", str(seeded_db), "--message-id", "u8", "--company", "Brand New Co", "--title", "New Role", "--create"]
+    )
+    assert rc == 0
+    assert "Auto-detected from message body" in capsys.readouterr().out
+
+    conn = connect(seeded_db)
+    lead = conn.execute("SELECT normalized_key FROM job_leads WHERE company = 'Brand New Co'").fetchone()
+    contact = conn.execute(
+        "SELECT * FROM job_contacts WHERE job_key = ? AND lower(email) = ?",
+        (lead["normalized_key"], "priya.nair@acmestaffing.example"),
+    ).fetchone()
+    assert contact is not None
+    assert contact["name"] == "Priya Nair"
+    assert contact["phone"] == "212-555-0100"
+    conn.close()
+
+
+def test_resolve_communication_explicit_contact_flags_override_signature(seeded_db: Path, capsys):
+    conn = connect(seeded_db)
+    body = "Email: priya.nair@acmestaffing.example"
+    record_unmatched_message(
+        conn, UnmatchedMessage(message_id="u9", direction="inbound", subject="pitch", body_text=body)
+    )
+    conn.close()
+
+    rc = resolve_main(
+        [
+            "--db", str(seeded_db), "--message-id", "u9", "--company", "Brand New Co 2", "--title", "New Role",
+            "--create", "--contact-name", "Manual Name", "--contact-email", "manual@example.com",
+        ]
+    )
+    assert rc == 0
+    assert "Auto-detected from message body" not in capsys.readouterr().out
+
+    conn = connect(seeded_db)
+    lead = conn.execute("SELECT normalized_key FROM job_leads WHERE company = 'Brand New Co 2'").fetchone()
+    contact = conn.execute("SELECT * FROM job_contacts WHERE job_key = ?", (lead["normalized_key"],)).fetchone()
+    assert contact["name"] == "Manual Name"
+    assert contact["email"] == "manual@example.com"
+    conn.close()
+
+
+def test_resolve_communication_no_auto_signature_flag_skips_detection(seeded_db: Path, capsys):
+    conn = connect(seeded_db)
+    body = "Email: priya.nair@acmestaffing.example"
+    record_unmatched_message(
+        conn, UnmatchedMessage(message_id="u10", direction="inbound", subject="pitch", body_text=body)
+    )
+    conn.close()
+
+    rc = resolve_main(
+        [
+            "--db", str(seeded_db), "--message-id", "u10", "--company", "Brand New Co 3", "--title", "New Role",
+            "--create", "--no-auto-signature",
+        ]
+    )
+    assert rc == 0
+    assert "Auto-detected from message body" not in capsys.readouterr().out
+
+    conn = connect(seeded_db)
+    lead = conn.execute("SELECT normalized_key FROM job_leads WHERE company = 'Brand New Co 3'").fetchone()
+    contact = conn.execute("SELECT * FROM job_contacts WHERE job_key = ?", (lead["normalized_key"],)).fetchone()
+    assert contact is None
+    conn.close()
+
+
 def test_resolve_communication_missing_args_errors(seeded_db: Path):
     with pytest.raises(SystemExit):
         resolve_main(["--db", str(seeded_db), "--message-id", "u5"])
@@ -652,6 +820,42 @@ def test_resolve_communication_unknown_message_id(seeded_db: Path, capsys):
     )
     assert rc == 1
     assert "No unmatched_messages row" in capsys.readouterr().err
+
+
+def test_resolve_communication_show_prints_full_text(seeded_db: Path, capsys):
+    conn = connect(seeded_db)
+    record_unmatched_message(
+        conn,
+        UnmatchedMessage(
+            message_id="u7",
+            thread_id="t-7",
+            direction="inbound",
+            from_address="radha@clevanoo.example",
+            to_address="me@example.com",
+            subject="Re: role details",
+            body_text="A" * 500,  # longer than --list's ~160-char preview
+        ),
+    )
+    conn.close()
+
+    rc = resolve_main(["--db", str(seeded_db), "--message-id", "u7", "--show"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "message_id: u7" in out
+    assert "radha@clevanoo.example" in out
+    assert "Re: role details" in out
+    assert "A" * 500 in out
+
+
+def test_resolve_communication_show_unknown_message_id(seeded_db: Path, capsys):
+    rc = resolve_main(["--db", str(seeded_db), "--message-id", "nope", "--show"])
+    assert rc == 1
+    assert "No unmatched_messages row" in capsys.readouterr().err
+
+
+def test_resolve_communication_show_requires_message_id(seeded_db: Path):
+    with pytest.raises(SystemExit):
+        resolve_main(["--db", str(seeded_db), "--show"])
 
 
 def test_resolve_communication_already_resolved(seeded_db: Path):
