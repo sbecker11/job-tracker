@@ -685,6 +685,25 @@ def processed_at(conn: sqlite3.Connection, message_id: str) -> str | None:
     return row[0] if row else None
 
 
+def list_processed_messages_with_leads(conn: sqlite3.Connection) -> list[dict]:
+    """Every `processed_messages` row that has at least one linked lead
+    (`lead_keys` non-empty) — i.e. everything `cli/resync_labels.py` could
+    possibly have a reason to relabel. NEEDS_REVIEW messages with no
+    extracted roles at all (`lead_keys == []`) are excluded here since
+    there's no lead verdict to resync against; they stay however they were
+    left at initial triage. `lead_keys` comes back already JSON-decoded."""
+    rows = conn.execute(
+        "SELECT message_id, outcome, label_applied, lead_keys FROM processed_messages "
+        "WHERE lead_keys IS NOT NULL AND lead_keys != '' AND lead_keys != '[]'"
+    ).fetchall()
+    result = []
+    for row in rows:
+        keys = json.loads(row["lead_keys"] or "[]")
+        if keys:
+            result.append({"message_id": row["message_id"], "outcome": row["outcome"], "lead_keys": keys})
+    return result
+
+
 def record_message_processed(
     conn: sqlite3.Connection,
     message_id: str,
@@ -1075,6 +1094,24 @@ def find_company_only_matches(conn: sqlite3.Connection, company: str) -> list[Jo
             matches.append(JobMatch(row["normalized_key"], row["company"], row["title"], company_ratio, 0.0, company_ratio))
     matches.sort(key=lambda m: m.combined_score, reverse=True)
     return matches
+
+
+def get_lead_labeling_info(conn: sqlite3.Connection, keys: list[str]) -> dict[str, sqlite3.Row]:
+    """`{normalized_key: row}` for every key in `keys` that still exists,
+    with just the columns `cli/resync_labels.py` needs (`llm_verdict`,
+    `verdict`, `status`) to re-derive a message's CURRENT outcome. A lead
+    can vanish between initial triage and a later resync (e.g. `delete_lead.py`)
+    — silently dropped from the result rather than raising, so one deleted
+    sibling in a multi-role digest doesn't block resyncing the rest."""
+    if not keys:
+        return {}
+    placeholders = ",".join("?" for _ in keys)
+    rows = conn.execute(
+        f"SELECT normalized_key, llm_verdict, verdict, status FROM job_leads "
+        f"WHERE normalized_key IN ({placeholders})",
+        keys,
+    ).fetchall()
+    return {row["normalized_key"]: row for row in rows}
 
 
 # --- Communications archival (pipeline/comms_match.py, 2026-07-17) --------

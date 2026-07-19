@@ -24,6 +24,22 @@ NEEDS_REVIEW_LABEL = f"{LABEL_PREFIX}NEEDS_REVIEW"
 
 ALL_OUTCOME_LABELS = (PURSUE_LABEL, SKIP_LABEL, NEEDS_REVIEW_LABEL)
 
+# Added 2026-07-19 for `cli/scan_communications.py`'s LinkedIn-reply traffic
+# (Category/social, never touched by the PURSUE/SKIP/NEEDS_REVIEW labels
+# above, which only ever apply to Category/recruiter_job mail). The goal:
+# make Gmail's own label state trustworthy enough for the mailbox owner to
+# stop reviewing recruiting mail directly and rely on this pipeline (+ its
+# dashboard) instead — see PRIMER.md's "Recruiter contact extraction" /
+# "Communications archival" sections for the full rationale. LINKED means
+# fully archived into the pipeline (job matched, conversation + contact
+# recorded) — nothing left for a human to do via Gmail. NEEDS_FOLLOWUP means
+# the opposite: parked in `unmatched_messages` because no job could be
+# confidently matched, so it's deliberately left in the inbox (not archived)
+# and still needs a human's eyes, either directly or via
+# `resolve_communication.py`.
+LINKED_LABEL = f"{LABEL_PREFIX}Linked"
+NEEDS_FOLLOWUP_LABEL = f"{LABEL_PREFIX}NeedsFollowup"
+
 
 def find_label_id(service, label_name: str) -> str | None:
     """Look up an existing label's id by name without creating it if

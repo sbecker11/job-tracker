@@ -26,7 +26,11 @@ Category/recruiter_job inbox mail  →  LLM score + auto-generate on pursue  →
 
 Stage 6 (free–$0.01/msg, runs alongside Stage 5 in the hourly cycle — see "Archive communications" below)
 LinkedIn replies (Category/social) + Sent folder  →  tiered match  →  job_conversations, or unmatched queue
-                              scan_communications.py (read-only Gmail; see docs/JOB_CRM_VISION.md)
+                              scan_communications.py (gmail.modify — labels Linked/NeedsFollowup, see below)
+
+Stage 7 (free, runs right after Stage 5/6 in the hourly cycle — see "Re-sync stale labels" below)
+Already-triaged mail  →  re-derive outcome from CURRENT lead verdict(s)  →  swap JobTracker/* label if stale
+                              resync_labels.py (gmail.modify — label-only, no re-evaluation, no archive changes)
 ```
 
 ---
@@ -284,7 +288,8 @@ python scripts/apply_package.py --company "<company>" --title "<title>"
 | 3 (`list_leads.py`) | Local SQLite only | Free |
 | 4 (`apply_package.py`) | Local rule-based score always; Anthropic API only past each gate | Free (`no-LLM-review.docx`) → ~$0.05–0.10/lead for the full LLM review only once the free score clears 70% → +~$0.10–0.20 more for résumé/cover letter only on a pursue verdict |
 | 5 (`triage_recruiter_inbox.py`) | Gmail (**read/write** — `gmail.modify`), Anthropic API | ~$0.02–0.04/message (evaluate), +~$0.10–0.30 more only on a pursue verdict; relabels + archives the message |
-| 6 (`scan_communications.py`) | Gmail (read-only), Anthropic API only with `--llm-fallback` | Free (thread-id/contact-email matching) + ~$0.001–0.01/message with `--llm-fallback` (Haiku, cached per message_id) |
+| 6 (`scan_communications.py`) | Gmail (**read/write** — `gmail.modify`, since 2026-07-19), Anthropic API only with `--llm-fallback` | Free (thread-id/contact-email matching) + ~$0.001–0.01/message with `--llm-fallback` (Haiku, cached per message_id); labels + archives/leaves-in-inbox the message it touches |
+| 7 (`resync_labels.py`) | Gmail (**read/write** — `gmail.modify`) only, no Anthropic API calls | Free — pure label swap based on already-stored verdicts, no re-evaluation, no INBOX/archive changes |
 
 Nothing in this pipeline applies, replies to, or sends anything to an
 employer on your behalf — it only surfaces, scores, and drafts documents for
@@ -302,7 +307,11 @@ that matter (W2 vs. C2C, the actual end client, rate). Three such messages
 were found sitting completely untracked before this stage existed.
 
 ```bash
-# Read-only against Gmail — no labels/archiving touched, only var/leads.db written.
+# Writes to var/leads.db AND to Gmail (gmail.modify, since 2026-07-19): a
+# resolved inbound message gets JobTracker/Linked + is archived; a parked
+# (unmatched) one gets JobTracker/NeedsFollowup and is LEFT in the inbox —
+# see "Making Gmail labels trustworthy enough to stop checking it directly"
+# below for why. --dry-run skips both the DB and Gmail writes.
 python scripts/scan_communications.py --llm-fallback --include-sent
 
 # See what couldn't be auto-matched:
@@ -367,3 +376,47 @@ automatically. See it without touching Gmail:
 ```bash
 list-leads --company "<company>" --title "<title>" --show-contacts
 ```
+
+## Stage 7 — Re-sync stale JobTracker/* labels (making Gmail trustworthy enough to stop checking it directly)
+
+Background (2026-07-19): `triage_recruiter_inbox.py` (Stage 5) applies its
+`JobTracker/PURSUE|SKIP|NEEDS_REVIEW` label exactly once, at initial triage —
+often from just the free rule-based pass, before a full LLM review has even
+run. Nothing after that ever revisits it: a later `apply_package.py
+--force-llm-review`, a `run_full_llm_review_for_pursue_leads.py` batch, or a
+human calling `list_leads.py --set-status` can all change a lead's effective
+verdict, and the Gmail label just sits there, now wrong. Verified live: a
+handful of leads whose initial "pursue" was later overturned to "pass" by
+the full LLM review still carried `JobTracker/PURSUE` in Gmail weeks later.
+
+That staleness matters for a specific reason: the whole point of labeling
+`Category/recruiter_job` mail in the first place is so you can eventually
+stop reviewing recruiting email directly in the Gmail client and trust this
+pipeline + `var/pending-actions.html` instead — maybe even build a
+client-side filter on top of the label. Neither works if the label can't be
+trusted to reflect the CURRENT decision.
+
+```bash
+python scripts/resync_labels.py            # re-syncs, live
+python scripts/resync_labels.py --dry-run  # prints what WOULD change, touches nothing
+```
+
+For every message `triage_recruiter_inbox.py` already labeled (tracked in
+`processed_messages.lead_keys`), this re-derives today's outcome from the
+CURRENT `job_leads.llm_verdict` (falling back to the rule-based `verdict` if
+no full review has run yet) for every lead that message is linked to — same
+PURSUE > NEEDS_REVIEW > SKIP priority rule initial triage uses
+(`pipeline.triage.decide_outcome_from_verdicts`) — and swaps the label if
+it's changed. No LLM spend (it never re-evaluates anything, just reads
+already-stored verdicts) and no INBOX/archive changes (whether a message is
+visible in the inbox was decided once, based on extraction completeness, and
+has nothing to do with verdict drift). Wired into
+`recruiting-automation/run_cycle.sh`'s hourly cycle, right after Stage 6.
+
+Together with Stage 6's new `JobTracker/Linked` / `JobTracker/NeedsFollowup`
+labels on `Category/social` traffic, this is what closes the loop: every
+category of recruiting mail this pipeline touches now carries a label that
+reflects its CURRENT state, not just a snapshot from whenever it was first
+seen. What's left un-labeled or still carrying `NeedsFollowup` /
+`NEEDS_REVIEW` is, by construction, exactly what still needs a human look —
+either directly in Gmail or via `var/pending-actions.html`.

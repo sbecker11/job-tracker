@@ -160,15 +160,29 @@ def _effective_rationale(package: TwoTierPackageResult) -> list[str]:
     return list(package.no_llm_score.rationale)
 
 
-def _decide_outcome(role_outcomes: list[RoleOutcome]) -> tuple[str, str]:
-    if not role_outcomes:
+def decide_outcome_from_verdicts(verdicts: set[str] | list[str]) -> tuple[str, str]:
+    """The PURSUE > NEEDS_REVIEW > SKIP priority rule, factored out
+    (2026-07-19) from `_decide_outcome` so `cli/resync_labels.py` can apply
+    the exact same message-level rollup logic when re-deriving a message's
+    outcome from its linked leads' CURRENT verdicts, instead of the
+    verdicts of a fresh `RoleOutcome` batch. Any verdict string outside
+    {"pursue", "review", "pass"} (e.g. a lead still carrying the special
+    "REVIEW NEEDED" marker) is treated as "review" — see callers."""
+    verdicts = set(verdicts)
+    if not verdicts:
         return NEEDS_REVIEW, "no roles extracted"
-    verdicts = {effective_verdict(r.package) for r in role_outcomes}
     if "pursue" in verdicts:
         return PURSUE, "at least one role scored 'pursue'"
     if "review" in verdicts:
         return NEEDS_REVIEW, "at least one role scored 'review', none scored 'pursue'"
     return SKIP, "every role scored 'pass'"
+
+
+def _decide_outcome(role_outcomes: list[RoleOutcome]) -> tuple[str, str]:
+    if not role_outcomes:
+        return NEEDS_REVIEW, "no roles extracted"
+    verdicts = {effective_verdict(r.package) for r in role_outcomes}
+    return decide_outcome_from_verdicts(verdicts)
 
 
 def triage_message(

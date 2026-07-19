@@ -27,9 +27,31 @@ Scope, deliberately conservative:
     with noise. Inbound unmatched mail IS parked, since the sender
     addresses above are unambiguously recruiting-related by construction.
 
-Read-only against Gmail (no `gmail.modify` scope, no labels/archiving) —
-this only ever writes to `var/leads.db` (and, for the two cases described
-below, the matching job's folder under `--output-root`).
+Writes to Gmail too, as of 2026-07-19 — see "Gmail labeling" below. Before
+that this command was read-only against Gmail entirely; it still writes
+nothing to a message's *content*, only two new labels distinct from
+`gmail_writer`'s PURSUE/SKIP/NEEDS_REVIEW trio, and only ever to the exact
+messages this scan itself touches. Besides that, this only ever writes to
+`var/leads.db` (and, for the two cases described below, the matching job's
+folder under `--output-root`).
+
+Gmail labeling (2026-07-19): the whole point of `triage_recruiter_inbox.py`
+relabeling `Category/recruiter_job` mail is so the mailbox owner can
+eventually trust Gmail's own label state enough to stop reviewing recruiting
+mail directly — but that only works end-to-end if EVERY category of
+recruiting traffic gets a trustworthy label, and this command's traffic
+(`Category/social` LinkedIn replies) previously got none at all: a fully
+archived, perfectly-linked reply looked identical in the inbox to one still
+sitting unprocessed. Now, every inbound message this scan can actually
+resolve gets `JobTracker/Linked` and is archived (INBOX removed) — fully
+captured, nothing left to do via Gmail. Every inbound message that gets
+parked in the unmatched queue instead gets `JobTracker/NeedsFollowup` and is
+deliberately left in the inbox (not archived) — it's exactly the traffic
+still worth a human's attention, either directly or via
+`resolve_communication.py`. Outbound (Sent-folder) messages are never
+labeled — Sent isn't something the owner reviews for "still needs my
+attention." `--dry-run` skips Gmail writes exactly like it already skips DB
+writes.
 
 "No happy path" for extracted leads (2026-07-17 refinement): when Tier 3
 extraction (`pipeline/comms_match.py`) finds BOTH a company and a title —
@@ -66,11 +88,13 @@ import json
 import sys
 from pathlib import Path
 
+from job_tracker.email import gmail_writer
 from job_tracker.email.gmail_reader import (
     default_credentials_path,
     default_token_path,
     fetch_message,
     get_gmail_service,
+    get_gmail_service_writable,
     list_message_ids,
 )
 from job_tracker.email.models import EmailMessage, ExtractedRole
@@ -208,6 +232,7 @@ def _scan_one(
     llm_model: str,
     dry_run: bool,
     output_root: Path,
+    label_ids: dict[str, str] | None = None,
 ) -> dict:
     message = fetch_message(service, message_id)
     outcome = match_message_to_job(
@@ -319,6 +344,16 @@ def _scan_one(
         result["action"] = "parked (unmatched)"
     else:
         result["action"] = "skipped (unmatched outbound)"
+
+    # Gmail labeling (2026-07-19) — see module docstring. Inbound only:
+    # Sent-folder messages are never labeled, and `label_ids` is None
+    # entirely in `--dry-run` (see `main()`), so this whole block is a
+    # no-op there, matching the DB writes it's already skipping.
+    if direction == "inbound" and label_ids:
+        if job_key is not None:
+            gmail_writer.label_and_archive(service, message_id, label_ids["linked"], archive=True)
+        else:
+            gmail_writer.label_and_archive(service, message_id, label_ids["needs_followup"], archive=False)
     return result
 
 
@@ -356,13 +391,28 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--account", default=None)
     ap.add_argument("--credentials", type=Path, default=None)
     ap.add_argument("--token", type=Path, default=None)
-    ap.add_argument("--dry-run", action="store_true", help="Print what would happen; never write to the DB")
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would happen; never write to the DB or to Gmail (no labels/archiving)",
+    )
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
     credentials_path = args.credentials or default_credentials_path(args.account)
-    token_path = args.token or default_token_path(args.account)
-    service = get_gmail_service(credentials_path, token_path, account=args.account)
+    label_ids: dict[str, str] | None = None
+    if args.dry_run:
+        # Scoring-only preview never mutates the mailbox — no reason to force
+        # the separate, one-time-consent write token just to look.
+        token_path = args.token or default_token_path(args.account)
+        service = get_gmail_service(credentials_path, token_path, account=args.account)
+    else:
+        token_path = args.token or default_token_path(args.account, writable=True)
+        service = get_gmail_service_writable(credentials_path, token_path, account=args.account)
+        label_ids = {
+            "linked": gmail_writer.get_or_create_label(service, gmail_writer.LINKED_LABEL),
+            "needs_followup": gmail_writer.get_or_create_label(service, gmail_writer.NEEDS_FOLLOWUP_LABEL),
+        }
 
     conn = connect(args.db)
     results: list[dict] = []
@@ -383,6 +433,7 @@ def main(argv: list[str] | None = None) -> int:
                     llm_model=args.llm_extraction_model,
                     dry_run=args.dry_run,
                     output_root=args.output_root,
+                    label_ids=label_ids,
                 )
             )
 

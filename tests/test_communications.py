@@ -397,10 +397,18 @@ def _raw_message_with_body(mid: str, *, from_addr: str, subject: str, body: str,
 
 
 class _FakeGmailService:
+    """Doubles both `messages()` and `labels()` (2026-07-19: scan_communications.py
+    gained `gmail.modify` write access to label Linked/NeedsFollowup traffic) —
+    `modify_calls`/`created_labels` let tests assert exactly what got written
+    without a real Gmail connection."""
+
     def __init__(self, inbound_ids: list[str], messages: dict[str, dict], sent_ids: list[str] | None = None):
         self.inbound_ids = inbound_ids
         self.sent_ids = sent_ids or []
         self._messages = messages
+        self.modify_calls: list[dict] = []
+        self._next_label_id = 1
+        self._labels: dict[str, str] = {}
 
     def users(self):
         return self
@@ -408,13 +416,33 @@ class _FakeGmailService:
     def messages(self):
         return self
 
+    def labels(self):
+        return self
+
     def list(self, **kwargs):
+        # `messages().list(q=...)` and `labels().list()` both land on this
+        # same double (both go through `users()` -> `.messages()`/`.labels()`
+        # -> `.list`) — distinguished only by the absence of a `q` kwarg,
+        # since `gmail_writer.get_or_create_label`'s `labels().list()` never
+        # passes one.
+        if "q" not in kwargs:
+            return SimpleNamespace(execute=lambda: {"labels": []})
         query = kwargs.get("q", "")
         ids = self.sent_ids if "in:sent" in query else self.inbound_ids
         return SimpleNamespace(execute=lambda: {"messages": [{"id": i} for i in ids]})
 
+    def create(self, **kwargs):
+        name = kwargs["body"]["name"]
+        label_id = self._labels.setdefault(name, f"Label_{self._next_label_id}")
+        self._next_label_id += 1
+        return SimpleNamespace(execute=lambda: {"id": label_id, "name": name})
+
     def get(self, **kwargs):
         return SimpleNamespace(execute=lambda: self._messages[kwargs["id"]])
+
+    def modify(self, **kwargs):
+        self.modify_calls.append(kwargs)
+        return SimpleNamespace(execute=lambda: {})
 
 
 @pytest.fixture()
@@ -423,6 +451,7 @@ def mock_gmail(monkeypatch):
         monkeypatch.setattr(scan_cli, "default_credentials_path", lambda *a, **k: Path("/tmp/c.json"))
         monkeypatch.setattr(scan_cli, "default_token_path", lambda *a, **k: Path("/tmp/t.json"))
         monkeypatch.setattr(scan_cli, "get_gmail_service", lambda *a, **k: service)
+        monkeypatch.setattr(scan_cli, "get_gmail_service_writable", lambda *a, **k: service)
         return service
 
     return _install
@@ -659,6 +688,75 @@ def test_scan_communications_does_not_touch_jd_text_past_new_status(mock_gmail, 
     convo = conn.execute("SELECT * FROM job_conversations WHERE job_key = ? AND message_id = 'msg-followup2'", (key,)).fetchone()
     assert convo is not None
     conn.close()
+
+
+def test_scan_communications_labels_linked_and_archives_matched_message(mock_gmail, seeded_db: Path):
+    """2026-07-19: a message this scan successfully resolves gets
+    JobTracker/Linked and is archived (INBOX removed) — see gmail_writer's
+    LINKED_LABEL docstring for why."""
+    conn = connect(seeded_db)
+    key = _key(seeded_db, "Clevanoo LLC", "Senior Full Stack AI/ML Engineer")
+    add_job_conversation(conn, JobConversation(job_key=key, direction="inbound", summary="x", thread_id="thread-linked"))
+    conn.close()
+
+    raw = _raw_message("msg-linked", from_addr="hit-reply@linkedin.com", subject="Message replied: Radha", thread_id="thread-linked")
+    service = mock_gmail(_FakeGmailService(["msg-linked"], {"msg-linked": raw}))
+
+    rc = scan_main(["--db", str(seeded_db)])
+    assert rc == 0
+
+    calls = [c for c in service.modify_calls if c["id"] == "msg-linked"]
+    assert len(calls) == 1
+    from job_tracker.email import gmail_writer
+
+    assert "INBOX" in calls[0]["body"]["removeLabelIds"]
+    linked_label_id = service._labels[gmail_writer.LINKED_LABEL]
+    assert calls[0]["body"]["addLabelIds"] == [linked_label_id]
+
+
+def test_scan_communications_labels_needs_followup_without_archiving_when_parked(mock_gmail, seeded_db: Path):
+    """A message parked in the unmatched queue gets JobTracker/NeedsFollowup
+    but stays in the inbox (not archived) — it's exactly what still needs a
+    human's attention, unlike a fully-Linked message."""
+    raw = _raw_message("msg-parked", from_addr="hit-reply@linkedin.com", subject="Message replied: Camilla")
+    service = mock_gmail(_FakeGmailService(["msg-parked"], {"msg-parked": raw}))
+
+    rc = scan_main(["--db", str(seeded_db)])
+    assert rc == 0
+
+    calls = [c for c in service.modify_calls if c["id"] == "msg-parked"]
+    assert len(calls) == 1
+    from job_tracker.email import gmail_writer
+
+    assert calls[0]["body"]["removeLabelIds"] == []
+    needs_followup_id = service._labels[gmail_writer.NEEDS_FOLLOWUP_LABEL]
+    assert calls[0]["body"]["addLabelIds"] == [needs_followup_id]
+
+
+def test_scan_communications_dry_run_never_calls_gmail_modify(mock_gmail, seeded_db: Path):
+    raw = _raw_message("msg-dry", from_addr="hit-reply@linkedin.com", subject="A reply")
+    service = mock_gmail(_FakeGmailService(["msg-dry"], {"msg-dry": raw}))
+
+    rc = scan_main(["--db", str(seeded_db), "--dry-run"])
+    assert rc == 0
+    assert service.modify_calls == []
+
+
+def test_scan_communications_outbound_messages_are_never_labeled(mock_gmail, seeded_db: Path):
+    """Even a successfully Tier-1-matched outbound (Sent-folder) message
+    never gets labeled — Sent isn't reviewed for "still needs my
+    attention," see module docstring."""
+    conn = connect(seeded_db)
+    key = _key(seeded_db, "Clevanoo LLC", "Senior Full Stack AI/ML Engineer")
+    add_job_conversation(conn, JobConversation(job_key=key, direction="inbound", summary="x", thread_id="thread-sent"))
+    conn.close()
+
+    raw = _raw_message("sent-linked", from_addr="me@example.com", subject="Following up", thread_id="thread-sent")
+    service = mock_gmail(_FakeGmailService([], {"sent-linked": raw}, sent_ids=["sent-linked"]))
+
+    rc = scan_main(["--db", str(seeded_db), "--include-sent"])
+    assert rc == 0
+    assert service.modify_calls == []
 
 
 # --- cli/resolve_communication.py -----------------------------------------

@@ -38,6 +38,7 @@ delete-lead = "job_tracker.cli.delete_lead:main"
 scan-communications = "job_tracker.cli.scan_communications:main"
 resolve-communication = "job_tracker.cli.resolve_communication:main"
 export-communications = "job_tracker.cli.export_communications:main"
+resync-labels = "job_tracker.cli.resync_labels:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-cov>=5.0"]

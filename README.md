@@ -58,7 +58,7 @@ recruiting Gmail inbox
 | `src/job_tracker/cli/no_llm_review.py` | Print (and optionally rewrite) the deterministic rule-based review for one lead — verdict, match %, passed/failed rules; no LLM (`no-llm-review`) |
 | `src/job_tracker/cli/apply_package.py` | Evaluate one stored lead + generate résumé/cover letter on a pursue verdict (`apply-package`) |
 | `src/job_tracker/pipeline/triage.py` | Classify → extract → resolve → LLM-evaluate (+ auto-generate on pursue) for one recruiter-inbox message, deciding a PURSUE/SKIP/NEEDS_REVIEW outcome — never touches Gmail or the DB itself |
-| `src/job_tracker/email/gmail_writer.py` | The only place in this repo that writes to Gmail — labels a message `JobTracker/PURSUE\|SKIP\|NEEDS_REVIEW` and archives it |
+| `src/job_tracker/email/gmail_writer.py` | The only place in this repo that writes to Gmail — labels a message `JobTracker/PURSUE\|SKIP\|NEEDS_REVIEW` (`Category/recruiter_job`) or `JobTracker/Linked\|NeedsFollowup` (`Category/social` replies, since 2026-07-19) and archives it |
 | `src/job_tracker/cli/triage_recruiter_inbox.py` | Runs `pipeline/triage.py` over `Category/recruiter_job` inbox mail, persists leads + the message outcome, and relabels/archives via `gmail_writer.py` (`triage-recruiter-inbox`) |
 | `src/job_tracker/cli/add_job.py` | Interactively add a job that didn't come from a triaged email (`add-job`) |
 | `src/job_tracker/cli/log_contact.py` | Log a manual conversation or meeting/interview against an existing job (`log-contact`) |
@@ -66,9 +66,10 @@ recruiting Gmail inbox
 | `src/job_tracker/cli/list_contacts.py` | Report every tracked contact across all jobs — name, company, role, phone, email (`list-contacts`) |
 | `src/job_tracker/cli/generate_message.py` | Draft a thank-you or status-check-in follow-up email via the same LLM pipeline used for résumés/cover letters (`generate-message`) |
 | `src/job_tracker/pipeline/comms_match.py` | Tiered matching (thread id → contact email → opt-in LLM extraction) that attaches a communication to the right job |
-| `src/job_tracker/cli/scan_communications.py` | Archives LinkedIn message replies (and, with `--include-sent`, your own Sent-folder replies) that `triage_recruiter_inbox.py` never sees (`scan-communications`) |
+| `src/job_tracker/cli/scan_communications.py` | Archives LinkedIn message replies (and, with `--include-sent`, your own Sent-folder replies) that `triage_recruiter_inbox.py` never sees, and labels/archives the inbound ones `JobTracker/Linked` or `JobTracker/NeedsFollowup` (`scan-communications`) |
 | `src/job_tracker/cli/resolve_communication.py` | Manually resolve a parked `unmatched_messages` row onto a real (or brand-new) job (`resolve-communication`) |
 | `src/job_tracker/cli/export_communications.py` | Render one job's full communications history to an on-demand PDF (`export-communications`) |
+| `src/job_tracker/cli/resync_labels.py` | Re-syncs a message's `JobTracker/PURSUE\|SKIP\|NEEDS_REVIEW` label to its linked lead(s)' CURRENT verdict, catching drift from a later LLM review or manual status change (`resync-labels`) |
 | `config/framework.yaml` | Dealbreakers, `not_dealbreakers` (e.g. W2-only, US citizen / no sponsorship), + skills vocabulary — transcribed from `~/CLAUDE.md` |
 | `docs/JOB_CRM_VISION.md` | Design doc: Job as a first-class object — contacts, conversations, documents, meetings, offers, and the 5 use cases (dedupe alerts, follow-ups, offer comparison, market-withdrawal notice) this is building toward |
 | `docs/CATEGORY_HANDLER_EXTENSIBILITY.md` | Design doc: how the classify → decide → label/archive pattern generalizes beyond `recruiter_job` to future comms-migration categories |
@@ -694,10 +695,13 @@ carried real signal (a recruiter confirming W2 vs. C2C, naming the actual
 end client, or quoting a rate). `scripts/scan_communications.py` is the fix.
 
 ```bash
-# Read-only against Gmail — writes only to var/leads.db, never touches
-# labels/archiving. Scans hit-reply@/inmail-hit-reply@linkedin.com (the two
-# senders that carry real message text) plus, with --include-sent, your own
-# Sent-folder replies (Tier-1 thread/contact match only — see below).
+# Writes to var/leads.db AND to Gmail (gmail.modify, since 2026-07-19) — a
+# resolved inbound message gets JobTracker/Linked and is archived; a parked
+# (unmatched) inbound message gets JobTracker/NeedsFollowup and stays in the
+# inbox. --dry-run skips both. Scans hit-reply@/inmail-hit-reply@linkedin.com
+# (the two senders that carry real message text) plus, with --include-sent,
+# your own Sent-folder replies (Tier-1 thread/contact match only, never
+# labeled — see below).
 python scripts/scan_communications.py --llm-fallback --include-sent
 
 # See what's still parked, unmatched (a ~160-char preview per message):
@@ -761,6 +765,8 @@ and parking every unrecognized outgoing email would flood the review queue.
 This is also why replying in-thread and naming the company/title in cold
 outreach (rather than composing a brand-new email) matters in practice: it's
 what keeps future replies on Tier 1 instead of falling through to Tier 3/4.
+Sent messages are never labeled, matched or not — Sent isn't something
+reviewed for "still needs my attention."
 
 Wired into `recruiting-automation/run_cycle.sh`'s hourly cycle already;
 `var/pending-actions.html`'s "Unmatched communications" section (rendered by
@@ -768,6 +774,37 @@ Wired into `recruiting-automation/run_cycle.sh`'s hourly cycle already;
 human. Every linked/resolved message is archived verbatim in
 `job_conversations.body_text` — cheap and searchable by default; the PDF
 export above is only for when you actually need a document to hand someone.
+
+### Keeping Gmail labels trustworthy (2026-07-19)
+
+Two Gmail-label gaps stood between "the pipeline handles this" and actually
+being able to stop reviewing recruiting mail in the Gmail client directly:
+
+1. **This section's `Category/social` traffic carried no Gmail signal at
+   all**, ever — a perfectly-archived reply and an untouched one looked
+   identical in the inbox. Fixed above: `scan_communications.py` now labels
+   a resolved inbound message `JobTracker/Linked` (+ archives it) and a
+   parked one `JobTracker/NeedsFollowup` (left visible in the inbox).
+2. **`triage_recruiter_inbox.py`'s own `JobTracker/PURSUE\|SKIP\|
+   NEEDS_REVIEW` label goes stale** — it's set once, at initial triage, and
+   never revisited even when a later full LLM review or a manual
+   `list_leads.py --set-status` changes the lead's effective verdict.
+   `scripts/resync_labels.py` fixes this: for every already-triaged message,
+   it re-derives today's outcome from the linked lead(s)'
+   CURRENT `llm_verdict`/`verdict` (same PURSUE > NEEDS_REVIEW > SKIP
+   priority rule as initial triage) and swaps the label if it's drifted.
+   No LLM spend, no INBOX/archive changes — a pure label sync.
+
+```bash
+python scripts/resync_labels.py --dry-run   # preview what's stale
+python scripts/resync_labels.py             # apply
+```
+
+Both are wired into `recruiting-automation/run_cycle.sh`'s hourly cycle.
+Together, every category of recruiting mail this pipeline touches now
+carries a label reflecting its CURRENT state — what's left unlabeled, or
+still carrying `NEEDS_REVIEW`/`NeedsFollowup`, is exactly (and only) what
+still needs a human look.
 
 ### Recruiter contact extraction (2026-07-17)
 
