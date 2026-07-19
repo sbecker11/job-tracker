@@ -115,10 +115,19 @@ answer at a glance). Company-name links open the shared `<Company>/` folder in
 a single-lead company, `<Company>/<Company>_<Title>/` when the company has
 multiple leads) via the local `revealfolder://` helper — install once with
 `tools/reveal-folder/install.sh`. **Regenerate page** re-runs this same
-script via `tools/refresh-pending/install.sh` (`refreshpending://run`).
-Browsers will ask to allow each scheme the first time you click. A
-horizontal strip of 5 boxes runs target-to-farthest, left to right, each
-clickable to jump to its section below:
+script via `tools/refresh-pending/install.sh` (`refreshpending://run`), then
+reloads the SAME browser tab in place (2026-07-19 fix — it used to also
+`NSWorkspace.open` the file, which popped a second window/tab on every
+click; the button now passes `no_open=1` and reloads itself instead, see
+`tools/refresh-pending/README.md`). **Auto-refresh** (checkbox next to it,
+on by default) reloads that same tab every 5 minutes purely from disk — no
+rescore, no LLM call, no Swift helper involved — just to pick up whatever
+the hourly `run_cycle.sh` cycle already regenerated on its own; it skips a
+cycle rather than clobbering an in-progress search-box filter, and restores
+your scroll position across the reload. Browsers will ask to allow each
+custom URL scheme the first time you click a `refreshpending://` /
+`revealfolder://` link. A horizontal strip of 5 boxes runs target-to-farthest,
+left to right, each clickable to jump to its section below:
 
 1. **Ready to apply** (the target) — `llm_verdict='pursue'`, still sitting at
    `status='package_generated'` (i.e. genuinely not yet acted on), with both

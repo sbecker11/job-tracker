@@ -495,6 +495,18 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .file-count { color: var(--text-tertiary); font-weight: 400; font-size: 11px; margin-left: 4px; }
   .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
   .page-header h1 { margin: 0; }
+  .header-actions { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
+  .auto-refresh-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .auto-refresh-label input { cursor: pointer; }
+  .auto-refresh-status { color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
   .regen-btn {
     flex-shrink: 0;
     border: 1px solid var(--border);
@@ -503,23 +515,34 @@ _TEMPLATE = r"""<!DOCTYPE html>
     padding: 7px 12px;
     border-radius: 6px;
     font-size: 12px;
+    font-family: inherit;
     text-decoration: none;
     white-space: nowrap;
+    cursor: pointer;
   }
-  .regen-btn:hover { border-color: var(--accent); color: var(--info); }
+  .regen-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--info); }
+  .regen-btn:disabled { color: var(--text-tertiary); cursor: default; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="page-header">
     <h1>Pending job-tracker actions</h1>
-    <a class="regen-btn" href="refreshpending://run"
-       title="Re-run scripts/render_pending_actions.py (via local RefreshPending helper)">Regenerate page</a>
+    <div class="header-actions">
+      <label class="auto-refresh-label"
+             title="Reloads this tab from disk on an interval to pick up the hourly recruiting-automation run automatically. Free — never triggers a re-render or rescore, just re-reads whatever's already on disk.">
+        <input type="checkbox" id="auto-refresh-toggle" />
+        Auto-refresh <span class="auto-refresh-status" id="auto-refresh-status"></span>
+      </label>
+      <button class="regen-btn" id="regen-btn"
+         title="Re-run scripts/render_pending_actions.py (via local RefreshPending helper), then reload this same tab">Regenerate page</button>
+    </div>
   </div>
   <div class="subtitle">
     Live snapshot of <code>leads.db</code>, regenerated ${GENERATED_AT} via
     <code>scripts/render_pending_actions.py</code>.<br/>
-    Static snapshot &mdash; not live-synced. Use <strong>Regenerate page</strong> (or re-run that script) after further changes.
+    Static snapshot &mdash; not live-synced. Use <strong>Regenerate page</strong> (or re-run that script) after further changes,
+    or leave <strong>Auto-refresh</strong> on to pick up the hourly automation run on its own.
   </div>
 
   <div class="funnel-caption">
@@ -711,6 +734,13 @@ let priorityFilter = "all";
 let sortKey = "ageDays";
 let sortDir = "desc";
 const STALE_DAYS = ${STALE_DAYS_THRESHOLD};
+// How long to wait after firing refreshpending://run before reloading this
+// same tab in place (see regen-btn's click handler below). render() scales
+// with total_leads (mostly the --no-rescore-skippable rule-based rescore of
+// every status='new' lead), so this is recomputed from the CURRENT lead
+// count every time the page is regenerated rather than a value that would
+// quietly go stale as the DB grows.
+const REGEN_DELAY_MS = ${REGEN_DELAY_MS_JSON};
 
 function ageCellHtml(days) {
   const cls = days >= STALE_DAYS ? "age stale" : "age";
@@ -988,6 +1018,109 @@ document.getElementById("search").addEventListener("input", (e) => {
   renderTable();
 });
 
+// Shared by "Regenerate page" and auto-refresh below: reload THIS tab in
+// place via a cache-busted self-navigation (not a plain location.reload(),
+// which some browsers may serve from cache for file:// URLs). Stashes the
+// current scroll position first — a full reload otherwise always jumps
+// back to the top of the page, which is a needless annoyance for a
+// dashboard that's expected to auto-refresh under you every few minutes.
+const SCROLL_STORAGE_KEY = "pendingActionsScrollY";
+function reloadSelf() {
+  try {
+    window.sessionStorage.setItem(SCROLL_STORAGE_KEY, String(window.scrollY));
+  } catch (e) { /* sessionStorage unavailable (e.g. locked-down file:// origin) — scroll just resets, not fatal */ }
+  window.location.href = window.location.pathname + "?_r=" + Date.now();
+}
+
+// "Regenerate page" (2026-07-19 rewrite): fires the refreshpending://run
+// URL scheme with no_open=1 (see tools/refresh-pending/main.swift), which
+// re-runs render_pending_actions.py but deliberately does NOT open a new
+// browser window/tab itself. Instead, THIS tab waits ~REGEN_DELAY_MS (sized
+// to the current lead count above) and then reloads itself via reloadSelf().
+// Fixed delay rather than polling for completion — a static file:// page
+// can't reliably fetch/poll its own file cross-browser (Chrome's fetch()
+// rejects the file: scheme outright) — so this trades a little slack time
+// for something that works everywhere.
+document.getElementById("regen-btn").addEventListener("click", () => {
+  const btn = document.getElementById("regen-btn");
+  btn.disabled = true;
+  btn.textContent = "Regenerating\u2026";
+  window.location.href = "refreshpending://run?no_open=1";
+  setTimeout(reloadSelf, REGEN_DELAY_MS);
+});
+
+// Auto-refresh (2026-07-19): the hourly recruiting-automation cycle
+// (run_cycle.sh) already regenerates this file on its own every hour —
+// this just makes an already-open tab notice and pick that up, without
+// needing you to remember to reload it or click Regenerate (which also
+// re-runs the rescore). Purely a disk re-read via reloadSelf() — this
+// NEVER fires refreshpending://run, so it costs nothing and never
+// re-triggers a rescore itself. Defaults on; the choice is remembered
+// per-browser via localStorage (best-effort — silently falls back to
+// "always on, not remembered" if storage is unavailable).
+const AUTO_REFRESH_MS = 5 * 60 * 1000;
+const AUTO_REFRESH_STORAGE_KEY = "pendingActionsAutoRefreshEnabled";
+
+function loadAutoRefreshPref() {
+  try {
+    const v = window.localStorage.getItem(AUTO_REFRESH_STORAGE_KEY);
+    return v === null ? true : v === "1";
+  } catch (e) {
+    return true;
+  }
+}
+function saveAutoRefreshPref(enabled) {
+  try {
+    window.localStorage.setItem(AUTO_REFRESH_STORAGE_KEY, enabled ? "1" : "0");
+  } catch (e) { /* best-effort only */ }
+}
+
+let autoRefreshEnabled = loadAutoRefreshPref();
+let autoRefreshRemainingMs = AUTO_REFRESH_MS;
+
+function formatMmSs(ms) {
+  const totalSec = Math.max(0, Math.round(ms / 1000));
+  return `${Math.floor(totalSec / 60)}:${String(totalSec % 60).padStart(2, "0")}`;
+}
+
+function renderAutoRefreshStatus() {
+  document.getElementById("auto-refresh-status").textContent = autoRefreshEnabled
+    ? `(next check in ${formatMmSs(autoRefreshRemainingMs)})`
+    : "(paused)";
+}
+
+const autoRefreshToggle = document.getElementById("auto-refresh-toggle");
+autoRefreshToggle.checked = autoRefreshEnabled;
+autoRefreshToggle.addEventListener("change", (e) => {
+  autoRefreshEnabled = e.target.checked;
+  saveAutoRefreshPref(autoRefreshEnabled);
+  autoRefreshRemainingMs = AUTO_REFRESH_MS;
+  renderAutoRefreshStatus();
+});
+
+setInterval(() => {
+  if (!autoRefreshEnabled) {
+    renderAutoRefreshStatus();
+    return;
+  }
+  autoRefreshRemainingMs -= 1000;
+  if (autoRefreshRemainingMs > 0) {
+    renderAutoRefreshStatus();
+    return;
+  }
+  const searchEl = document.getElementById("search");
+  const searchBusy = document.activeElement === searchEl || (searchEl && searchEl.value.trim() !== "");
+  if (searchBusy) {
+    // Don't discard an in-progress filter — retry every second instead of
+    // waiting a whole other AUTO_REFRESH_MS once the field is cleared/blurred.
+    autoRefreshRemainingMs = 1000;
+    renderAutoRefreshStatus();
+    return;
+  }
+  reloadSelf();
+}, 1000);
+renderAutoRefreshStatus();
+
 renderFunnel();
 renderPills();
 renderTable();
@@ -997,6 +1130,18 @@ renderAwaitingLlmReview();
 renderJdUnresolved();
 renderUnmatchedCommunications();
 renderManualHandled();
+
+// Restore scroll position stashed by reloadSelf() above, if any — must run
+// after the render*() calls above so the page has its full height first.
+(function restoreScrollPosition() {
+  try {
+    const saved = window.sessionStorage.getItem(SCROLL_STORAGE_KEY);
+    if (saved !== null) {
+      window.sessionStorage.removeItem(SCROLL_STORAGE_KEY);
+      window.scrollTo(0, parseInt(saved, 10) || 0);
+    }
+  } catch (e) { /* best-effort only */ }
+})();
 </script>
 </body>
 </html>
@@ -1032,6 +1177,11 @@ def _render_html(data: dict, *, output_root: Path) -> str:
     html = html.replace("${FOLDER_ROOT}", str(output_root))
     html = html.replace("${STALE_DAYS_THRESHOLD}", str(STALE_DAYS_THRESHOLD))
     html = html.replace("${LLM_REVIEW_GATE_PCT}", str(LLM_REVIEW_GATE_PCT))
+    # ~15ms/lead (the rescore loop's dominant cost) plus a flat 3s floor for
+    # process startup/venv activation, capped at 20s so a runaway lead count
+    # can't leave the regen button looking hung forever.
+    regen_delay_ms = max(3000, min(20000, data["total_leads"] * 15))
+    html = html.replace("${REGEN_DELAY_MS_JSON}", json.dumps(regen_delay_ms))
     return html
 
 
