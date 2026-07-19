@@ -1048,6 +1048,7 @@ def render_job_description(
     *,
     company: str,
     title: str,
+    apply_url: str = "",
     out_dir: Path = DEFAULT_OUTPUT_ROOT,
     multi_lead: bool = False,
     sibling_titles: tuple[str, ...] = (),
@@ -1055,9 +1056,17 @@ def render_job_description(
     """Save the JD text this lead was actually evaluated against as its own
     docx, alongside the review/résumé/cover letter — so the full context for
     a decision is preserved even if the source email is later deleted or the
-    ATS posting expires."""
+    ATS posting expires.
+
+    Also stamps the lead's `apply_url` (2026-07-18) — the JD text alone
+    doesn't tell a future reader *where* to go submit; without this, applying
+    to an older lead meant separately hunting down the original job_leads row
+    or the source email just to find the link again."""
     doc = Document()
     doc.add_heading(f"{title} @ {company}", level=1)
+    p = doc.add_paragraph()
+    p.add_run("Apply URL: ").bold = True
+    p.add_run(apply_url or "(no apply URL captured)")
     for para in (jd_text or "(no JD text captured)").split("\n\n"):
         if para.strip():
             doc.add_paragraph(para.strip())
@@ -1171,6 +1180,7 @@ def generate_package(
     *,
     company: str,
     title: str,
+    apply_url: str = "",
     model: str = DEFAULT_MODEL,
     client=None,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
@@ -1201,7 +1211,7 @@ def generate_package(
     """
     evaluation = evaluate_lead(jd_text, company=company, title=title, model=model, client=client)
     jd_path = render_job_description(
-        jd_text, company=company, title=title, out_dir=output_root,
+        jd_text, company=company, title=title, apply_url=apply_url, out_dir=output_root,
         multi_lead=multi_lead, sibling_titles=sibling_titles,
     )
     review_path = render_jd_review_docx(
@@ -1294,6 +1304,7 @@ def generate_two_tier_package(
     *,
     company: str,
     title: str,
+    apply_url: str = "",
     model: str = DEFAULT_MODEL,
     client=None,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
@@ -1334,7 +1345,7 @@ def generate_two_tier_package(
     an LLM call only when the free pass says it's worth it.
     """
     jd_path = render_job_description(
-        jd_text, company=company, title=title, out_dir=output_root,
+        jd_text, company=company, title=title, apply_url=apply_url, out_dir=output_root,
         multi_lead=multi_lead, sibling_titles=sibling_titles,
     )
     no_llm_score = score_jd(jd_text)

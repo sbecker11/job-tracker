@@ -321,6 +321,7 @@ def triage_message(
             jd_text,
             company=role.company,
             title=role.title,
+            apply_url=role.apply_url or resolved_url,
             model=model,
             client=client,
             output_root=output_root,

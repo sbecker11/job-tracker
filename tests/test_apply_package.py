@@ -215,6 +215,30 @@ def test_apply_package_comparison_miss_note(monkeypatch, seeded_db: Path, tmp_pa
     assert "no matching line" in capsys.readouterr().err
 
 
+def test_apply_package_force_llm_review_passed_through(monkeypatch, seeded_db: Path, capsys):
+    """--force-llm-review bypasses only gate 2 (runs the full LLM review below
+    the rule-based gate) — unlike --force, gate 3 still applies, so a lead
+    the LLM ultimately calls 'pass' gets no résumé/cover letter generated.
+    Added 2026-07-18 for evaluating a batch of 50-69% borderline leads
+    (below llm_review_min_pct=70) without blindly generating documents for
+    whichever ones the full review actually passes on."""
+    captured_kwargs = {}
+
+    def _fake(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _tier(verdict="pass", with_metrics=False)
+
+    monkeypatch.setattr(apply_package, "generate_two_tier_package", _fake)
+    monkeypatch.setattr(apply_package, "render_jd_review", lambda *a, **k: "pass review")
+    rc = apply_package_main(
+        ["--company", "Acme", "--title", "Software Engineer", "--db", str(seeded_db), "--force-llm-review"]
+    )
+    assert rc == 0
+    assert captured_kwargs["force_llm_review"] is True
+    assert captured_kwargs["force"] is False
+    assert "No package generated" in capsys.readouterr().out
+
+
 def test_apply_package_force_generate_non_pursue(monkeypatch, seeded_db: Path, tmp_path: Path, capsys):
     resume = tmp_path / "r.docx"
     cover = tmp_path / "c.docx"

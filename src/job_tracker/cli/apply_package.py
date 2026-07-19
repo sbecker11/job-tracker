@@ -107,6 +107,15 @@ def main(argv: list[str] | None = None) -> int:
         "decided this lead deserves the full treatment (e.g. after a call). House-rule checks (no comp "
         "figures, no work-auth statements, etc.) still run on generated content either way.",
     )
+    ap.add_argument(
+        "--force-llm-review",
+        action="store_true",
+        help="Bypass only gate 2 (run the full LLM review regardless of the rule-based score) — gate 3 "
+        "still applies, so a résumé/cover letter only gets generated on an actual 'pursue' verdict from "
+        "the LLM. For a lead whose free rule-based score is below the llm_review_min_pct gate but still "
+        "worth a real look (e.g. 50-69%%, framework.yaml's pursue_min_pct..llm_review_min_pct band) — "
+        "unlike --force, this won't blindly generate documents for a lead the full review actually passes on.",
+    )
     ap.add_argument("--json", action="store_true", help="Print the full result as JSON")
     args = ap.parse_args(argv)
 
@@ -129,9 +138,11 @@ def main(argv: list[str] | None = None) -> int:
         lead["jd_text"],
         company=args.company,
         title=args.title,
+        apply_url=lead.get("apply_url") or "",
         model=args.model,
         output_root=args.output_root,
         force=args.force,
+        force_llm_review=args.force_llm_review,
         multi_lead=len(sibling_titles) > 0,
         sibling_titles=sibling_titles,
     )

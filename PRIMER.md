@@ -202,6 +202,15 @@ only an actual "pursue" verdict spends a second LLM call on documents:
 - `--force` bypasses both LLM gates above at once — use when a human's
   already decided this lead deserves the full treatment regardless of what
   the free pass or the LLM verdict says (e.g. after a call).
+- `--force-llm-review` (2026-07-18) bypasses only gate 2 — still respects
+  gate 3, so a résumé/cover letter only gets generated on an actual "pursue"
+  verdict from the LLM. Use this to get the LLM's nuanced read on a lead
+  sitting in the 50–69% band (rule-based `pursue_min_pct`..`llm_review_min_pct`)
+  without blindly generating documents for whichever ones it ends up passing
+  on — unlike bare `--force`.
+- `JobDescription.docx` always includes an **Apply URL** line right under the
+  heading (added 2026-07-18, backfilled into every pre-existing package too)
+  — the submission link survives even after the source email is archived/deleted.
 
 ### Doing Stage 4 for several leads in one sitting
 

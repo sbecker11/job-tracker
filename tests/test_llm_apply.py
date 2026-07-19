@@ -660,6 +660,53 @@ def test_render_job_description_writes_docx(tmp_path):
     assert "Build things." in full_text
 
 
+def test_render_job_description_includes_apply_url(tmp_path):
+    path = llm_apply.render_job_description(
+        "JD text",
+        company="Talkiatry",
+        title="Senior AI Engineer",
+        apply_url="https://boards.greenhouse.io/talkiatry/jobs/12345",
+        out_dir=tmp_path,
+    )
+    doc = Document(path)
+    full_text = "\n".join(p.text for p in doc.paragraphs)
+    assert "https://boards.greenhouse.io/talkiatry/jobs/12345" in full_text
+
+
+def test_render_job_description_placeholder_when_apply_url_missing(tmp_path):
+    """2026-07-18: a lead created before apply_url was captured (or with a
+    thin digest that never had one) should still say so explicitly rather
+    than silently omitting the line — an empty JD folder shouldn't look
+    identical to one where the URL was simply never recorded."""
+    path = llm_apply.render_job_description(
+        "JD text", company="Talkiatry", title="Senior AI Engineer", out_dir=tmp_path
+    )
+    doc = Document(path)
+    full_text = "\n".join(p.text for p in doc.paragraphs)
+    assert "(no apply URL captured)" in full_text
+
+
+def test_generate_two_tier_package_threads_apply_url_into_jd_doc(tmp_path, monkeypatch):
+    """Regression guard for the apply_url plumbing itself (2026-07-18) —
+    render_job_description's own apply_url handling is covered above, but
+    nothing previously asserted that generate_two_tier_package (the function
+    every real caller — apply_package.py, triage.py — actually goes through)
+    forwards its apply_url kwarg down to that call rather than silently
+    dropping it."""
+    monkeypatch.setattr(llm_apply, "should_run_llm_review", lambda score: False)
+    result = llm_apply.generate_two_tier_package(
+        "Some JD text that scores below the LLM-review gate.",
+        company="Acme",
+        title="Engineer",
+        apply_url="https://example.com/jobs/999",
+        output_root=tmp_path,
+    )
+    assert result.ran_full_llm_review is False
+    doc = Document(result.jd_path)
+    full_text = "\n".join(p.text for p in doc.paragraphs)
+    assert "https://example.com/jobs/999" in full_text
+
+
 def test_job_description_and_review_share_the_same_job_folder(tmp_path):
     jd_path = llm_apply.render_job_description("JD text", company="Acme", title="Engineer", out_dir=tmp_path)
     review_path = llm_apply.render_jd_review_docx(_sample_evaluation(), company="Acme", title="Engineer", out_dir=tmp_path)
