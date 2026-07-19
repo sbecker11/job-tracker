@@ -545,6 +545,19 @@ _TEMPLATE = r"""<!DOCTYPE html>
   }
   .regen-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--info); }
   .regen-btn:disabled { color: var(--text-tertiary); cursor: default; }
+  .regen-spinner {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--info);
+    border-radius: 50%;
+    animation: regen-spin 0.7s linear infinite;
+  }
+  .regen-spinner[hidden] { display: none; }
+  @keyframes regen-spin {
+    to { transform: rotate(360deg); }
+  }
 </style>
 </head>
 <body>
@@ -557,6 +570,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
         <input type="checkbox" id="auto-refresh-toggle" />
         Auto-refresh <span class="auto-refresh-status" id="auto-refresh-status"></span>
       </label>
+      <span class="regen-spinner" id="regen-spinner" hidden aria-hidden="true"></span>
       <button class="regen-btn" id="regen-btn"
          title="Re-run scripts/render_pending_actions.py (via local RefreshPending helper), then reload this same tab">Regenerate page</button>
     </div>
@@ -1086,9 +1100,16 @@ function reloadSelf() {
 // for something that works everywhere.
 document.getElementById("regen-btn").addEventListener("click", () => {
   const btn = document.getElementById("regen-btn");
+  const spinner = document.getElementById("regen-spinner");
   btn.disabled = true;
   btn.textContent = "Regenerating\u2026";
+  spinner.hidden = false;
   window.location.href = "refreshpending://run?no_open=1";
+  // No explicit "hide" call needed on success: reloadSelf() navigates this
+  // tab to a fresh copy of the page, whose spinner starts `hidden` again.
+  // Only guard against a stuck spinner if the refreshpending:// scheme
+  // itself was never registered/accepted, in which case reloadSelf() below
+  // still fires on schedule and re-renders this same stale page in place.
   setTimeout(reloadSelf, REGEN_DELAY_MS);
 });
 
