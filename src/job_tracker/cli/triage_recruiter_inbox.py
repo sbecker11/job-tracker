@@ -12,9 +12,23 @@ on the default recruiting-funnel account, and skips anything this repo has
 already triaged (tracked in `processed_messages` and by the `JobTracker/*`
 labels themselves, so a message is never double-billed or double-labeled)
 unless `--force` is given — e.g. re-running everything already parked in
-`JobTracker/NEEDS_REVIEW` (note: pass `--query 'label:JobTracker/NEEDS_REVIEW'`,
-no `in:inbox`, since those messages are already archived) after a classifier
-fix, in which case the stale outcome label is replaced rather than stacked.
+`JobTracker/NEEDS_REVIEW` after a classifier fix, in which case the stale
+outcome label is replaced rather than stacked.
+
+`DEFAULT_QUERY` deliberately does NOT require `in:inbox` (2026-07-18 fix —
+before this, it did). Root-cause investigation that day found 374
+`Category/recruiter_job`-labeled messages on this account, 100% already
+archived (0 in the inbox) — comms-migration's own archive-safeguard for
+this account (`classifier.actions.NEVER_ARCHIVE_CATEGORIES_BY_ACCOUNT`) was
+verified working correctly end-to-end via a live test, so the archiving
+isn't coming from any code in this pipeline; most likely cause is ordinary
+inbox triage (skimming/bulk-archiving job-alert digest mail before this
+script ever sees it). Whatever the cause, an `in:inbox`-scoped query turns
+that into a silent, permanent dead end — this repo's own `-label:JobTracker/*`
+exclusions already prevent reprocessing already-triaged mail, so dropping
+`in:inbox` costs nothing and closes the gap. This makes the default query's
+behavior consistent with the `--account personal_hub` query, which never
+required `in:inbox` for the same reason.
 
 Every triaged message gets a JobTracker/* outcome label, but archiving
 (removing INBOX) is conditional for one case: a message that also carries
@@ -64,11 +78,12 @@ from job_tracker.pipeline.triage import (
     NEEDS_REVIEW,
     PURSUE,
     SKIP,
+    effective_verdict,
     triage_message,
 )
 
 DEFAULT_QUERY = (
-    "label:Category/recruiter_job in:inbox "
+    "label:Category/recruiter_job "
     "-label:JobTracker/PURSUE -label:JobTracker/SKIP -label:JobTracker/NEEDS_REVIEW"
 )
 
@@ -94,7 +109,15 @@ def _print_result(result, *, dry_run: bool) -> None:
     print(f"\n[{result.outcome}] {result.subject}  <{result.from_address}>  ({result.message_id})")
     print(f"  classifier: {result.classifier_label}  —  {result.reason}")
     for role_outcome in result.roles:
-        ev = role_outcome.package.evaluation
+        # `evaluation` (the full LLM review) is only populated once the free
+        # rule-based pass clears `should_run_llm_review`'s gate — a role can
+        # still reach a PURSUE/SKIP verdict on the rule-based score alone
+        # (see triage.effective_verdict), so fall back to `no_llm_score`
+        # here rather than assuming `evaluation` is always set. Bug found
+        # 2026-07-18 running a backfill triage over previously-archived
+        # recruiter_job mail: crashed on the first LLM-fallback-scored digest
+        # role that never cleared the LLM-review gate.
+        ev = role_outcome.package.evaluation or role_outcome.package.no_llm_score
         print(f"    {role_outcome.lead.title} @ {role_outcome.lead.company}: {ev.verdict.upper()} ({ev.match_pct:.0f}%)")
         if role_outcome.package.jd_path:
             print(f"      folder:       {role_outcome.package.jd_path.parent}")
@@ -203,11 +226,10 @@ def main(argv: list[str] | None = None) -> int:
         "--credentials/--token override). E.g. --account personal_hub to catch up on "
         "job-lead mail that landed on scbboston@gmail.com — including historical "
         "backlog from before the recruiting funnel forwards existed (see "
-        "comms-migration's routing-inventory.md); remember to drop the default "
-        "query's `in:inbox` (--query \"label:Category/recruiter_job -label:JobTracker/PURSUE "
-        "-label:JobTracker/SKIP -label:JobTracker/NEEDS_REVIEW\") since that mail may "
-        "already be archived/read, and this account needs its own one-time "
-        "gmail.modify consent the first time you run this without --dry-run.",
+        "comms-migration's routing-inventory.md). The default query already doesn't "
+        "require `in:inbox` (see DEFAULT_QUERY's docstring note), so no query override "
+        "is needed just because that mail may be archived/read; this account does need "
+        "its own one-time gmail.modify consent the first time you run this without --dry-run.",
     )
     ap.add_argument("--credentials", type=Path, default=None)
     ap.add_argument("--token", type=Path, default=None)
@@ -308,7 +330,18 @@ def main(argv: list[str] | None = None) -> int:
                 # above was silently discarded instead of landing in the
                 # llm_* columns update_llm_evaluation() exists precisely to
                 # fill in.
-                update_llm_evaluation(conn, key, role_outcome.package.evaluation)
+                #
+                # Bug fix (2026-07-18): a role can reach its verdict on the
+                # free rule-based score alone without ever clearing
+                # `should_run_llm_review`'s gate (see triage.effective_verdict)
+                # — `evaluation` stays None for those, and update_llm_evaluation
+                # unconditionally dereferences `evaluation.metrics`, which
+                # crashed the *entire* batch (not just one message) partway
+                # through a 176-message backfill over previously archived
+                # mail. upsert_lead() above already persisted the rule-based
+                # verdict/rationale, so there's nothing left to backfill here.
+                if role_outcome.package.evaluation is not None:
+                    update_llm_evaluation(conn, key, role_outcome.package.evaluation)
 
                 # UC-2 (docs/JOB_CRM_VISION.md): does this (company, title)
                 # fuzzy-match a *different* job we already track? If so, this
@@ -360,12 +393,19 @@ def main(argv: list[str] | None = None) -> int:
                 # pursue" per triage._decide_outcome) — using it here stamped
                 # EVERY role from a pursue-worthy digest as "pursued", even
                 # siblings whose own verdict was "pass". Each lead's own
-                # `role_outcome.package.evaluation.verdict` is the correct,
-                # per-role signal. A "review" verdict here deliberately
-                # leaves the lead at "new" — that specific role wasn't
-                # confidently decided either way, even though a sibling
-                # role's "pursue" may have earned the message JobTracker/PURSUE.
-                role_verdict = role_outcome.package.evaluation.verdict
+                # per-role verdict is the correct signal. A "review" verdict
+                # here deliberately leaves the lead at "new" — that specific
+                # role wasn't confidently decided either way, even though a
+                # sibling role's "pursue" may have earned the message
+                # JobTracker/PURSUE.
+                #
+                # Bug fix (2026-07-18): `role_outcome.package.evaluation` is
+                # None for a role that never cleared the LLM-review gate —
+                # use triage.effective_verdict's rule-based fallback instead
+                # of dereferencing `.evaluation.verdict` directly (this was
+                # the third of three crashes from the same root cause found
+                # in one 176-message backfill run).
+                role_verdict = effective_verdict(role_outcome.package)
                 if role_outcome.package.resume_path is not None:
                     advance_status(conn, key, "package_generated")
                 elif role_verdict == "pursue":
@@ -424,8 +464,17 @@ def main(argv: list[str] | None = None) -> int:
                             {
                                 "company": ro.lead.company,
                                 "title": ro.lead.title,
-                                "verdict": ro.package.evaluation.verdict,
-                                "match_pct": ro.package.evaluation.match_pct,
+                                # Bug fix (2026-07-18): the fourth spot this exact
+                                # session found the same `evaluation is None` crash
+                                # (a role can reach its verdict on the rule-based
+                                # score alone — see triage.effective_verdict) —
+                                # this one only fires with --json, so it slipped
+                                # past everything upstream and blew up only after
+                                # the entire real batch had already finished.
+                                "verdict": effective_verdict(ro.package),
+                                "match_pct": ro.package.evaluation.match_pct
+                                if ro.package.evaluation is not None
+                                else ro.package.no_llm_score.match_pct,
                                 "jd_path": str(ro.package.jd_path) if ro.package.jd_path else None,
                                 "review_path": str(
                                     ro.package.full_llm_review_path or ro.package.no_llm_review_path

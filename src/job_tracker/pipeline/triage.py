@@ -141,10 +141,16 @@ def _extract_roles_with_fallback(
     return complete_llm_roles[:max_llm_extracted_roles], "llm", truncated
 
 
-def _effective_verdict(package: TwoTierPackageResult) -> str:
+def effective_verdict(package: TwoTierPackageResult) -> str:
     """The two-tier pipeline's LLM stage only runs once the free rule-based
     pass clears its gate (see `llm_apply.generate_two_tier_package`) — for
-    a role that never cleared it, the rule-based verdict IS the verdict."""
+    a role that never cleared it, the rule-based verdict IS the verdict.
+
+    Public (no leading underscore, 2026-07-18): originally private to this
+    module, but `cli/triage_recruiter_inbox.py` needed the exact same
+    fallback after hitting the same `evaluation is None` bug in three
+    separate places of its own — see that file's history for the crashes
+    this was fixing."""
     return package.evaluation.verdict if package.evaluation is not None else package.no_llm_score.verdict
 
 
@@ -157,7 +163,7 @@ def _effective_rationale(package: TwoTierPackageResult) -> list[str]:
 def _decide_outcome(role_outcomes: list[RoleOutcome]) -> tuple[str, str]:
     if not role_outcomes:
         return NEEDS_REVIEW, "no roles extracted"
-    verdicts = {_effective_verdict(r.package) for r in role_outcomes}
+    verdicts = {effective_verdict(r.package) for r in role_outcomes}
     if "pursue" in verdicts:
         return PURSUE, "at least one role scored 'pursue'"
     if "review" in verdicts:
@@ -338,7 +344,7 @@ def triage_message(
             jd_text=jd_text,
             match_pct=package.no_llm_score.match_pct,
             matched_skills=list(package.no_llm_score.matched_skills),
-            verdict=_effective_verdict(package),
+            verdict=effective_verdict(package),
             rationale=_effective_rationale(package),
         )
         role_outcomes.append(RoleOutcome(lead=lead, package=package))

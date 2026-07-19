@@ -246,6 +246,96 @@ def test_triage_force_since_skips_recent(monkeypatch, mock_gmail, tmp_path: Path
     assert "already triaged" in capsys.readouterr().err
 
 
+def test_default_query_does_not_require_inbox():
+    """2026-07-18 fix: `Category/recruiter_job` mail on this account was found
+
+    100% archived (0 of 374 in the inbox), with comms-migration's own
+    archive-safeguard for this account verified working correctly via a live
+    test — so an `in:inbox`-scoped query was silently losing everything
+    already archived by the time this script got to it, no matter the cause.
+    """
+    assert "in:inbox" not in triage_cli.DEFAULT_QUERY
+    assert "label:Category/recruiter_job" in triage_cli.DEFAULT_QUERY
+
+
+def test_print_result_falls_back_to_no_llm_score_when_evaluation_is_none(capsys):
+    """Regression test: a role can reach a PURSUE/SKIP/NEEDS_REVIEW outcome on
+    the free rule-based score alone (see triage._effective_verdict) — the
+    full LLM `evaluation` only runs once that score clears
+    `should_run_llm_review`'s gate. `_print_result` crashed with
+    `AttributeError: 'NoneType' object has no attribute 'verdict'` on exactly
+    this case (found 2026-07-18 running a backfill triage over previously
+    archived mail whose extraction-fallback role never cleared the gate)."""
+    role = _role(verdict="pass")
+    role.package.evaluation = None
+    result = _result(outcome=SKIP, roles=[role])
+    triage_cli._print_result(result, dry_run=True)
+    out = capsys.readouterr().out
+    assert "PASS (80%)" in out
+
+
+def test_triage_live_run_survives_evaluation_none(monkeypatch, mock_gmail, tmp_path: Path):
+    """Regression test: `update_llm_evaluation` unconditionally dereferences
+    `evaluation.metrics` — calling it with `evaluation=None` (a role that
+    reached its verdict on the free rule-based score alone, see
+    triage._effective_verdict) crashed the *entire* batch, not just one
+    message, partway through a real 176-message backfill on 2026-07-18.
+    upsert_lead() already persists the rule-based verdict, so the fix is to
+    skip the update_llm_evaluation call entirely when evaluation is None."""
+    db = tmp_path / "leads.db"
+    role = _role(verdict="pass")
+    role.package.evaluation = None
+
+    monkeypatch.setattr(triage_cli, "list_message_ids", lambda *a, **k: ["msg-1"])
+    monkeypatch.setattr(triage_cli, "fetch_message", lambda *a, **k: _msg())
+    monkeypatch.setattr(triage_cli, "triage_message", lambda *a, **k: _result(outcome=SKIP, roles=[role]))
+    monkeypatch.setattr(
+        triage_cli.gmail_writer,
+        "get_or_create_label",
+        lambda service, label: f"id-{label}",
+    )
+    monkeypatch.setattr(triage_cli.gmail_writer, "find_label_id", lambda *a, **k: None)
+    monkeypatch.setattr(triage_cli.gmail_writer, "label_and_archive", lambda *a, **k: None)
+
+    rc = triage_main(["--db", str(db)])
+    assert rc == 0
+    conn = connect(db)
+    row = conn.execute("SELECT company, status, llm_verdict FROM job_leads").fetchone()
+    assert row["company"] == "Acme"
+    assert row["status"] == "skipped"
+    assert row["llm_verdict"] is None  # never backfilled — no full LLM review ran
+    conn.close()
+
+
+def test_triage_json_output_survives_evaluation_none(monkeypatch, mock_gmail, tmp_path: Path, capsys):
+    """Regression test: the --json summary block was the *fourth* spot in
+    this file with the same `evaluation is None` crash (found 2026-07-18) —
+    it only fires with --json, so it slipped past every other fix and blew
+    up only after an entire real 176-message batch had already finished
+    processing, corrupting nothing but losing the final summary."""
+    db = tmp_path / "leads.db"
+    role = _role(verdict="pass")
+    role.package.evaluation = None
+
+    monkeypatch.setattr(triage_cli, "list_message_ids", lambda *a, **k: ["msg-1"])
+    monkeypatch.setattr(triage_cli, "fetch_message", lambda *a, **k: _msg())
+    monkeypatch.setattr(triage_cli, "triage_message", lambda *a, **k: _result(outcome=SKIP, roles=[role]))
+    monkeypatch.setattr(
+        triage_cli.gmail_writer,
+        "get_or_create_label",
+        lambda service, label: f"id-{label}",
+    )
+    monkeypatch.setattr(triage_cli.gmail_writer, "find_label_id", lambda *a, **k: None)
+    monkeypatch.setattr(triage_cli.gmail_writer, "label_and_archive", lambda *a, **k: None)
+
+    rc = triage_main(["--db", str(db), "--json"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    payload = json.loads(out[out.index("[\n") :])
+    assert payload[0]["roles"][0]["verdict"] == "pass"
+    assert payload[0]["roles"][0]["match_pct"] == 80.0
+
+
 def test_triage_pass_verdict_advances_skipped(monkeypatch, mock_gmail, tmp_path: Path):
     db = tmp_path / "leads.db"
     monkeypatch.setattr(triage_cli, "list_message_ids", lambda *a, **k: ["msg-1"])

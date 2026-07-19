@@ -167,9 +167,13 @@ two different fixes:
    # job-tracker: triage what just got labeled. --account needs its own
    # one-time gmail.modify consent for personal_hub the first time you
    # drop --dry-run (separate from comms-migration's own personal_hub
-   # token — see "Write access" below). Drop `in:inbox` from the default
-   # query too: this mail was never archived by anything in this pipeline,
-   # so it may already be read/archived from ordinary personal-inbox use.
+   # token — see "Write access" below). DEFAULT_QUERY itself dropped
+   # `in:inbox` on 2026-07-18 (see triage_recruiter_inbox.py's module
+   # docstring — 374 already-archived recruiter_job messages were a silent
+   # dead end under the old in:inbox-scoped default), so this --query
+   # override below no longer needs to say so explicitly either; the
+   # after:2026/1/1 + explicit label exclusions are still worth keeping for
+   # a historical-backlog run like this one.
    python scripts/triage_recruiter_inbox.py --account personal_hub --dry-run \
      --query "label:Category/recruiter_job after:2026/1/1 -label:JobTracker/PURSUE -label:JobTracker/SKIP -label:JobTracker/NEEDS_REVIEW"
    python scripts/triage_recruiter_inbox.py --account personal_hub \
