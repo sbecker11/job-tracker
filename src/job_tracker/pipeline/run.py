@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 from job_tracker.ats.jd_resolver import gather_postings, resolve as resolve_ats_jd
 from job_tracker.email.classifier import classify
@@ -77,6 +78,41 @@ def resolve_jd_text(
     if result.get("accepted") and match and match.get("description"):
         return match["description"], True, match.get("url", "")
     return "", False, ""
+
+
+def choose_apply_url(extracted_url: str, resolved_url: str) -> str:
+    """Pick which URL to store as a lead's `apply_url`.
+
+    Bug fixed 2026-07-19: both call sites below used to do a plain
+    `extracted_url or resolved_url`, i.e. whatever URL the source email
+    itself carried always won over the canonical ATS posting URL, even when
+    one was available. That's fine for a direct company/careers link, but
+    LinkedIn's own "job reminder" notification emails carry single-use,
+    time-limited tracking redirects (`trackingId=`, `midToken=`,
+    `otpToken=`, etc.) that silently expire into a bare LinkedIn *search*
+    for the URL text itself once stale — "...did not match any documents."
+    (This is exactly what happened to the Clover Health / Senior Software
+    Engineer lead that surfaced this bug; see
+    `scripts/backfill_apply_urls.py` for the one-time repair of every
+    already-stored lead affected the same way.)
+
+    So: prefer `resolved_url` specifically when `extracted_url` is a
+    linkedin.com link and a resolved (ATS-canonical) URL exists — that one
+    doesn't expire. Any other extracted URL (a company careers page, an ATS
+    link the extractor already found directly, etc.) is left alone, since
+    those are generally durable and more specific than a fuzzy title-matched
+    ATS lookup could be. Falls back to whichever of the two is non-empty
+    when only one is present.
+    """
+    if extracted_url and resolved_url:
+        try:
+            host = urlparse(extracted_url).netloc.lower()
+        except ValueError:
+            host = ""
+        if host == "linkedin.com" or host.endswith(".linkedin.com"):
+            return resolved_url
+        return extracted_url
+    return extracted_url or resolved_url
 
 
 def run_pipeline(
@@ -158,7 +194,7 @@ def run_pipeline(
                     jd_text, jd_resolved, resolved_url = resolve_jd_text(
                         role.company, role.title, verbose=ats_verbose, postings_cache=postings_cache
                     )
-                    apply_url = apply_url or resolved_url
+                    apply_url = choose_apply_url(apply_url, resolved_url)
                 # See the matching comment in pipeline/triage.py: prefer the
                 # role's own isolated text over the whole digest email.
                 used_role_snippet = False

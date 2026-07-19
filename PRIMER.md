@@ -126,8 +126,16 @@ the hourly `run_cycle.sh` cycle already regenerated on its own; it skips a
 cycle rather than clobbering an in-progress search-box filter, and restores
 your scroll position across the reload. Browsers will ask to allow each
 custom URL scheme the first time you click a `refreshpending://` /
-`revealfolder://` link. A horizontal strip of 5 boxes runs target-to-farthest,
-left to right, each clickable to jump to its section below:
+`revealfolder://` link. The **Ready to apply** table also has its own
+**Apply** column (2026-07-19, scoped down to just that one section on
+2026-07-19 per feedback — the other 4 sections are "review it first," not
+"go apply," so a live apply link there would invite skipping the review
+step) — a plain `target="_blank"` link straight to that lead's `apply_url`,
+reading live from the DB (not from `ApplyURL.webloc` or the docx), so it's
+always current; shows a greyed-out "No link" pill instead when no apply URL
+was ever captured. A horizontal strip of 5 boxes runs
+target-to-farthest, left to right, each clickable to jump to its section
+below:
 
 1. **Ready to apply** (the target) — `llm_verdict='pursue'`, still sitting at
    `status='package_generated'` (i.e. genuinely not yet acted on), with both
@@ -224,6 +232,26 @@ only an actual "pursue" verdict spends a second LLM call on documents:
 - `JobDescription.docx` always includes an **Apply URL** line right under the
   heading (added 2026-07-18, backfilled into every pre-existing package too)
   — the submission link survives even after the source email is archived/deleted.
+  Every package folder also gets a companion **`ApplyURL.webloc`** (added
+  2026-07-19) — a real double-clickable Finder shortcut straight into the
+  browser, since the plain-text line in the docx isn't even a clickable
+  hyperlink. `pending-actions.html`'s per-lead **Apply** button (below) reads
+  straight from the DB instead and doesn't need either file.
+- **Which URL wins, and why it matters (fixed 2026-07-19):** `apply_url`
+  prefers the ATS-resolved canonical posting URL (`boards-api.greenhouse.io`
+  et al.) over whatever URL the source email itself carried, specifically
+  when that email URL is a `linkedin.com` link — see
+  `pipeline/run.choose_apply_url`'s docstring. LinkedIn's own "job reminder"
+  notification emails carry single-use, time-limited tracking redirects
+  (`trackingId=`, `midToken=`, `otpToken=`, ...) that silently expire into a
+  bare LinkedIn *search* for the URL text itself — "...did not match any
+  documents." Before this fix, that expiring link always won even when a
+  durable ATS URL was available, all the way through to `apply_url` on the
+  lead. `scripts/backfill_apply_urls.py` did a one-time repair pass over
+  every already-stored lead affected the same way (re-resolves via the ATS
+  APIs and swaps in the canonical URL when a confident match exists);
+  `scripts/backfill_apply_url_weblocs.py` is the equivalent one-time catch-up
+  for `ApplyURL.webloc` on packages generated before that file existed.
 
 ### Doing Stage 4 for several leads in one sitting
 

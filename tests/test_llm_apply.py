@@ -686,6 +686,54 @@ def test_render_job_description_placeholder_when_apply_url_missing(tmp_path):
     assert "(no apply URL captured)" in full_text
 
 
+def test_render_job_description_also_writes_apply_url_webloc(tmp_path):
+    """2026-07-19: render_job_description should always produce a
+    double-clickable Finder shortcut alongside the docx, kept in sync since
+    it's written from the exact same apply_url in the same call."""
+    jd_path = llm_apply.render_job_description(
+        "JD text",
+        company="Talkiatry",
+        title="Senior AI Engineer",
+        apply_url="https://boards.greenhouse.io/talkiatry/jobs/12345",
+        out_dir=tmp_path,
+    )
+    webloc_path = jd_path.parent / "ApplyURL.webloc"
+    assert webloc_path.exists()
+    content = webloc_path.read_text(encoding="utf-8")
+    assert "<key>URL</key>" in content
+    assert "https://boards.greenhouse.io/talkiatry/jobs/12345" in content
+
+
+def test_render_job_description_skips_webloc_when_apply_url_missing(tmp_path):
+    jd_path = llm_apply.render_job_description(
+        "JD text", company="Talkiatry", title="Senior AI Engineer", out_dir=tmp_path
+    )
+    assert not (jd_path.parent / "ApplyURL.webloc").exists()
+
+
+def test_render_apply_url_webloc_removes_stale_file_when_url_cleared(tmp_path):
+    """If a lead's apply_url is later blanked out (shouldn't normally
+    happen, but e.g. a manual DB edit), a previously-written shortcut must
+    not be left pointing at a URL that's no longer considered current."""
+    llm_apply.render_apply_url_webloc(
+        "https://example.com/jobs/1", company="Acme", title="Engineer", out_dir=tmp_path
+    )
+    webloc_path = tmp_path / "Acme" / "ApplyURL.webloc"
+    assert webloc_path.exists()
+
+    result = llm_apply.render_apply_url_webloc("", company="Acme", title="Engineer", out_dir=tmp_path)
+    assert result is None
+    assert not webloc_path.exists()
+
+
+def test_render_apply_url_webloc_escapes_xml_special_characters(tmp_path):
+    url = "https://example.com/jobs?ref=a&b=c<>\"'"
+    webloc_path = llm_apply.render_apply_url_webloc(url, company="Acme", title="Engineer", out_dir=tmp_path)
+    content = webloc_path.read_text(encoding="utf-8")
+    assert "&b=c" not in content or "&amp;b=c" in content
+    assert "<>\"'" not in content
+
+
 def test_generate_two_tier_package_threads_apply_url_into_jd_doc(tmp_path, monkeypatch):
     """Regression guard for the apply_url plumbing itself (2026-07-18) —
     render_job_description's own apply_url handling is covered above, but

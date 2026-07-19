@@ -27,6 +27,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from xml.sax.saxutils import escape as _xml_escape
 
 from docx import Document
 
@@ -1043,6 +1044,51 @@ def _job_folder(
     return lead_dir
 
 
+def render_apply_url_webloc(
+    apply_url: str,
+    *,
+    company: str,
+    title: str,
+    out_dir: Path = DEFAULT_OUTPUT_ROOT,
+    multi_lead: bool = False,
+    sibling_titles: tuple[str, ...] = (),
+) -> Path | None:
+    """Write `ApplyURL.webloc` — macOS's native Safari-style internet-
+    shortcut format (a small XML plist) — into this lead's package folder,
+    double-clickable straight into the default browser from Finder.
+
+    Added 2026-07-19: `render_job_description`'s plain-text "Apply URL:"
+    line turned out to be much less convenient in practice than a real
+    Finder shortcut — it's not even a clickable hyperlink, so reading it
+    still meant opening Word/Pages, selecting the text, and pasting it into
+    a browser by hand. This gets called automatically from
+    `render_job_description` below (same folder, same `apply_url`, so the
+    two can never disagree) — call it directly only for a one-time backfill
+    over already-generated folders (see `scripts/backfill_apply_url_weblocs.py`).
+
+    Returns `None` (after removing any stale `ApplyURL.webloc` already
+    there) when `apply_url` is empty — a shortcut to nothing is worse than
+    no shortcut, since Finder can't tell "empty" apart from "broken" at a
+    glance."""
+    folder = _job_folder(out_dir, company=company, title=title, multi_lead=multi_lead, sibling_titles=sibling_titles)
+    out_path = folder / "ApplyURL.webloc"
+    if not apply_url:
+        out_path.unlink(missing_ok=True)
+        return None
+    out_path.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0">\n'
+        "<dict>\n"
+        "\t<key>URL</key>\n"
+        f"\t<string>{_xml_escape(apply_url)}</string>\n"
+        "</dict>\n"
+        "</plist>\n",
+        encoding="utf-8",
+    )
+    return out_path
+
+
 def render_job_description(
     jd_text: str,
     *,
@@ -1061,7 +1107,11 @@ def render_job_description(
     Also stamps the lead's `apply_url` (2026-07-18) — the JD text alone
     doesn't tell a future reader *where* to go submit; without this, applying
     to an older lead meant separately hunting down the original job_leads row
-    or the source email just to find the link again."""
+    or the source email just to find the link again. And, since 2026-07-19,
+    writes a companion `ApplyURL.webloc` Finder shortcut alongside it (see
+    `render_apply_url_webloc` above) — the actually-convenient way to open
+    the posting, kept in the same folder so it's always sitting right next
+    to this docx."""
     doc = Document()
     doc.add_heading(f"{title} @ {company}", level=1)
     p = doc.add_paragraph()
@@ -1076,6 +1126,9 @@ def render_job_description(
         / "JobDescription.docx"
     )
     doc.save(str(out_path))
+    render_apply_url_webloc(
+        apply_url, company=company, title=title, out_dir=out_dir, multi_lead=multi_lead, sibling_titles=sibling_titles,
+    )
     return out_path
 
 

@@ -38,7 +38,7 @@ from job_tracker.pipeline.llm_apply import (
 from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_EXTRACT_MODEL
 from job_tracker.pipeline.llm_extract import extract_roles_llm, extract_roles_llm_cached
 from job_tracker.pipeline.models import JobLead
-from job_tracker.pipeline.run import resolve_jd_text
+from job_tracker.pipeline.run import choose_apply_url, resolve_jd_text
 from job_tracker.pipeline.store import DEFAULT_REJECTION_COOLDOWN_DAYS, find_recent_rejection, get_sibling_titles
 from job_tracker.scoring.scorer import ScoreResult
 
@@ -326,6 +326,12 @@ def triage_message(
         if not jd_text:
             jd_text = message.combined_text
 
+        # Prefer the ATS-resolved canonical URL over a LinkedIn tracking
+        # link specifically (see choose_apply_url's docstring) — computed
+        # once and reused below so the package's stamped URL and the
+        # stored lead's URL can never disagree.
+        chosen_apply_url = choose_apply_url(role.apply_url, resolved_url)
+
         # Two-tier pipeline (2026-07-11): the free rule-based pass
         # (no-LLM-review.docx) always runs; the LLM call (full-LLM-review)
         # only runs once that clears its gate. `generate=False` (the
@@ -335,7 +341,7 @@ def triage_message(
             jd_text,
             company=role.company,
             title=role.title,
-            apply_url=role.apply_url or resolved_url,
+            apply_url=chosen_apply_url,
             model=model,
             client=client,
             output_root=output_root,
@@ -350,7 +356,7 @@ def triage_message(
             title=role.title,
             source_message_id=message.id,
             source_label=classification.label.value,
-            apply_url=role.apply_url or resolved_url,
+            apply_url=chosen_apply_url,
             extraction_confidence=role.confidence,
             jd_resolved=jd_resolved,
             jd_source=(

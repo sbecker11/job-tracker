@@ -57,7 +57,7 @@ STALE_DAYS_THRESHOLD = 21
 _LEAD_COLUMNS = (
     "normalized_key, company, title, status, jd_text, jd_resolved, "
     "match_pct, matched_skills, verdict, rationale, "
-    "llm_verdict, llm_match_pct, first_seen"
+    "llm_verdict, llm_match_pct, first_seen, apply_url"
 )
 
 
@@ -218,6 +218,7 @@ def render(conn, *, output_root: Path, now: datetime) -> dict:
             "folderPath": folder_path,
             "companyFolderPath": company_folder_path,
             "ageDays": _age_days(r["first_seen"], now),
+            "applyUrl": r["apply_url"] or "",
         }
 
         if status == "package_generated":
@@ -449,6 +450,28 @@ _TEMPLATE = r"""<!DOCTYPE html>
   }
   .copy-btn:hover { border-color: var(--accent); }
   .copy-btn.copied { color: var(--success); border-color: var(--success); }
+  .apply-btn {
+    display: inline-block;
+    border: 1px solid var(--success);
+    background: rgba(76,175,125,0.08);
+    color: var(--success);
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .apply-btn:hover { background: rgba(76,175,125,0.18); }
+  .apply-btn-disabled {
+    display: inline-block;
+    border: 1px solid var(--border);
+    color: var(--text-tertiary);
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    white-space: nowrap;
+    cursor: default;
+  }
   .hint { font-size: 12px; color: var(--text-tertiary); margin-top: 10px; }
   .divider { border: none; border-top: 1px solid var(--border); margin: 28px 0; }
   /* Overrides the card-level `summary`/`details` rules below for the
@@ -560,7 +583,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
-          <thead><tr><th>Company</th><th>Title</th><th class="num">Match %</th><th class="num">Age (days)</th></tr></thead>
+          <thead><tr><th>Company</th><th>Title</th><th class="num">Match %</th><th class="num">Age (days)</th><th>Apply</th></tr></thead>
           <tbody id="ready-to-apply-body"></tbody>
         </table>
       </div>
@@ -568,7 +591,9 @@ _TEMPLATE = r"""<!DOCTYPE html>
         Full-LLM-review verdict is <strong>PURSUE</strong>, status is still <code>package_generated</code>
         (not yet <code>pursued</code>/<code>applied</code>/<code>skipped</code>/<code>rejected</code>),
         and both a r&eacute;sum&eacute; and cover letter are confirmed present on disk &mdash; not just
-        claimed by the DB status. <strong>Action: submit the application, then advance its status.</strong>
+        claimed by the DB status. <strong>Action: click Apply to open the posting in a new tab, submit
+        the application, then advance its status.</strong> "No link" means no apply URL was ever
+        captured for that lead &mdash; check its JobDescription.docx or go find the posting manually.
       </div>
     </div>
   </details>
@@ -795,6 +820,23 @@ function titleCellHtml(title, folderPath, fileCount) {
   return `<a class="title-link" href="${folderUrl(folderPath)}" title="Open this role's folder in Finder">${escapeHtml(title)}</a>${countSuffix}`;
 }
 
+// "Apply for this job-lead" (2026-07-19) — applyUrl comes straight from the
+// lead's stored `apply_url` column (see _LEAD_COLUMNS/render()'s entry
+// dict). Plain <a target="_blank"> rather than a JS window.open() click
+// handler: it degrades gracefully with JS disabled, isn't subject to
+// popup-blocker heuristics, and still supports native middle-click/
+// right-click "open in new window" — the standard way to say "don't
+// navigate away from this dashboard tab" from a static page. Renders a
+// disabled-looking pill instead when no apply_url was ever captured for
+// this lead, rather than silently omitting the column.
+function applyButtonHtml(applyUrl) {
+  if (!applyUrl) {
+    return `<span class="apply-btn-disabled" title="No apply URL captured for this lead">No link</span>`;
+  }
+  return `<a class="apply-btn" href="${escapeHtml(applyUrl)}" target="_blank" rel="noopener noreferrer" ` +
+    `title="Opens the application page in a new browser tab/window">Apply \u2197</a>`;
+}
+
 // Left-to-right = target-to-farthest-blocker, matching the funnel-caption
 // copy above and the numbered section headings below (1, 2, 4, 5 — 3 is
 // the main table, no <details> of its own). #6 (unmatched communications)
@@ -966,6 +1008,7 @@ function renderReadyToApply() {
       <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount)}</td>
       <td class="num">${l.matchPct}%</td>
       ${ageCellHtml(l.ageDays)}
+      <td>${applyButtonHtml(l.applyUrl)}</td>
     </tr>`).join("");
 }
 
