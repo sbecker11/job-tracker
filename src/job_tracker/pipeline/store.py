@@ -486,6 +486,44 @@ def list_leads_needing_llm_eval(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     )
 
 
+def list_leads_awaiting_full_llm_review(conn: sqlite3.Connection, min_match_pct: float) -> list[sqlite3.Row]:
+    """Mirrors `render_pending_actions.py`'s "Awaiting full-LLM-review" bucket
+    criteria exactly (2026-07-19): still `status='new'` (nothing past initial
+    triage has happened, so no human decision to preserve), a real rule-based
+    verdict (not the special "REVIEW NEEDED" unresolved-JD marker — that's a
+    different dashboard bucket entirely), JD text on file to actually
+    evaluate, no full-LLM-review yet, and the free rule-based score already
+    at or above the cost gate (`config/framework.yaml`'s
+    `llm_review_min_pct`, passed in by the caller rather than hardcoded here
+    so `scoring.scorer`'s copy of that threshold stays the single source of
+    truth).
+
+    Added to close a real gap found live (2026-07-19): leads land here via
+    two paths — a normal digest whose rule-based score cleared the gate but
+    whose LLM call hadn't run yet at triage time, or (more often, in
+    practice) `scan_communications.py`'s deliberate "no happy path" stub-lead
+    creation (see that module's docstring), which creates a lead with only a
+    free rule-based score and explicitly stops there. Either way, nothing
+    in `run_cycle.sh` used to ever revisit these — some sat here for 12+ days
+    with a 100% match and zero further action. `cli/process_awaiting_llm_review.py`
+    is the automated sweep that now closes the loop every hour."""
+    return list(
+        conn.execute(
+            """
+            SELECT * FROM job_leads
+            WHERE status = 'new'
+              AND verdict != 'REVIEW NEEDED'
+              AND (llm_verdict IS NULL OR llm_verdict = '')
+              AND jd_text IS NOT NULL AND jd_text != ''
+              AND match_pct >= ?
+              AND deleted_at IS NULL
+            ORDER BY first_seen ASC
+            """,
+            (min_match_pct,),
+        )
+    )
+
+
 def advance_status(
     conn: sqlite3.Connection, normalized_key: str, stage: str, *, when: str | None = None
 ) -> None:

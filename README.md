@@ -69,6 +69,7 @@ recruiting Gmail inbox
 | `src/job_tracker/cli/scan_communications.py` | Archives LinkedIn message replies (and, with `--include-sent`, your own Sent-folder replies) that `triage_recruiter_inbox.py` never sees, and labels/archives the inbound ones `JobTracker/Linked` or `JobTracker/NeedsFollowup` (`scan-communications`) |
 | `src/job_tracker/cli/resolve_communication.py` | Manually resolve a parked `unmatched_messages` row onto a real (or brand-new) job (`resolve-communication`) |
 | `src/job_tracker/cli/export_communications.py` | Render one job's full communications history to an on-demand PDF (`export-communications`) |
+| `src/job_tracker/cli/process_awaiting_llm_review.py` | Sweeps every lead whose free rule-based score cleared the LLM-review gate but has no `llm_verdict` yet (most often a `scan_communications.py` stub lead) and runs the same two-tier review `apply_package.py` runs by hand (`process-awaiting-llm-review`) |
 | `src/job_tracker/cli/resync_labels.py` | Re-syncs a message's `JobTracker/PURSUE\|SKIP\|NEEDS_REVIEW` label to its linked lead(s)' CURRENT verdict, catching drift from a later LLM review or manual status change (`resync-labels`) |
 | `config/framework.yaml` | Dealbreakers, `not_dealbreakers` (e.g. W2-only, US citizen / no sponsorship), + skills vocabulary — transcribed from `~/CLAUDE.md` |
 | `docs/JOB_CRM_VISION.md` | Design doc: Job as a first-class object — contacts, conversations, documents, meetings, offers, and the 5 use cases (dedupe alerts, follow-ups, offer comparison, market-withdrawal notice) this is building toward |
@@ -739,11 +740,13 @@ tiers, cheapest first:
 4. **A full (company, title) pair extracted, matching nothing on file**
    (`llm_new_lead` tier / `MatchOutcome.is_new_lead_candidate`) — distinct
    from genuinely "couldn't tell." Deliberately **not** the full triage
-   happy path: `scan_communications.py` creates a brand-new stub lead
-   (scored with the free rule-based pass only — no ATS lookup, no LLM
-   review, no résumé/cover letter) so it's visible on the dashboard, but
-   getting it reviewed and packaged is still a separate, explicit
-   `apply_package.py` run.
+   happy path *at this step*: `scan_communications.py` itself only creates
+   a brand-new stub lead (scored with the free rule-based pass only — no
+   ATS lookup, no LLM review, no résumé/cover letter) so it's visible on
+   the dashboard right away. `scripts/process_awaiting_llm_review.py` (see
+   below) is what automatically finishes the job on the next hourly cycle
+   once that stub's score clears the review gate — no separate manual
+   `apply_package.py` run needed unless you want to jump the queue.
 5. **Unmatched** — parked in the `unmatched_messages` table for
    `resolve_communication.py`.
 
@@ -774,6 +777,36 @@ Wired into `recruiting-automation/run_cycle.sh`'s hourly cycle already;
 human. Every linked/resolved message is archived verbatim in
 `job_conversations.body_text` — cheap and searchable by default; the PDF
 export above is only for when you actually need a document to hand someone.
+
+### Closing the "Awaiting full-LLM-review" loop (2026-07-19)
+
+**Why this exists:** `var/pending-actions.html`'s "Awaiting full-LLM-review"
+bucket — leads whose free rule-based score already cleared
+`config/framework.yaml`'s `llm_review_min_pct` gate but have no
+`llm_verdict` yet — carried a code comment calling it "purely a 'wait for
+the pipeline' state." Nothing in `run_cycle.sh` actually did that waiting-for.
+Verified live: 21 leads sitting there, several 12+ days old (one at a 100%
+rule-based match), most landed there via this section's own stub-lead
+creation (tier 4 above), a few via a digest whose score cleared the gate
+before `triage_recruiter_inbox.py`'s real LLM call reached it.
+
+```bash
+python scripts/process_awaiting_llm_review.py             # sweeps + processes, live
+python scripts/process_awaiting_llm_review.py --dry-run   # lists candidates, touches nothing
+python scripts/process_awaiting_llm_review.py --limit 5   # spend circuit-breaker for a backlog catch-up run
+```
+
+For every qualifying lead, this runs the exact same
+`pipeline/llm_apply.generate_two_tier_package` call `apply_package.py` runs
+by hand for one lead — full LLM review always (already cleared the score
+gate that decides whether that's worth spending on), résumé + cover letter
+only on an actual "pursue" — and advances `status` to
+`package_generated`/`skipped` the same way `triage_recruiter_inbox.py` does
+after its own call. A lead only ever leaves the candidate set once it has
+an `llm_verdict`, so nothing gets billed twice across hourly runs. No Gmail
+access at all (local DB + Anthropic API only) — wired into
+`recruiting-automation/run_cycle.sh`'s hourly cycle, right after
+`scan_communications.py`.
 
 ### Keeping Gmail labels trustworthy (2026-07-19)
 

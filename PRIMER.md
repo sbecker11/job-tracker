@@ -28,7 +28,11 @@ Stage 6 (free–$0.01/msg, runs alongside Stage 5 in the hourly cycle — see "A
 LinkedIn replies (Category/social) + Sent folder  →  tiered match  →  job_conversations, or unmatched queue
                               scan_communications.py (gmail.modify — labels Linked/NeedsFollowup, see below)
 
-Stage 7 (free, runs right after Stage 5/6 in the hourly cycle — see "Re-sync stale labels" below)
+Stage 7 (bounded by however many leads qualify, runs right after Stage 6 — see "Sweep leads stuck past the score gate" below)
+Leads past the free-score gate, no full review yet  →  same two-tier pipeline as Stage 4, per lead  →  llm_verdict + package on pursue
+                              process_awaiting_llm_review.py (no gmail access — local DB + Anthropic API only)
+
+Stage 8 (free, runs right after Stage 5/6/7 in the hourly cycle — see "Re-sync stale labels" below)
 Already-triaged mail  →  re-derive outcome from CURRENT lead verdict(s)  →  swap JobTracker/* label if stale
                               resync_labels.py (gmail.modify — label-only, no re-evaluation, no archive changes)
 ```
@@ -326,7 +330,8 @@ python scripts/apply_package.py --company "<company>" --title "<title>"
 | 4 (`apply_package.py`) | Local rule-based score always; Anthropic API only past each gate | Free (`no-LLM-review.docx`) → ~$0.05–0.10/lead for the full LLM review only once the free score clears 70% → +~$0.10–0.20 more for résumé/cover letter only on a pursue verdict |
 | 5 (`triage_recruiter_inbox.py`) | Gmail (**read/write** — `gmail.modify`), Anthropic API | ~$0.02–0.04/message (evaluate), +~$0.10–0.30 more only on a pursue verdict; relabels + archives the message |
 | 6 (`scan_communications.py`) | Gmail (**read/write** — `gmail.modify`, since 2026-07-19), Anthropic API only with `--llm-fallback` | Free (thread-id/contact-email matching) + ~$0.001–0.01/message with `--llm-fallback` (Haiku, cached per message_id); labels + archives/leaves-in-inbox the message it touches |
-| 7 (`resync_labels.py`) | Gmail (**read/write** — `gmail.modify`) only, no Anthropic API calls | Free — pure label swap based on already-stored verdicts, no re-evaluation, no INBOX/archive changes |
+| 7 (`process_awaiting_llm_review.py`) | Local SQLite + Anthropic API only (no Gmail access) | Same per-lead cost as Stage 4's full review (~$0.05–0.10) + résumé/cover letter (~+$0.10–0.20) on a pursue — but only for leads that already cleared the free-score gate, so cost scales with backlog size, not a flat per-cycle rate |
+| 8 (`resync_labels.py`) | Gmail (**read/write** — `gmail.modify`) only, no Anthropic API calls | Free — pure label swap based on already-stored verdicts, no re-evaluation, no INBOX/archive changes |
 
 Nothing in this pipeline applies, replies to, or sends anything to an
 employer on your behalf — it only surfaces, scores, and drafts documents for
@@ -387,12 +392,14 @@ if it *can* pull out both:
 - **Matches nothing on file** (`llm_new_lead` tier,
   `MatchOutcome.is_new_lead_candidate`): a brand-new stub lead is created
   (scored with the free rule-based pass only) — but that's *all* that
-  happens. No ATS lookup, no `no-LLM-review`/`full-LLM-review` docx, no
-  résumé/cover-letter generation. Getting from there to an actual reviewed,
-  packaged lead is still `apply_package.py` (or the next
-  `render_pending_actions.py` rescore for the free score) — a deliberate
-  choice so a vague LinkedIn pitch never turns into a fully-packaged
-  application with nobody having read the JD.
+  happens here. No ATS lookup, no `no-LLM-review`/`full-LLM-review` docx, no
+  résumé/cover-letter generation *in this step* — a deliberate choice so a
+  vague LinkedIn pitch never turns into a fully-packaged application with
+  nobody having read the JD. Stage 7 (`process_awaiting_llm_review.py`,
+  below) is what actually finishes the job on an hourly cadence once that
+  stub's free rule-based score clears the review gate — before Stage 7
+  existed, a real gap: leads sat here for 12+ days with a 100% match and
+  zero further action, since nothing ever revisited them.
 
 Wired into `recruiting-automation/run_cycle.sh`'s hourly cycle
 already; `var/pending-actions.html`'s "Unmatched communications" section
@@ -414,7 +421,42 @@ automatically. See it without touching Gmail:
 list-leads --company "<company>" --title "<title>" --show-contacts
 ```
 
-## Stage 7 — Re-sync stale JobTracker/* labels (making Gmail trustworthy enough to stop checking it directly)
+## Stage 7 — Sweep leads stuck past the score gate with no full review yet
+
+Background (2026-07-19, found live): `var/pending-actions.html`'s "Awaiting
+full-LLM-review" bucket — leads whose free rule-based score already cleared
+`llm_review_min_pct` but have no `llm_verdict` yet — carried a code comment
+promising this was "purely a 'wait for the pipeline' state." No step in
+`recruiting-automation/run_cycle.sh` actually did that waiting-for; nothing
+ever revisited the bucket. Verified live: **21 leads** sitting there, several
+12+ days old (one at a 100% rule-based match), all landed there by one of
+two paths — most commonly Stage 6's own stub-lead creation (deliberately
+rule-score-only, see above), but a normal digest whose score cleared the gate
+before Stage 5's real LLM call got to it can land here too.
+
+```bash
+python scripts/process_awaiting_llm_review.py             # sweeps + processes, live
+python scripts/process_awaiting_llm_review.py --dry-run    # lists candidates, touches nothing
+python scripts/process_awaiting_llm_review.py --limit 5    # spend circuit-breaker for a backlog catch-up run
+```
+
+For every candidate (`store.list_leads_awaiting_full_llm_review`: `status='new'`,
+a real rule-based verdict — not the "REVIEW NEEDED" unresolved-JD marker,
+that's Stage 1's problem, not this one — JD text on file, no `llm_verdict`
+yet, and `match_pct` at or above the same gate `apply_package.py` uses), this
+runs the identical `pipeline/llm_apply.generate_two_tier_package` call
+`apply_package.py` runs by hand for one lead: full LLM review always (these
+already cleared the score gate that decides whether that's worth spending
+on), résumé + cover letter only on an actual "pursue" verdict — and advances
+`status` to `package_generated`/`skipped` the same way Stage 5 does after its
+own call, so there's exactly one code path for that state transition, not
+two. Safe to run every hour: a lead only ever leaves the candidate set (by
+getting an `llm_verdict` stamped), so nothing gets billed twice.
+
+Wired into `recruiting-automation/run_cycle.sh`'s hourly cycle, right after
+Stage 6.
+
+## Stage 8 — Re-sync stale JobTracker/* labels (making Gmail trustworthy enough to stop checking it directly)
 
 Background (2026-07-19): `triage_recruiter_inbox.py` (Stage 5) applies its
 `JobTracker/PURSUE|SKIP|NEEDS_REVIEW` label exactly once, at initial triage —
@@ -448,7 +490,7 @@ it's changed. No LLM spend (it never re-evaluates anything, just reads
 already-stored verdicts) and no INBOX/archive changes (whether a message is
 visible in the inbox was decided once, based on extraction completeness, and
 has nothing to do with verdict drift). Wired into
-`recruiting-automation/run_cycle.sh`'s hourly cycle, right after Stage 6.
+`recruiting-automation/run_cycle.sh`'s hourly cycle, right after Stage 7.
 
 Together with Stage 6's new `JobTracker/Linked` / `JobTracker/NeedsFollowup`
 labels on `Category/social` traffic, this is what closes the loop: every
