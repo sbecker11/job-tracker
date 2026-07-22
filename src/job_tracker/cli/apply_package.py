@@ -23,7 +23,13 @@ from job_tracker.pipeline.llm_apply import (
     generate_two_tier_package,
     render_jd_review,
 )
-from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect, get_sibling_titles, update_llm_evaluation
+from job_tracker.pipeline.store import (
+    DEFAULT_DB_PATH,
+    advance_status,
+    connect,
+    get_sibling_titles,
+    update_llm_evaluation,
+)
 
 
 def _find_lead(conn, company: str, title: str) -> dict | None:
@@ -150,6 +156,16 @@ def main(argv: list[str] | None = None) -> int:
     if result.evaluation is not None:
         conn = connect(args.db)
         update_llm_evaluation(conn, lead["normalized_key"], result.evaluation)
+        # A résumé/cover letter on disk with no matching DB status update left
+        # leads invisibly stranded at whatever stage they were in before this
+        # ran (e.g. still "pursued") — the dashboard's "ready to apply" bucket
+        # keys off status='package_generated', so this CLI needs to advance it
+        # itself since (unlike the automated triage_recruiter_inbox.py path)
+        # nothing else does. Added 2026-07-21 after 4 leads (3 Scribd, 1
+        # Bellese) were found with complete packages on disk but a stale
+        # status because this call was missing.
+        if result.resume_path is not None:
+            advance_status(conn, lead["normalized_key"], "package_generated")
         conn.close()
 
     if args.comparison_jsonl:

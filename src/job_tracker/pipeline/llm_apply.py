@@ -463,6 +463,11 @@ omit the topic entirely; do not reassure the reader about it.
 - Tailor bullets/skills selection to this specific JD by choosing from the candidate's real portfolio \
 projects and technical anchors — pick what's actually relevant, don't list everything.
 - If HomePortfolio is included in "experience", it must be the LAST entry.
+- Every "experience" entry MUST include a "role_note" with an explicit job title — do not leave it null just \
+because the JD doesn't emphasize titles. Use the candidate profile's canonical titles per employer (e.g. \
+"Independent Consultant — Senior Software Engineer / Data Engineer" for Spexture, "Senior Data Engineer" or \
+"Senior Software Engineer" for SeniorLink depending on which the JD skews toward, "Co-founder and Technical \
+Lead" for Sierra Vista Group, "Co-founder & CTO" for HomePortfolio).
 - The cover letter body should tie 2-3 concrete real engagements/projects to this JD's stated needs.
 - Do not write a salutation naming a specific person unless one is explicitly given in the job description \
 below; otherwise use "Dear Hiring Team,".

@@ -239,6 +239,54 @@ def test_apply_package_force_llm_review_passed_through(monkeypatch, seeded_db: P
     assert "No package generated" in capsys.readouterr().out
 
 
+def test_apply_package_advances_status_on_package(monkeypatch, seeded_db: Path, tmp_path: Path, capsys):
+    """Added 2026-07-21: this CLI is often run standalone (outside the
+    automated triage_recruiter_inbox.py flow), so it must advance the lead's
+    DB status itself once a résumé/cover letter actually lands on disk —
+    otherwise the dashboard's "ready to apply" bucket (keyed off
+    status='package_generated') never sees it, even though the files exist.
+    Caught by a corpus spot-check that found 4 leads (3 Scribd, 1 Bellese)
+    stuck at 'new'/'pursued' with a complete package already generated."""
+    resume = tmp_path / "resume.docx"
+    cover = tmp_path / "cover.docx"
+    resume.write_text("r")
+    cover.write_text("c")
+    monkeypatch.setattr(
+        apply_package,
+        "generate_two_tier_package",
+        lambda *a, **k: _tier(resume=resume, cover=cover),
+    )
+    monkeypatch.setattr(apply_package, "render_jd_review", lambda *a, **k: "REVIEW TEXT")
+    rc = apply_package_main(["--company", "Acme", "--title", "Software Engineer", "--db", str(seeded_db)])
+    assert rc == 0
+    conn = connect(seeded_db)
+    row = conn.execute(
+        "SELECT status, package_generated_at FROM job_leads WHERE company='Acme' AND title='Software Engineer'"
+    ).fetchone()
+    conn.close()
+    assert row["status"] == "package_generated"
+    assert row["package_generated_at"] is not None
+
+
+def test_apply_package_no_status_advance_without_package(monkeypatch, seeded_db: Path, capsys):
+    """The flip side of the above: a 'pass'/'review' verdict with no résumé
+    generated must leave the lead's status untouched."""
+    monkeypatch.setattr(
+        apply_package,
+        "generate_two_tier_package",
+        lambda *a, **k: _tier(verdict="pass", with_metrics=False),
+    )
+    monkeypatch.setattr(apply_package, "render_jd_review", lambda *a, **k: "pass review")
+    rc = apply_package_main(["--company", "Acme", "--title", "Software Engineer", "--db", str(seeded_db)])
+    assert rc == 0
+    conn = connect(seeded_db)
+    row = conn.execute(
+        "SELECT status FROM job_leads WHERE company='Acme' AND title='Software Engineer'"
+    ).fetchone()
+    conn.close()
+    assert row["status"] == "new"
+
+
 def test_apply_package_force_generate_non_pursue(monkeypatch, seeded_db: Path, tmp_path: Path, capsys):
     resume = tmp_path / "r.docx"
     cover = tmp_path / "c.docx"
