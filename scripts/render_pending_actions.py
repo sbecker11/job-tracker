@@ -566,7 +566,18 @@ _TEMPLATE = r"""<!DOCTYPE html>
   details { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); margin-bottom: 12px; }
   summary { padding: 12px 14px; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: space-between; list-style: none; }
   summary::-webkit-details-marker { display: none; }
+  /* Row-level pill (table 3's "Priority" column: High/Medium/Low) — kept
+     as the original muted outline style. Distinct from
+     `.header-count-pill` below, which is what section-header row counts
+     use; the two happened to share one class/name before 2026-07-21, but
+     giving section headers a filled blue look would have also (wrongly)
+     recolored every row's Priority label. */
   .count-pill { border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; font-size: 12px; color: var(--text-secondary); }
+  /* Filled blue, matching the active "All (N)" priority-filter pill on
+     table 3 (`.pill.active` above) — every section-header count now uses
+     the same loud, consistent style rather than #3's alone standing out
+     as the only filled pill on the page (2026-07-21). */
+  .header-count-pill { border: 1px solid var(--accent); border-radius: 999px; padding: 2px 8px; font-size: 12px; background: var(--accent); color: white; font-weight: 600; }
   .verdict-badge { border-radius: 999px; padding: 1px 8px; font-size: 11px; }
   .verdict-badge.pursue { color: var(--danger); border: 1px solid var(--danger); }
   .verdict-badge.review { color: var(--text-secondary); border: 1px solid var(--border); }
@@ -654,7 +665,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <hr class="divider" />
 
   <details open id="section-ready-to-apply">
-    <summary>1. Ready to apply &mdash; docs generated, nothing done with it yet <span class="count-pill" id="ready-to-apply-count"></span></summary>
+    <summary>1. Ready to apply &mdash; docs generated, nothing done with it yet <span class="header-count-pill" id="ready-to-apply-count"></span></summary>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
@@ -674,7 +685,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   </details>
 
   <details open id="section-needs-decision-forced">
-    <summary>2. Needs your decision &mdash; package already generated on a non-PURSUE verdict <span class="count-pill" id="needs-decision-forced-count"></span></summary>
+    <summary>2. Needs your decision &mdash; package already generated on a non-PURSUE verdict <span class="header-count-pill" id="needs-decision-forced-count"></span></summary>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
@@ -691,43 +702,47 @@ _TEMPLATE = r"""<!DOCTYPE html>
     </div>
   </details>
 
-  <h2>
-    <span id="table-heading">3. Needs your decision &mdash; full-LLM-review says "review"</span>
-    <span class="pills" id="priority-pills"></span>
-  </h2>
-  <input type="text" id="search" placeholder="Filter by company or title&hellip;" />
-  <div class="table-scroll">
-    <table>
-      <thead>
-        <tr id="table-header-row">
-          <th data-sort="company">Company</th>
-          <th data-sort="title">Title</th>
-          <th class="num" data-sort="matchPct">Match %</th>
-          <th data-sort="verdict">Verdict</th>
-          <th class="num" data-sort="ageDays">Age (days)</th>
-          <th></th>
-          <th>Priority</th>
-          <th>Action</th>
-        </tr>
-      </thead>
-      <tbody id="table-body"></tbody>
-    </table>
-  </div>
-  <div class="hint">
-    A real LLM review already ran and came back ambiguous &mdash; <strong>your decision, not the
-    pipeline's</strong>: pursue it (which auto-generates the package and moves it to #1) or pass (set
-    status to <code>skipped</code>). Rows shaded red are the rare case the LLM said PURSUE but it's
-    somehow still stuck here instead of already having a package &mdash; worth checking why. Sorted
-    oldest-first by default &mdash; click any column header to re-sort, click again to reverse. Age
-    turns amber at ${STALE_DAYS_THRESHOLD}+ days. "Copy prompt" copies a ready-to-paste request for a
-    new Cursor chat, pre-loaded with that company/title, so the agent can pull its full stored review
-    and act on your decision for you.
-  </div>
+  <details open id="section-needs-decision">
+    <summary>
+      <span id="table-heading">3. Needs your decision &mdash; full-LLM-review says "review"</span>
+      <span class="pills" id="priority-pills"></span>
+    </summary>
+    <div class="card-body">
+      <input type="text" id="search" placeholder="Filter by company or title&hellip;" />
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr id="table-header-row">
+              <th data-sort="company">Company</th>
+              <th data-sort="title">Title</th>
+              <th class="num" data-sort="matchPct">Match %</th>
+              <th data-sort="verdict">Verdict</th>
+              <th class="num" data-sort="ageDays">Age (days)</th>
+              <th></th>
+              <th>Priority</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="table-body"></tbody>
+        </table>
+      </div>
+      <div class="hint">
+        A real LLM review already ran and came back ambiguous &mdash; <strong>your decision, not the
+        pipeline's</strong>: pursue it (which auto-generates the package and moves it to #1) or pass (set
+        status to <code>skipped</code>). Rows shaded red are the rare case the LLM said PURSUE but it's
+        somehow still stuck here instead of already having a package &mdash; worth checking why. Sorted
+        oldest-first by default &mdash; click any column header to re-sort, click again to reverse. Age
+        turns amber at ${STALE_DAYS_THRESHOLD}+ days. "Copy prompt" copies a ready-to-paste request for a
+        new Cursor chat, pre-loaded with that company/title, so the agent can pull its full stored review
+        and act on your decision for you.
+      </div>
+    </div>
+  </details>
 
   <hr class="divider" />
 
   <details id="section-awaiting-llm-review">
-    <summary>4. Awaiting full-LLM-review &mdash; cleared the score gate, real review hasn't run yet <span class="count-pill" id="awaiting-llm-review-count"></span></summary>
+    <summary>4. Awaiting full-LLM-review &mdash; cleared the score gate, real review hasn't run yet <span class="header-count-pill" id="awaiting-llm-review-count"></span></summary>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
@@ -746,7 +761,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   </details>
 
   <details open id="section-jd-unresolved">
-    <summary>5. JD unresolved &mdash; no usable job-description text yet <span class="count-pill" id="jd-unresolved-count"></span></summary>
+    <summary>5. JD unresolved &mdash; no usable job-description text yet <span class="header-count-pill" id="jd-unresolved-count"></span></summary>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
@@ -767,7 +782,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <hr class="divider" />
 
   <details id="section-unmatched-communications">
-    <summary>6. Unmatched communications &mdash; couldn't auto-link to a tracked job <span class="count-pill" id="unmatched-communications-count"></span></summary>
+    <summary>6. Unmatched communications &mdash; couldn't auto-link to a tracked job <span class="header-count-pill" id="unmatched-communications-count"></span></summary>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
@@ -993,17 +1008,18 @@ function applyButtonHtml(applyUrl) {
 }
 
 // Left-to-right = target-to-farthest-blocker, matching the funnel-caption
-// copy above and the numbered section headings below (1, 2, 4, 5 — 3 is
-// the main table, no <details> of its own). #6 (unmatched communications)
-// is deliberately tacked on at the far end rather than woven into that
-// ordering: it's not a *lead* funnel stage (see render()'s docstring) — a
-// parked message might resolve onto a lead already sitting in any of the
-// other 5 boxes, or onto a brand-new one — it's just surfaced here too
-// since it's real, actionable signal.
+// copy above and the numbered section headings below (1-5 are all now
+// <details>/<summary> cards — #3 joined the other four on 2026-07-21 so
+// clicking its title also collapses the table, matching 1/2/4/5). #6
+// (unmatched communications) is deliberately tacked on at the far end
+// rather than woven into that ordering: it's not a *lead* funnel stage
+// (see render()'s docstring) — a parked message might resolve onto a lead
+// already sitting in any of the other 5 boxes, or onto a brand-new one —
+// it's just surfaced here too since it's real, actionable signal.
 const FUNNEL_STEPS = [
   { count: () => READY_TO_APPLY.length, label: "Ready to apply", cls: "target", sectionId: "section-ready-to-apply" },
   { count: () => NEEDS_DECISION_FORCED.length, label: "Needs decision (forced package)", cls: "blocker", sectionId: "section-needs-decision-forced" },
-  { count: () => NEEDS_DECISION.length, label: "Needs your decision", cls: "blocker", sectionId: null }, // scrolls to the main table, not a <details>
+  { count: () => NEEDS_DECISION.length, label: "Needs your decision", cls: "blocker", sectionId: "section-needs-decision" },
   { count: () => AWAITING_LLM_REVIEW.length, label: "Awaiting full-LLM-review", cls: "blocker", sectionId: "section-awaiting-llm-review" },
   { count: () => JD_UNRESOLVED.length, label: "JD unresolved", cls: "blocker-far", sectionId: "section-jd-unresolved" },
   { count: () => UNMATCHED_COMMUNICATIONS.length, label: "Unmatched communications", cls: "blocker-far", sectionId: "section-unmatched-communications" },
