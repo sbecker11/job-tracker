@@ -158,6 +158,54 @@ def _sender_domain(from_address: str) -> str:
     return match.group(0).lower() if match else from_address.lower()
 
 
+# The two LinkedIn addresses that carry an actual InMail/reply's real text
+# (see scan_communications.py's module docstring) — as opposed to
+# `jobalerts-noreply@`/`messaging-digest-noreply@`, which only ever carry
+# bulk "N new jobs" digests. `_DIGEST_SENDERS` matches `linkedin\.com`
+# generically (right, for `classify()`'s own purposes — LINK_ONLY_DIGEST vs.
+# SINGLE_JD/MULTI_JD_IN_BODY doesn't need this distinction, since a personal
+# InMail never reaches `classify()` at all in practice; scan_communications.py
+# intercepts hit-reply@/inmail-hit-reply@ mail upstream of it). This
+# function's job is different — telling a personal pitch apart from a bulk
+# digest — so it needs the narrower carve-out below to avoid misreading a
+# real personal InMail as a digest purely because of the shared domain.
+_LINKEDIN_PERSONAL_REPLY_SENDERS = re.compile(r"(?:^|[@.])(?:inmail-)?hit-reply@linkedin\.com", re.I)
+
+
+def is_personal_recruiter_message(text: str, from_address: str = "") -> bool:
+    """True when `text` reads like a human recruiter's personalized pitch or
+    reply (came across your profile / love to connect / quick call / talent
+    acquisition, etc.) rather than a bulk job-alert digest that merely lists
+    a role — the same signal `classify()`'s step 4 (Label.RECRUITER_OUTREACH)
+    already uses, exposed standalone (2026-07-21) so callers that don't have
+    a full `EmailMessage` to classify — `pipeline/store.py`'s backfill script
+    scanning stored `jd_text`, `scan_communications.py`'s follow-up-excerpt
+    path — can reuse the exact same rule instead of re-deriving it.
+
+    Deliberately conservative: a digest-domain sender (LinkedIn Job Alerts,
+    etc. — but NOT the two hit-reply@ personal-reply addresses, see
+    `_LINKEDIN_PERSONAL_REPLY_SENDERS` above) or multi-role phrasing ("open
+    roles", "N new jobs") always loses, even if the body happens to also
+    contain outreach-flavored phrasing — real bulk digests occasionally do
+    (e.g. a "reach out if interested" footer), and this must not flag those
+    as personal outreach.
+    """
+    is_personal_reply_sender = bool(_LINKEDIN_PERSONAL_REPLY_SENDERS.search(from_address))
+    if not is_personal_reply_sender and (_DIGEST_SENDERS.search(from_address) or _DIGEST_SUBJECT.search(text)):
+        return False
+    if _MULTI_JD_HINTS.search(text):
+        return False
+    recruiter_from = is_personal_reply_sender or bool(_RECRUITER_FROM.search(from_address))
+    recruiter_body = bool(_RECRUITER_BODY.search(text))
+    if not (recruiter_from or recruiter_body):
+        return False
+    ats_count = _count_ats_urls(text)
+    title_count = _count_job_titles(text)
+    url_count = _count_urls(text)
+    thin_jd = ats_count == 0 and title_count <= 1 and url_count <= 2
+    return thin_jd
+
+
 def classify(message: EmailMessage) -> ClassificationResult:
     """
     Assign one label using ordered heuristics (first strong match wins).

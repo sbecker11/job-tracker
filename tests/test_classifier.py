@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from job_tracker.email.classifier import classify
+from job_tracker.email.classifier import classify, is_personal_recruiter_message
 from job_tracker.email.labels import Label
 from job_tracker.email.models import EmailMessage
 
@@ -290,3 +290,45 @@ def test_schema_org_marketing_json_ld_is_noise() -> None:
     )
     result = classify(message)
     assert result.label == Label.NOISE
+
+
+class TestIsPersonalRecruiterMessage:
+    """Added 2026-07-21 for the `direct_recruiter_outreach` lead flag —
+    `is_personal_recruiter_message` reuses classify()'s own step-4 signal
+    but standalone, so callers without a full EmailMessage (a backfill
+    script scanning stored jd_text, a follow-up-excerpt merge) can reuse it."""
+
+    def test_recruiter_outreach_fixture_is_personal(self) -> None:
+        message = load_fixture("recruiter_outreach.json")
+        assert is_personal_recruiter_message(message.combined_text, message.from_address) is True
+
+    def test_bulk_linkedin_digest_is_not_personal(self) -> None:
+        message = load_fixture("linkedin_digest.json")
+        assert is_personal_recruiter_message(message.combined_text, message.from_address) is False
+
+    def test_multi_jd_in_body_is_not_personal(self) -> None:
+        message = load_fixture("multi_jd_in_body.json")
+        assert is_personal_recruiter_message(message.combined_text, message.from_address) is False
+
+    def test_akshay_saliya_style_linkedin_inmail_is_personal(self) -> None:
+        """Real-world case that motivated this feature: a personalized
+        LinkedIn InMail pitch with no ATS link and no JD substance — exactly
+        the WaferWire/Bellese/Outcome-Logix shape."""
+        text = (
+            "Hi Shawn,\n\nI hope this message finds you well! As a Senior Technical "
+            "Consultant at Spexture, you have a wealth of experience in building "
+            "production systems. Our client is looking for someone with your skill "
+            "set. Let's chat more if you're interested!\n\nBest regards,\nAkshay\n\n"
+            "Akshay Saliya\nTalent Acquisition Lead\nWaferWire Cloud Technologies"
+        )
+        assert is_personal_recruiter_message(text, "inmail-hit-reply@linkedin.com") is True
+
+    def test_digest_sender_never_counts_as_personal_even_with_outreach_phrasing(self) -> None:
+        """A bulk job-alert digest occasionally has outreach-flavored footer
+        text ("reach out if interested") — the sender-domain/subject digest
+        signal must still win outright."""
+        text = "15 new jobs matching your profile. Reach out if interested in any of these roles."
+        assert is_personal_recruiter_message(text, "jobalerts-noreply@linkedin.com") is False
+
+    def test_empty_text_is_not_personal(self) -> None:
+        assert is_personal_recruiter_message("", "") is False

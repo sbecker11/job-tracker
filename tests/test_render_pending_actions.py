@@ -111,6 +111,45 @@ def test_render_sorts_needs_decision_oldest_first_by_default(tmp_path: Path):
     assert data["needs_decision"][1]["ageDays"] == 2
 
 
+def test_render_surfaces_direct_recruiter_flag_on_funnel_entries(tmp_path: Path):
+    """2026-07-21: a lead flagged direct_recruiter_outreach must carry
+    `directRecruiter: True` through to its funnel-bucket entry (for the
+    dashboard's 📨 badge), and `direct_recruiter_count` must total it up
+    across every bucket."""
+    db_path = tmp_path / "leads.db"
+    conn = connect(db_path)
+    # match_pct >= LLM_REVIEW_GATE_PCT (70) with no llm_verdict yet lands a
+    # lead in the "awaiting_llm_review" funnel bucket — one of the 5 buckets
+    # direct_recruiter_count actually sums over (not_prioritized is excluded).
+    direct = _make_lead(
+        conn, company="WaferWire", title="Data Engineer", match_pct=80.0, verdict="review",
+        first_seen=(NOW - timedelta(days=1)).isoformat(),
+    )
+    conn.execute(
+        "UPDATE job_leads SET direct_recruiter_outreach = 1 WHERE normalized_key = ?", (direct.normalized_key,)
+    )
+    _make_lead(
+        conn, company="Cold Digest Co", title="Engineer", match_pct=80.0, verdict="review",
+        first_seen=(NOW - timedelta(days=1)).isoformat(),
+    )
+    conn.commit()
+
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    conn.close()
+
+    all_entries = (
+        data["jd_unresolved"] + data["awaiting_llm_review"] + data["needs_decision"]
+        + data["needs_decision_forced"] + data["ready_to_apply"]
+    )
+    by_company = {e["company"]: e for e in all_entries}
+    assert by_company["WaferWire"]["directRecruiter"] is True
+    assert by_company["Cold Digest Co"]["directRecruiter"] is False
+    assert data["direct_recruiter_count"] == 1
+    # "Cold Digest Co" was never explicitly reviewed (still NULL in the DB,
+    # just falsy for badge purposes) — it must still count as undecided.
+    assert data["direct_recruiter_undecided_count"] == 1
+
+
 def test_render_populates_age_days_on_funnel_buckets(tmp_path: Path):
     db_path = tmp_path / "leads.db"
     conn = connect(db_path)

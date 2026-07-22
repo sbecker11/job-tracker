@@ -187,6 +187,23 @@ def test_single_jd_pass_verdict_denies_and_skips_generation(tmp_path):
     assert len(client.calls) == 1  # evaluate only, no generate call spent
 
 
+def test_single_jd_lead_leaves_direct_recruiter_outreach_undecided(tmp_path):
+    """2026-07-21 redesign: `direct_recruiter_outreach` is exclusively
+    human-decided (via `review_direct_recruiter_outreach.py`), never set by
+    the ingestion pipeline — every lead triage.py creates must leave it at
+    its default `None` ("not yet reviewed"), regardless of the message's
+    content."""
+    client = _FakeClient(responses=[(_eval_payload("pursue", 85), 900, 200), (_GENERATE_PAYLOAD, 1200, 800)])
+    result = triage.triage_message(
+        _single_jd_message(),
+        resolve_full_jd=False,
+        force_llm_review=True,
+        output_root=tmp_path,
+        client=client,
+    )
+    assert result.roles[0].lead.direct_recruiter_outreach is None
+
+
 def test_single_jd_review_verdict_needs_review(tmp_path):
     client = _FakeClient(responses=[(_eval_payload("review", 40), 900, 200)])
     result = triage.triage_message(

@@ -38,9 +38,11 @@ from job_tracker.pipeline.store import (
     list_job_meetings,
     list_job_offers,
     find_recent_rejection,
+    list_undecided_direct_recruiter_outreach,
     record_message_processed,
     record_rejection,
     set_awaiting_response,
+    set_direct_recruiter_outreach,
     update_llm_evaluation,
     upsert_lead,
 )
@@ -104,6 +106,84 @@ def test_jd_text_persists_on_insert(tmp_path: Path):
     row = conn.execute("SELECT jd_text, jd_source FROM job_leads WHERE company='Acme'").fetchone()
     assert row["jd_text"] == "Full JD body text here."
     assert row["jd_source"] == "ats_api"
+    conn.close()
+
+
+def test_direct_recruiter_outreach_persists_true_on_insert(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    upsert_lead(
+        conn,
+        JobLead(
+            company="WaferWire",
+            title="Data Engineer",
+            source_message_id="m1",
+            source_label="linkedin_message",
+            direct_recruiter_outreach=True,
+        ),
+    )
+    row = conn.execute("SELECT direct_recruiter_outreach FROM job_leads WHERE company='WaferWire'").fetchone()
+    assert row["direct_recruiter_outreach"] == 1
+    conn.close()
+
+
+def test_direct_recruiter_outreach_defaults_undecided_null(tmp_path: Path):
+    """2026-07-21 redesign: nothing sets this automatically anymore — every
+    freshly-inserted lead must default to NULL ("not yet reviewed"), not
+    False, so review_direct_recruiter_outreach.py's queue can tell "never
+    asked" apart from "asked, human said no"."""
+    conn = connect(tmp_path / "leads.db")
+    upsert_lead(
+        conn,
+        JobLead(company="Acme", title="Engineer", source_message_id="m1", source_label="single-jd"),
+    )
+    row = conn.execute("SELECT direct_recruiter_outreach FROM job_leads WHERE company='Acme'").fetchone()
+    assert row["direct_recruiter_outreach"] is None
+    conn.close()
+
+
+def test_direct_recruiter_outreach_is_never_touched_on_update(tmp_path: Path):
+    """The whole point of the 2026-07-21 redesign: this flag is exclusively
+    human-decided (via review_direct_recruiter_outreach.py's
+    set_direct_recruiter_outreach()), so a re-upsert of the same lead (a
+    digest re-sending the same posting, a follow-up JD-text merge, etc.)
+    must leave whatever value is already stored — decided or still
+    undecided — completely alone."""
+    conn = connect(tmp_path / "leads.db")
+    upsert_lead(
+        conn,
+        JobLead(company="Acme", title="Engineer", source_message_id="m1", source_label="multi-jd-in-body"),
+    )
+    key = JobLead(company="Acme", title="Engineer", source_message_id="m1", source_label="multi-jd-in-body").normalized_key
+    set_direct_recruiter_outreach(conn, key, True)
+
+    # Re-seen later (e.g. the same digest re-sending it) — a fresh JobLead()
+    # always defaults direct_recruiter_outreach=None, which must NOT
+    # clobber the human's earlier True.
+    upsert_lead(
+        conn,
+        JobLead(company="Acme", title="Engineer", source_message_id="m2", source_label="multi-jd-in-body"),
+    )
+    row = conn.execute("SELECT direct_recruiter_outreach FROM job_leads WHERE company='Acme'").fetchone()
+    assert row["direct_recruiter_outreach"] == 1
+    conn.close()
+
+
+def test_set_direct_recruiter_outreach_and_list_undecided(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    a = JobLead(company="Acme", title="Engineer", source_message_id="m1", source_label="single-jd")
+    b = JobLead(company="Beta Co", title="Engineer", source_message_id="m2", source_label="single-jd")
+    upsert_lead(conn, a)
+    upsert_lead(conn, b)
+
+    undecided = list_undecided_direct_recruiter_outreach(conn)
+    assert {r["company"] for r in undecided} == {"Acme", "Beta Co"}
+
+    set_direct_recruiter_outreach(conn, a.normalized_key, True)
+    undecided = list_undecided_direct_recruiter_outreach(conn)
+    assert {r["company"] for r in undecided} == {"Beta Co"}
+
+    row = conn.execute("SELECT direct_recruiter_outreach FROM job_leads WHERE company='Acme'").fetchone()
+    assert row["direct_recruiter_outreach"] == 1
     conn.close()
 
 
@@ -732,4 +812,34 @@ def test_connect_migrates_a_pre_existing_db_missing_awaiting_response_since_and_
     assert "awaiting_response_since" in leads_cols
     assert "phone" in contacts_cols
     assert conn.execute("SELECT company FROM job_leads WHERE normalized_key = 'k1'").fetchone()["company"] == "Acme"
+    conn.close()
+
+
+def test_connect_migrates_a_pre_existing_db_missing_direct_recruiter_outreach_column(tmp_path: Path):
+    """Regression test mirroring the jd_text/awaiting_response_since
+    migrations above: a pre-2026-07-21 DB (schema minus
+    direct_recruiter_outreach) must gain the column on connect(), defaulted
+    to NULL ("not yet reviewed" — see models.JobLead's docstring), without
+    losing existing rows."""
+    import re
+
+    db_path = tmp_path / "leads.db"
+    old_schema = re.sub(
+        r",\n(?:\s*--[^\n]*\n)*\s*direct_recruiter_outreach INTEGER", "", _SCHEMA
+    )
+    assert "direct_recruiter_outreach" not in old_schema  # guard against the regex silently no-op'ing
+    raw_conn = sqlite3.connect(str(db_path))
+    raw_conn.executescript(old_schema)
+    raw_conn.execute(
+        "INSERT INTO job_leads (normalized_key, company, title) VALUES ('k1', 'Acme', 'Engineer')"
+    )
+    raw_conn.commit()
+    raw_conn.close()
+
+    conn = connect(db_path)
+    leads_cols = {row["name"] for row in conn.execute("PRAGMA table_info(job_leads)")}
+    assert "direct_recruiter_outreach" in leads_cols
+    row = conn.execute("SELECT company, direct_recruiter_outreach FROM job_leads WHERE normalized_key = 'k1'").fetchone()
+    assert row["company"] == "Acme"
+    assert row["direct_recruiter_outreach"] is None
     conn.close()

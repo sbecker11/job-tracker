@@ -621,6 +621,65 @@ directly, or call `store.set_awaiting_response()` standalone.
 `list_leads.py`'s default table has a `WAITING` column, and `--waiting`
 filters to just the leads currently awaiting a response.
 
+### `direct_recruiter_outreach` — "did a real human reach out about this?"
+
+`job_leads.direct_recruiter_outreach` (added 2026-07-21) is a tri-state flag
+distinguishing a lead a human recruiter personally pitched (a LinkedIn
+InMail/reply, or a personalized outreach email) from a cold job-board
+posting a digest merely listed. `job_contacts.role='recruiter'` doesn't do
+this — it's set for almost every lead regardless of source — so there was
+no cheap way to answer "prioritize leads where someone actually reached out"
+before this.
+
+**Exclusively human-decided, never auto-set by the ingestion pipeline** —
+an earlier same-day version of this feature tried heuristic auto-detection
+(sender/body-tone pattern matching, reusing `classify()`'s
+`Label.RECRUITER_OUTREACH` signal); it was reverted in favor of an explicit
+manual review, since reliably telling "a recruiter personally pitched this"
+apart from "a recruiter's *name* just happens to be on a digest" turned out
+messier to trust unattended than just asking:
+
+- `NULL` = not yet reviewed (the default for every lead, forever, until a
+  human looks at it) — distinct from an explicit `False` ("reviewed,
+  confirmed NOT direct outreach").
+- **`review-direct-recruiter-outreach`**
+  (`cli/review_direct_recruiter_outreach.py`) is the only writer. Run it any
+  time to walk every undecided lead (`store.list_undecided_direct_recruiter_outreach`,
+  oldest-first) and answer y/n/skip/quit at a prompt. Each prompt pre-fills
+  a *suggested* default — `True` unconditionally for
+  `source_label == 'linkedin_message'` (every stub lead
+  `scan_communications.py` creates is, by construction, from a real
+  personal LinkedIn InMail/reply, never a digest), otherwise
+  `email/classifier.is_personal_recruiter_message()`'s guess against the
+  stored `jd_text` — so accepting the obvious cases is just hitting Enter.
+- `store.upsert_lead()` never touches this column on an update (a digest
+  re-send, a follow-up JD-text merge, etc. all leave whatever's already
+  there — decided or still undecided — completely alone); only
+  `store.set_direct_recruiter_outreach()` (called by the review CLI) writes
+  it.
+
+The dashboard (`render_pending_actions.py`) shows a ⭐ badge next to the
+company name for every explicitly-`True` lead in each funnel table, plus a
+running count of confirmed-direct and still-undecided leads in the footer
+note (nudging you to run `review-direct-recruiter-outreach`).
+
+### `find_duplicate_titles.py` — detecting semantically-duplicate titles
+
+Company-name case duplicates (e.g. the `NICE`/`NiCE` mismatch fixed
+2026-07-21) are safe to auto-merge — pure casing normalization. Title
+duplicates aren't: "Sr Backend Engineer" and "Sr Frontend Engineer" both
+start with "Sr" but are genuinely different postings, so auto-merging on
+similarity risks silently discarding one lead's real history (its
+contacts/conversations/documents).
+
+`scripts/find_duplicate_titles.py` is detection-only — it expands common
+recruiting-title abbreviations (`Snr`/`Sr` → `Senior`, roman numerals ↔
+digits, `Eng` → `Engineer`, etc. — see `_EXPANSIONS`), then fuzzy-matches
+titles *within the same company* and reports pairs above `--threshold`
+(default 0.85) for you to manually review and merge (there's no merge tool
+yet — do it via direct SQL, keeping whichever lead has more real history).
+Run with `python scripts/find_duplicate_titles.py`.
+
 ### Manual (non-email) job management CLIs
 
 Four CLIs cover the use cases that don't come through the triaged-email

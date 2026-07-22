@@ -57,7 +57,7 @@ STALE_DAYS_THRESHOLD = 21
 _LEAD_COLUMNS = (
     "normalized_key, company, title, status, jd_text, jd_resolved, "
     "match_pct, matched_skills, verdict, rationale, "
-    "llm_verdict, llm_match_pct, first_seen, apply_url"
+    "llm_verdict, llm_match_pct, first_seen, apply_url, direct_recruiter_outreach"
 )
 
 
@@ -219,6 +219,12 @@ def render(conn, *, output_root: Path, now: datetime) -> dict:
             "companyFolderPath": company_folder_path,
             "ageDays": _age_days(r["first_seen"], now),
             "applyUrl": r["apply_url"] or "",
+            # A human recruiter personally reached out about this lead —
+            # see models.JobLead.direct_recruiter_outreach's docstring.
+            # Surfaced as a gold-star badge (⭐) next to the company name in
+            # every funnel table so these leads are visually easy to
+            # prioritize over a cold job-board posting (2026-07-21).
+            "directRecruiter": bool(r["direct_recruiter_outreach"]),
         }
 
         if status == "package_generated":
@@ -296,12 +302,25 @@ def render(conn, *, output_root: Path, now: datetime) -> dict:
     ]
     unmatched_communications.sort(key=lambda m: -m["ageDays"])
 
+    direct_recruiter_count = sum(
+        1
+        for bucket in (jd_unresolved, awaiting_llm_review, needs_decision, needs_decision_forced, ready_to_apply)
+        for lead in bucket
+        if lead["directRecruiter"]
+    )
+    # Whole-DB, not just the funnel buckets above — the review queue
+    # (review_direct_recruiter_outreach.py) walks every lead regardless of
+    # status, so this should match what that command would actually show.
+    direct_recruiter_undecided_count = sum(1 for r in rows if r["direct_recruiter_outreach"] is None)
+
     return {
         "jd_unresolved": jd_unresolved,
         "awaiting_llm_review": awaiting_llm_review,
         "needs_decision": needs_decision,
         "needs_decision_forced": needs_decision_forced,
         "ready_to_apply": ready_to_apply,
+        "direct_recruiter_count": direct_recruiter_count,
+        "direct_recruiter_undecided_count": direct_recruiter_undecided_count,
         "not_prioritized_count": len(not_prioritized),
         "manual_handled": manual_handled,
         # scripts/scan_communications.py's parking lot (2026-07-17) — a
@@ -436,6 +455,8 @@ _TEMPLATE = r"""<!DOCTYPE html>
   tbody tr.pursue { background: rgba(217,83,79,0.10); }
   td { padding: 8px 10px; vertical-align: middle; }
   td.company { font-weight: 600; }
+  .direct-cell { text-align: center; padding-left: 4px; padding-right: 4px; }
+  .direct-badge { font-size: 12px; cursor: default; }
   td.title { color: var(--text-secondary); }
   .table-scroll { max-height: 520px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
   .table-scroll.short { max-height: 340px; }
@@ -597,7 +618,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
-          <thead><tr><th>Company</th><th>Title</th><th class="num">Match %</th><th class="num">Age (days)</th><th>Apply</th></tr></thead>
+          <thead><tr><th>Company</th><th>Title</th><th class="num">Match %</th><th class="num">Age (days)</th><th></th><th>Apply</th></tr></thead>
           <tbody id="ready-to-apply-body"></tbody>
         </table>
       </div>
@@ -617,7 +638,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
-          <thead><tr><th>Company</th><th>Title</th><th>Verdict</th><th class="num">Match %</th><th class="num">Age (days)</th></tr></thead>
+          <thead><tr><th>Company</th><th>Title</th><th>Verdict</th><th class="num">Match %</th><th class="num">Age (days)</th><th></th></tr></thead>
           <tbody id="needs-decision-forced-body"></tbody>
         </table>
       </div>
@@ -644,6 +665,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
           <th class="num" data-sort="matchPct">Match %</th>
           <th data-sort="verdict">Verdict</th>
           <th class="num" data-sort="ageDays">Age (days)</th>
+          <th></th>
           <th>Priority</th>
           <th>Action</th>
         </tr>
@@ -669,7 +691,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
-          <thead><tr><th>Company</th><th>Title</th><th class="num">Match %</th><th class="num">Age (days)</th></tr></thead>
+          <thead><tr><th>Company</th><th>Title</th><th class="num">Match %</th><th class="num">Age (days)</th><th></th></tr></thead>
           <tbody id="awaiting-llm-review-body"></tbody>
         </table>
       </div>
@@ -688,7 +710,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
-          <thead><tr><th>Company</th><th>Title</th><th class="num">Age (days)</th></tr></thead>
+          <thead><tr><th>Company</th><th>Title</th><th class="num">Age (days)</th><th></th></tr></thead>
           <tbody id="jd-unresolved-body"></tbody>
         </table>
       </div>
@@ -829,6 +851,20 @@ function folderUrl(folderPath) {
 function companyCellHtml(company, companyFolderPath) {
   return `<a class="company-link" href="${folderUrl(companyFolderPath)}" title="Open company folder in Finder">${escapeHtml(company)}</a>`;
 }
+
+// The ⭐ badge (2026-07-21, moved to its own column 2026-07-21) marks a lead
+// flagged `directRecruiter` — a real human recruiter personally reached out
+// (LinkedIn InMail/reply, or a personalized email pitch), not a cold
+// job-board digest. See models.JobLead.direct_recruiter_outreach's
+// docstring for exactly how that's decided. Lives in its own unlabeled
+// column just after "Age (days)" rather than inline with the company name,
+// so it reads as a distinct signal instead of decorating the link.
+function directRecruiterCellHtml(directRecruiter) {
+  const badge = directRecruiter
+    ? `<span class="direct-badge" title="direct_recruiter_outreach">\u{2B50}</span>`
+    : "";
+  return `<td class="direct-cell">${badge}</td>`;
+}
 function titleCellHtml(title, folderPath, fileCount) {
   const countSuffix = fileCount > 0 ? `<span class="file-count">(${fileCount} file${fileCount === 1 ? "" : "s"})</span>` : "";
   return `<a class="title-link" href="${folderUrl(folderPath)}" title="Open this role's folder in Finder">${escapeHtml(title)}</a>${countSuffix}`;
@@ -951,6 +987,7 @@ function renderTable() {
       <td class="num">${lead.matchPct}%</td>
       <td><span class="verdict-badge ${lead.verdict}">${lead.verdict.toUpperCase()}</span></td>
       ${ageCellHtml(lead.ageDays)}
+      ${directRecruiterCellHtml(lead.directRecruiter)}
       <td><span class="count-pill">${PRIORITY_LABEL[priorityOf(lead.matchPct)]}</span></td>
       <td><button class="copy-btn" data-idx="${idx}">Copy prompt</button></td>
     </tr>`).join("");
@@ -988,6 +1025,7 @@ function renderJdUnresolved() {
       <td class="company">${companyCellHtml(l.company, l.companyFolderPath)}</td>
       <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount)}</td>
       ${ageCellHtml(l.ageDays)}
+      ${directRecruiterCellHtml(l.directRecruiter)}
     </tr>`).join("");
 }
 
@@ -999,6 +1037,7 @@ function renderAwaitingLlmReview() {
       <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount)}</td>
       <td class="num">${l.matchPct}%</td>
       ${ageCellHtml(l.ageDays)}
+      ${directRecruiterCellHtml(l.directRecruiter)}
     </tr>`).join("");
 }
 
@@ -1011,6 +1050,7 @@ function renderNeedsDecisionForced() {
       <td><span class="verdict-badge ${l.verdict}">${l.verdict.toUpperCase()}</span></td>
       <td class="num">${l.matchPct}%</td>
       ${ageCellHtml(l.ageDays)}
+      ${directRecruiterCellHtml(l.directRecruiter)}
     </tr>`).join("");
 }
 
@@ -1022,6 +1062,7 @@ function renderReadyToApply() {
       <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount)}</td>
       <td class="num">${l.matchPct}%</td>
       ${ageCellHtml(l.ageDays)}
+      ${directRecruiterCellHtml(l.directRecruiter)}
       <td>${applyButtonHtml(l.applyUrl)}</td>
     </tr>`).join("");
 }
@@ -1226,6 +1267,9 @@ def _render_html(data: dict, *, output_root: Path) -> str:
             else "none"
         )
         + f". {len(data['unmatched_communications'])} unmatched communication(s) awaiting manual resolution."
+        + f" {data['direct_recruiter_count']} of the leads above (\u2B50) are confirmed direct recruiter "
+        f"outreach. {data['direct_recruiter_undecided_count']} lead(s) total still await that review — run "
+        "`review-direct-recruiter-outreach` to go through them."
     )
     html = _TEMPLATE
     html = html.replace("${GENERATED_AT}", data["generated_at"].strftime("%Y-%m-%d %H:%M %Z") or data["generated_at"].strftime("%Y-%m-%d %H:%M"))

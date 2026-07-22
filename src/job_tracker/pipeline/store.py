@@ -49,7 +49,10 @@ CREATE TABLE IF NOT EXISTS job_leads (
     first_seen TEXT,
     last_seen TEXT,
     times_seen INTEGER DEFAULT 1,
-    awaiting_response_since TEXT
+    awaiting_response_since TEXT,
+    -- NULL = not yet reviewed (default forever, until a human decides via
+    -- review_direct_recruiter_outreach.py) — see models.JobLead's docstring.
+    direct_recruiter_outreach INTEGER
 );
 
 -- One row per email message ever sent through the LLM extraction fallback
@@ -245,6 +248,11 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # override available via the same function for conversations that don't
     # cleanly fit that rule (e.g. a phone call logged after the fact).
     ("job_leads", "awaiting_response_since", "ALTER TABLE job_leads ADD COLUMN awaiting_response_since TEXT"),
+    # "Has a human recruiter personally reached out about this lead" flag
+    # (2026-07-21) — see models.JobLead.direct_recruiter_outreach's
+    # docstring. NULL ("not yet reviewed") by default; only ever set by a
+    # human via scripts/review_direct_recruiter_outreach.py.
+    ("job_leads", "direct_recruiter_outreach", "ALTER TABLE job_leads ADD COLUMN direct_recruiter_outreach INTEGER"),
     ("job_contacts", "phone", "ALTER TABLE job_contacts ADD COLUMN phone TEXT"),
     # Communications archival (2026-07-17) — see models.JobConversation and
     # pipeline/comms_match.py's Tier-1 thread-id matching.
@@ -329,8 +337,8 @@ def upsert_lead(conn: sqlite3.Connection, lead: JobLead) -> bool:
                 normalized_key, company, title, source_message_id, source_label,
                 apply_url, extraction_confidence, jd_resolved, jd_source, jd_text,
                 match_pct, matched_skills, verdict, rationale, status,
-                first_seen, last_seen, times_seen
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                first_seen, last_seen, times_seen, direct_recruiter_outreach
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
             """,
             (
                 key,
@@ -350,6 +358,7 @@ def upsert_lead(conn: sqlite3.Connection, lead: JobLead) -> bool:
                 lead.status,
                 lead.first_seen,
                 lead.last_seen,
+                None if lead.direct_recruiter_outreach is None else int(lead.direct_recruiter_outreach),
             ),
         )
         conn.commit()
@@ -944,6 +953,30 @@ def set_awaiting_response(
         (when or utc_now_iso() if waiting else None, normalized_key),
     )
     conn.commit()
+
+
+def set_direct_recruiter_outreach(conn: sqlite3.Connection, normalized_key: str, value: bool) -> None:
+    """The only writer of `job_leads.direct_recruiter_outreach` (2026-07-21
+    redesign — see models.JobLead's docstring): a human's explicit yes/no
+    from `scripts/review_direct_recruiter_outreach.py`. Deliberately not
+    reachable from the ingestion pipeline itself."""
+    conn.execute(
+        "UPDATE job_leads SET direct_recruiter_outreach = ? WHERE normalized_key = ?",
+        (int(value), normalized_key),
+    )
+    conn.commit()
+
+
+def list_undecided_direct_recruiter_outreach(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Every lead a human hasn't yet reviewed for `direct_recruiter_outreach`
+    — the review queue `scripts/review_direct_recruiter_outreach.py` walks,
+    oldest-first (see `first_seen`)."""
+    return list(
+        conn.execute(
+            "SELECT normalized_key, company, title, status, source_label, jd_text, first_seen FROM job_leads "
+            "WHERE direct_recruiter_outreach IS NULL ORDER BY first_seen ASC"
+        )
+    )
 
 
 def list_job_conversations(conn: sqlite3.Connection, job_key: str) -> list[sqlite3.Row]:

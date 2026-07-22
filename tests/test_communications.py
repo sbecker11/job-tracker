@@ -601,6 +601,12 @@ def test_scan_communications_creates_new_lead_and_archives_txt(mock_gmail, monke
     assert lead["status"] == "new"
     assert "Staff Engineer, remote, W2" in lead["jd_text"]
     assert lead["jd_resolved"] == 1
+    # 2026-07-21 redesign: direct_recruiter_outreach is exclusively
+    # human-decided (review_direct_recruiter_outreach.py) — even though
+    # every lead this module creates IS, by construction, from a real
+    # LinkedIn InMail/reply, it must still land undecided (None) here,
+    # not auto-True.
+    assert lead["direct_recruiter_outreach"] is None
 
     doc = conn.execute(
         "SELECT * FROM job_documents WHERE job_key = ? AND doc_type = 'email_txt'", (lead["normalized_key"],)
@@ -645,6 +651,8 @@ def test_scan_communications_updates_jd_text_on_existing_new_lead(mock_gmail, mo
     key = _key(seeded_db, "Clevanoo LLC", "Senior Full Stack AI/ML Engineer")
     lead = conn.execute("SELECT * FROM job_leads WHERE normalized_key = ?", (key,)).fetchone()
     assert "Confirmed: W2, end client is GE Healthcare." in lead["jd_text"]
+    # Same as above: exclusively human-decided now, not auto-set.
+    assert lead["direct_recruiter_outreach"] is None
 
     doc = conn.execute(
         "SELECT * FROM job_documents WHERE job_key = ? AND doc_type = 'email_txt'", (key,)

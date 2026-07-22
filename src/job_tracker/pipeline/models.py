@@ -79,6 +79,19 @@ class JobLead:
     status: str = "new"  # one of LEAD_STAGES above
     first_seen: str = field(default_factory=utc_now_iso)
     last_seen: str = field(default_factory=utc_now_iso)
+    # Whether a human recruiter personally reached out about this lead — a
+    # personalized InMail/email pitch or reply, not a bulk job-alert digest
+    # that merely lists the role. Added 2026-07-21, revised the same day to
+    # be purely human-decided rather than heuristically auto-set: `None`
+    # means "not yet reviewed" (the default for every lead, forever, until a
+    # human looks at it), distinct from an explicit `False` ("reviewed,
+    # confirmed NOT direct outreach"). Set only via
+    # `scripts/review_direct_recruiter_outreach.py`'s interactive prompt —
+    # never by the ingestion pipeline itself. That script still uses
+    # `email/classifier.is_personal_recruiter_message` to pre-fill a
+    # suggested default so review goes fast, but the human always makes the
+    # actual call.
+    direct_recruiter_outreach: bool | None = None
 
     @property
     def normalized_key(self) -> str:
