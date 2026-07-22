@@ -101,7 +101,13 @@ from job_tracker.email.models import EmailMessage, ExtractedRole
 from job_tracker.pipeline.comms_match import match_message_to_job
 from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT, _job_folder, _safe_filename
 from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_EXTRACT_MODEL
+from job_tracker.pipeline.llm_interview import extract_interview_details_llm
 from job_tracker.pipeline.models import JobContact, JobConversation, JobDocument, JobLead, UnmatchedMessage
+from job_tracker.pipeline.post_application import (
+    PostApplicationLabel,
+    apply_post_application_signal,
+    classify_post_application,
+)
 from job_tracker.pipeline.signature import parse_signature
 from job_tracker.pipeline.store import (
     DEFAULT_DB_PATH,
@@ -233,6 +239,7 @@ def _scan_one(
     dry_run: bool,
     output_root: Path,
     label_ids: dict[str, str] | None = None,
+    llm_extract_client=None,
 ) -> dict:
     message = fetch_message(service, message_id)
     outcome = match_message_to_job(
@@ -293,6 +300,24 @@ def _scan_one(
                     source_message_id=message_id,
                 ),
             )
+
+        # Post-application signal detection (2026-07-22): a message matched
+        # to an existing lead may itself be a rejection, an application-
+        # received confirmation, or an interview invite — see
+        # pipeline/post_application.py. Inbound only; direction == "outbound"
+        # (Shawn's own Sent-folder replies) never carries one of these.
+        conversation_summary = message.subject
+        post_app_action = ""
+        if direction == "inbound":
+            post_app = classify_post_application(message.combined_text)
+            if post_app.label == PostApplicationLabel.INTERVIEW_INVITE and use_llm_fallback:
+                details = extract_interview_details_llm(message, model=llm_model, client=llm_extract_client)
+                if details is not None and not details.is_empty:
+                    conversation_summary = details.as_summary()
+            post_app_action = apply_post_application_signal(
+                conn, job_key, post_app, message_id=message_id, email_text=message.combined_text
+            )
+
         add_job_conversation(
             conn,
             JobConversation(
@@ -301,13 +326,15 @@ def _scan_one(
                 message_id=message_id,
                 channel="email",
                 direction=direction,
-                summary=message.subject,
+                summary=conversation_summary,
                 thread_id=message.thread_id,
                 body_text=message.combined_text,
             ),
         )
         if not result["action"]:
             result["action"] = "linked"
+        if post_app_action:
+            result["action"] += f" ({post_app_action})"
 
         # "save the email as a txt file... for that company+title" only
         # applies once BOTH company and title were extracted — a bare

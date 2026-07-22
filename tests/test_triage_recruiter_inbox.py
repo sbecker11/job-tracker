@@ -13,17 +13,26 @@ from job_tracker.cli.triage_recruiter_inbox import main as triage_main
 from job_tracker.email.models import EmailMessage
 from job_tracker.pipeline.llm_apply import EvaluationResult, TwoTierPackageResult
 from job_tracker.pipeline.models import JobLead
-from job_tracker.pipeline.store import connect, record_message_processed
+from job_tracker.pipeline.store import add_job_contact, add_job_conversation, connect, record_message_processed, upsert_lead
+from job_tracker.pipeline.models import JobContact, JobConversation
 from job_tracker.pipeline.triage import MessageTriageResult, RoleOutcome, NEEDS_REVIEW, PURSUE, SKIP
 from job_tracker.scoring.scorer import ScoreResult
 
 
-def _msg(mid: str = "msg-1", labels: list[str] | None = None) -> EmailMessage:
+def _msg(
+    mid: str = "msg-1",
+    labels: list[str] | None = None,
+    *,
+    from_address: str = "recruiter@acme.example",
+    thread_id: str = "",
+    body_plain: str = "We are hiring.",
+) -> EmailMessage:
     return EmailMessage(
         id=mid,
-        from_address="recruiter@acme.example",
+        from_address=from_address,
         subject="Software Engineer @ Acme",
-        body_plain="We are hiring.",
+        body_plain=body_plain,
+        thread_id=thread_id,
         label_ids=labels or ["INBOX"],
     )
 
@@ -334,6 +343,175 @@ def test_triage_json_output_survives_evaluation_none(monkeypatch, mock_gmail, tm
     payload = json.loads(out[out.index("[\n") :])
     assert payload[0]["roles"][0]["verdict"] == "pass"
     assert payload[0]["roles"][0]["match_pct"] == 80.0
+
+
+def test_default_query_excludes_linked():
+    """2026-07-22 fix: once a reply is recorded via the existing-lead
+    short-circuit and labeled JobTracker/Linked, it must never be picked up
+    again by this script's own query — mirrors the exclusions already in
+    place for the three outcome labels."""
+    assert "-label:JobTracker/Linked" in triage_cli.DEFAULT_QUERY
+
+
+def test_triage_links_reply_by_thread_id_instead_of_retriaging(monkeypatch, mock_gmail, tmp_path: Path, capsys):
+    """A reply within an existing tracked lead's thread (e.g. a recruiter
+    follow-up with no JD in it) must be recorded as a conversation against
+    that lead — not independently classified/scored and risk landing on a
+    fresh, unrelated SKIP/NEEDS_REVIEW outcome. Regression test for the real
+    DIRECTV/Cole Keener thread that ended up carrying both
+    JobTracker/NEEDS_REVIEW and JobTracker/SKIP from two different messages."""
+    db = tmp_path / "leads.db"
+    conn = connect(db)
+    lead = JobLead(company="DIRECTV", title="Remote Senior Data Engineer", source_message_id="msg-0", source_label="single-jd")
+    upsert_lead(conn, lead)
+    job_key = lead.normalized_key
+    # An earlier message in this same thread already got linked to the lead.
+    add_job_conversation(
+        conn,
+        JobConversation(job_key=job_key, message_id="msg-0", thread_id="thread-cole-directv", direction="inbound"),
+    )
+    conn.close()
+
+    def _triage_message_should_not_run(*a, **k):
+        raise AssertionError("triage_message must not run for a message matched to an existing lead")
+
+    labeled: list[dict] = []
+    monkeypatch.setattr(triage_cli, "list_message_ids", lambda *a, **k: ["msg-1"])
+    monkeypatch.setattr(
+        triage_cli,
+        "fetch_message",
+        lambda *a, **k: _msg("msg-1", thread_id="thread-cole-directv", body_plain="Thanks so much, talk soon!"),
+    )
+    monkeypatch.setattr(triage_cli, "triage_message", _triage_message_should_not_run)
+    monkeypatch.setattr(triage_cli.gmail_writer, "get_or_create_label", lambda service, label: f"id-{label}")
+    monkeypatch.setattr(triage_cli.gmail_writer, "find_label_id", lambda *a, **k: None)
+    monkeypatch.setattr(
+        triage_cli.gmail_writer,
+        "label_and_archive",
+        lambda service, message_id, label_id, remove_label_ids=None, archive=True: labeled.append(
+            {"message_id": message_id, "label_id": label_id, "archive": archive}
+        ),
+    )
+
+    rc = triage_main(["--db", str(db)])
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "[LINKED]" in out
+    assert "thread_id" in out
+
+    assert labeled == [{"message_id": "msg-1", "label_id": "id-JobTracker/Linked", "archive": True}]
+
+    conn = connect(db)
+    convo = conn.execute(
+        "SELECT job_key, thread_id FROM job_conversations WHERE message_id = 'msg-1'"
+    ).fetchone()
+    assert convo["job_key"] == job_key
+    assert convo["thread_id"] == "thread-cole-directv"
+    # The lead itself must be untouched — no fresh verdict/status stamped.
+    row = conn.execute("SELECT status, verdict FROM job_leads WHERE normalized_key = ?", (job_key,)).fetchone()
+    assert row["status"] == "new"
+    assert row["verdict"] == lead.verdict
+    conn.close()
+
+
+def test_triage_existing_lead_reply_rejection_advances_status(monkeypatch, mock_gmail, tmp_path: Path, capsys):
+    """2026-07-22 post-application signal wiring: a rejection reply on an
+    already-tracked lead's thread must flip that lead's status to
+    'rejected' as part of the existing-lead short-circuit, not just get
+    archived as an ordinary linked conversation."""
+    db = tmp_path / "leads.db"
+    conn = connect(db)
+    lead = JobLead(company="DIRECTV", title="Remote Senior Data Engineer", source_message_id="msg-0", source_label="single-jd")
+    upsert_lead(conn, lead)
+    job_key = lead.normalized_key
+    add_job_conversation(
+        conn,
+        JobConversation(job_key=job_key, message_id="msg-0", thread_id="thread-rej", direction="inbound"),
+    )
+    conn.close()
+
+    monkeypatch.setattr(triage_cli, "list_message_ids", lambda *a, **k: ["msg-1"])
+    monkeypatch.setattr(
+        triage_cli,
+        "fetch_message",
+        lambda *a, **k: _msg(
+            "msg-1",
+            thread_id="thread-rej",
+            body_plain="Unfortunately, we have decided to move forward with other candidates.",
+        ),
+    )
+    monkeypatch.setattr(
+        triage_cli, "triage_message", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not re-triage"))
+    )
+    monkeypatch.setattr(triage_cli.gmail_writer, "get_or_create_label", lambda service, label: f"id-{label}")
+    monkeypatch.setattr(triage_cli.gmail_writer, "find_label_id", lambda *a, **k: None)
+    monkeypatch.setattr(triage_cli.gmail_writer, "label_and_archive", lambda *a, **k: None)
+
+    rc = triage_main(["--db", str(db)])
+    assert rc == 0
+    assert "post-application signal: status -> rejected" in capsys.readouterr().out
+
+    conn = connect(db)
+    row = conn.execute("SELECT status FROM job_leads WHERE normalized_key = ?", (job_key,)).fetchone()
+    assert row["status"] == "rejected"
+    conn.close()
+
+
+def test_triage_links_reply_by_contact_email(monkeypatch, mock_gmail, tmp_path: Path, capsys):
+    """Same short-circuit, but matched via a sender email already on file as
+    a contact for a tracked lead (no shared thread id — e.g. the recruiter
+    started a new email thread but it's the same person/role)."""
+    db = tmp_path / "leads.db"
+    conn = connect(db)
+    lead = JobLead(company="Acme", title="Software Engineer", source_message_id="msg-0", source_label="single-jd")
+    upsert_lead(conn, lead)
+    job_key = lead.normalized_key
+    add_job_contact(conn, JobContact(job_key=job_key, email="cole@agency.example", role="recruiter"))
+    conn.close()
+
+    monkeypatch.setattr(triage_cli, "list_message_ids", lambda *a, **k: ["msg-2"])
+    monkeypatch.setattr(
+        triage_cli,
+        "fetch_message",
+        lambda *a, **k: _msg("msg-2", from_address="cole@agency.example", body_plain="Following up on the role."),
+    )
+    monkeypatch.setattr(
+        triage_cli, "triage_message", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not re-triage"))
+    )
+    monkeypatch.setattr(triage_cli.gmail_writer, "get_or_create_label", lambda service, label: f"id-{label}")
+    monkeypatch.setattr(triage_cli.gmail_writer, "find_label_id", lambda *a, **k: None)
+    monkeypatch.setattr(triage_cli.gmail_writer, "label_and_archive", lambda *a, **k: None)
+
+    rc = triage_main(["--db", str(db)])
+    assert rc == 0
+    assert "matched an existing job via contact_email" in capsys.readouterr().out
+
+    conn = connect(db)
+    convo = conn.execute("SELECT job_key FROM job_conversations WHERE message_id = 'msg-2'").fetchone()
+    assert convo["job_key"] == job_key
+    conn.close()
+
+
+def test_triage_link_dry_run_writes_nothing(monkeypatch, mock_gmail, tmp_path: Path, capsys):
+    db = tmp_path / "leads.db"
+    conn = connect(db)
+    lead = JobLead(company="Acme", title="Software Engineer", source_message_id="msg-0", source_label="single-jd")
+    upsert_lead(conn, lead)
+    job_key = lead.normalized_key
+    add_job_conversation(conn, JobConversation(job_key=job_key, message_id="msg-0", thread_id="thread-xyz", direction="inbound"))
+    conn.close()
+
+    monkeypatch.setattr(triage_cli, "list_message_ids", lambda *a, **k: ["msg-1"])
+    monkeypatch.setattr(triage_cli, "fetch_message", lambda *a, **k: _msg("msg-1", thread_id="thread-xyz"))
+
+    rc = triage_main(["--dry-run", "--db", str(db)])
+    assert rc == 0
+    assert "[LINKED]" in capsys.readouterr().out
+
+    conn = connect(db)
+    assert conn.execute("SELECT 1 FROM job_conversations WHERE message_id = 'msg-1'").fetchone() is None
+    conn.close()
 
 
 def test_triage_pass_verdict_advances_skipped(monkeypatch, mock_gmail, tmp_path: Path):

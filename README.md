@@ -59,7 +59,7 @@ recruiting Gmail inbox
 | `src/job_tracker/cli/apply_package.py` | Evaluate one stored lead + generate résumé/cover letter on a pursue verdict (`apply-package`) |
 | `src/job_tracker/pipeline/triage.py` | Classify → extract → resolve → LLM-evaluate (+ auto-generate on pursue) for one recruiter-inbox message, deciding a PURSUE/SKIP/NEEDS_REVIEW outcome — never touches Gmail or the DB itself |
 | `src/job_tracker/email/gmail_writer.py` | The only place in this repo that writes to Gmail — labels a message `JobTracker/PURSUE\|SKIP\|NEEDS_REVIEW` (`Category/recruiter_job`) or `JobTracker/Linked\|NeedsFollowup` (`Category/social` replies, since 2026-07-19) and archives it |
-| `src/job_tracker/cli/triage_recruiter_inbox.py` | Runs `pipeline/triage.py` over `Category/recruiter_job` inbox mail, persists leads + the message outcome, and relabels/archives via `gmail_writer.py` (`triage-recruiter-inbox`) |
+| `src/job_tracker/cli/triage_recruiter_inbox.py` | Runs `pipeline/triage.py` over `Category/recruiter_job` inbox mail, persists leads + the message outcome, and relabels/archives via `gmail_writer.py` (`triage-recruiter-inbox`). Before running fresh triage on a message, checks `pipeline/comms_match.py`'s free thread-id/contact-email match first (2026-07-22) — a reply within an already-tracked lead's conversation gets recorded as a `JobConversation` and labeled `JobTracker/Linked` instead of being independently re-classified/scored and risking a stray SKIP/NEEDS_REVIEW on an ongoing thread |
 | `src/job_tracker/cli/add_job.py` | Interactively add a job that didn't come from a triaged email (`add-job`) |
 | `src/job_tracker/cli/log_contact.py` | Log a manual conversation or meeting/interview against an existing job (`log-contact`) |
 | `src/job_tracker/cli/attach_document.py` | Attach a local file or URL (signed RTR, NDA, JD PDF, etc.) to an existing job (`attach-document`) |
@@ -71,6 +71,8 @@ recruiting Gmail inbox
 | `src/job_tracker/cli/export_communications.py` | Render one job's full communications history to an on-demand PDF (`export-communications`) |
 | `src/job_tracker/cli/process_awaiting_llm_review.py` | Sweeps every lead whose free rule-based score cleared the LLM-review gate but has no `llm_verdict` yet (most often a `scan_communications.py` stub lead) and runs the same two-tier review `apply_package.py` runs by hand (`process-awaiting-llm-review`) |
 | `src/job_tracker/cli/resync_labels.py` | Re-syncs a message's `JobTracker/PURSUE\|SKIP\|NEEDS_REVIEW` label to its linked lead(s)' CURRENT verdict, catching drift from a later LLM review or manual status change (`resync-labels`) |
+| `src/job_tracker/email/imap_reader.py` | Plain-IMAP mailbox reader (username/password, no OAuth) for non-Gmail accounts — currently `shawn.becker@spexture.com` (Hostinger) — producing the same `EmailMessage` shape `gmail_reader.py` does |
+| `src/job_tracker/cli/triage_imap_inbox.py` | The IMAP-mailbox equivalent of `triage_recruiter_inbox.py` + `scan_communications.py` combined, filing each message into an `INBOX.JobTracker.*` IMAP folder instead of a Gmail label (`triage-imap-inbox`) |
 | `config/framework.yaml` | Dealbreakers, `not_dealbreakers` (e.g. W2-only, US citizen / no sponsorship), + skills vocabulary — transcribed from `~/CLAUDE.md` |
 | `docs/JOB_CRM_VISION.md` | Design doc: Job as a first-class object — contacts, conversations, documents, meetings, offers, and the 5 use cases (dedupe alerts, follow-ups, offer comparison, market-withdrawal notice) this is building toward |
 | `docs/CATEGORY_HANDLER_EXTENSIBILITY.md` | Design doc: how the classify → decide → label/archive pattern generalizes beyond `recruiter_job` to future comms-migration categories |
@@ -926,6 +928,102 @@ human. Every linked/resolved message is archived verbatim in
 `job_conversations.body_text` — cheap and searchable by default; the PDF
 export above is only for when you actually need a document to hand someone.
 
+**`triage_recruiter_inbox.py` uses the same Tier 1/2 matching too
+(2026-07-22).** `Category/recruiter_job` mail isn't only ever a brand-new
+posting — comms-migration can (and does) re-apply that label to a *reply*
+within an ongoing recruiter conversation, e.g. a scheduling note or a
+follow-up question. Before this fix, that reply went through the exact same
+fresh classify → extract → LLM-score pipeline as a new posting; a plain-text
+reply with no JD in it usually extracted nothing and landed on a stray
+SKIP/NEEDS_REVIEW that had nothing to do with the actual lead. Real example:
+a DIRECTV thread (recruiter Cole Keener) ended up carrying both
+`JobTracker/NEEDS_REVIEW` *and* `JobTracker/SKIP` from two different
+messages in the same thread, triaged independently on two separate runs.
+`triage_recruiter_inbox.py` now checks `comms_match.match_message_to_job`'s
+free thread-id/contact-email tiers first — a match records the message as a
+`JobConversation` against that existing lead (whatever its current
+status/verdict) and labels it `JobTracker/Linked`, without ever touching the
+lead's verdict or spending anything on a fresh triage pass. `DEFAULT_QUERY`
+excludes `JobTracker/Linked` for the same reason it excludes the three
+outcome labels — once linked, there's nothing left to redo.
+
+### A second mailbox: `shawn.becker@spexture.com` (plain IMAP, 2026-07-22)
+
+Everything above — `triage_recruiter_inbox.py`, `scan_communications.py`,
+comms-migration — is Gmail-API-only. `shawn.becker@spexture.com` (the email
+address on Shawn's résumé header) is Hostinger-hosted plain IMAP, not Gmail/
+Google Workspace, so none of it can see that mailbox at all. This was a real,
+confirmed gap, not a theoretical one: a DIRECTV recruiter's (Cole Keener)
+LinkedIn reply landed there, and at least one message never reached
+`shawnbecker.recruiting@gmail.com` (the only mailbox the automation watches)
+at all.
+
+`scripts/triage_imap_inbox.py` closes it — one script that combines what the
+Gmail side splits into two (`triage_recruiter_inbox.py` +
+`scan_communications.py`), reusing the exact same triage/matching/storage
+code, since none of `pipeline.triage.triage_message`,
+`pipeline.comms_match.match_message_to_job`, or `pipeline.store` are
+Gmail-specific:
+
+```bash
+# Reads <PREFIX>_IMAP_HOST/PORT/USER/PASSWORD from the shared .env (no OAuth).
+# Files each message into an INBOX.JobTracker.* IMAP folder — the plain-IMAP
+# equivalent of a Gmail JobTracker/* label + archive (Dovecot/Hostinger's
+# hierarchy separator is ".", so everything nests under INBOX like the
+# account's own INBOX.Archive/INBOX.Sent already do).
+python scripts/triage_imap_inbox.py --imap-prefix SPEXTURE --llm-fallback
+```
+
+Two branches per message, mirroring the Gmail-side split:
+
+- **`hit-reply@linkedin.com`/`inmail-hit-reply@linkedin.com`** (real InMail/
+  reply text) → `pipeline.comms_match.match_message_to_job` with Tier 3
+  (LLM extraction) enabled, handled exactly like `scan_communications.py`'s
+  own logic (stub-lead creation, `jd_text` enrichment, unmatched-message
+  parking) via that module's own helper functions — filed into
+  `INBOX.JobTracker.Linked` on a match, `INBOX.JobTracker.NeedsFollowup`
+  when parked unmatched. **Not the generic classifier** — `email.classifier.
+  classify()` was never designed to see this mail at all in the Gmail
+  pipeline (`scan_communications.py` intercepts it upstream of
+  `triage_recruiter_inbox.py`); running it through anyway mislabels it
+  `LINK_ONLY_DIGEST` purely on sender domain, with no extraction attempted —
+  confirmed live dry-running this file's first draft against the real
+  spexture.com inbox (~25 "Message replied: ..." notifications, several with
+  genuine recruiter pitches in the body, all fell into that trap).
+- **Everything else** → the same existing-lead short-circuit +
+  `pipeline.triage.triage_message` path `triage_recruiter_inbox.py` uses,
+  filed into `INBOX.JobTracker.{Linked,PURSUE,SKIP,NEEDS_REVIEW}`.
+
+Dedup uses `store.is_communication_seen` (a superset check across
+`processed_messages`, `job_conversations`, and `unmatched_messages`, since
+the two branches above record their outcome in different tables) rather than
+the Gmail-side scripts' narrower `processed_messages`-only check. IMAP
+message ids are namespaced `imap:<Message-Id>` (or `imap-uid:<folder>:<uid>`
+when a message has none) by `email/imap_reader.py`, so they can never collide
+with Gmail's hex ids in any of those shared tables.
+
+**Broadcast-sender false positives found live (2026-07-22):** dry-running
+this against the real inbox surfaced a sharper version of a bug
+`pipeline.store.GENERIC_RELAY_ADDRESSES` already existed to prevent — Tier 2
+(contact-email match) matching a bulk job-alert/digest sender to "whichever
+job was most recently contacted" from that shared address. Confirmed live:
+`jobalerts-noreply@linkedin.com` alone was already a `job_contacts.email` on
+478 distinct jobs; `no-reply@ashbyhq.com` (Ashby's shared multi-tenant
+"thank you for applying" sender) had mismatched a real Valon application
+receipt onto an unrelated NextPatient lead. Fixed at the source
+(`store.find_job_by_contact_email`, so both Gmail and IMAP pipelines benefit)
+with two complementary guards: an address is never matched once it's on file
+across 3+ distinct jobs (self-maintaining — no new address needs adding by
+hand as new job boards start emailing), plus an explicit domain check for
+known multi-tenant ATS transactional domains (`ashbyhq.com`,
+`greenhouse-mail.io`) that can mismatch before they've accumulated enough
+volume to trip the count-based guard.
+
+Wired into `recruiting-automation/run_cycle.sh`'s hourly cycle
+(`--limit 30` — a fresh mailbox's real per-message LLM costs mean the
+existing backlog is worked through gradually across cycles, not all in one
+run, same reasoning as the Gmail spam-sweep step's own `--spam-limit`).
+
 ### Closing the "Awaiting full-LLM-review" loop (2026-07-19)
 
 **Why this exists:** `var/pending-actions.html`'s "Awaiting full-LLM-review"
@@ -1008,6 +1106,68 @@ Gmail at all:
 
 ```bash
 list-leads --company "<company>" --title "<title>" --show-contacts
+```
+
+### Post-application signal detection (2026-07-22)
+
+**Why this exists:** once a message is already linked to a tracked lead
+(via `pipeline.comms_match.match_message_to_job`'s thread-id/contact-email
+tiers), it can carry one of four real signals about that application's
+outcome, none of which the pipeline used to act on — it just archived the
+message as an ordinary `JobConversation` and left `job_leads.status`
+untouched:
+
+1. **confirmation of application received** → `status='applied'`
+2. **rejection of a submitted application** → `status='rejected'`
+3. **invitation to (or congratulations on advancing to) an interview** →
+   `status='interviewing'`
+4. **general next-steps discussion** (scheduling, rate, availability) → no
+   status change — archived only, same as before
+
+`pipeline/post_application.py`'s `classify_post_application()` decides which
+of the four a message is (rejection wins over interview-invite wins over
+application-received; anything else is "next steps"), and
+`apply_post_application_signal()` writes it via the existing
+`store.record_rejection`/`store.advance_status` — guarded so a signal can
+only move a lead **forward** through `models.LEAD_STAGES`' normal
+progression (`new → pursued → package_generated → applied → following_up →
+interviewing → offered → accepted → started`) and never resurrects a
+terminal off-ramp (`skipped`/`rejected`/`deleted`/`unavailable`/`hired`). A
+stray application-received confirmation arriving after the lead is already
+interviewing, for example, is correctly a no-op rather than a downgrade.
+
+Wired into all three places a message can get linked to an existing lead:
+`scan_communications.py`'s `_scan_one`, `triage_recruiter_inbox.py`'s
+existing-lead short-circuit, and both branches of `triage_imap_inbox.py` — no
+new CLI flags; it just runs automatically as part of each. With
+`--llm-fallback` also passed, the first interview-invite message that
+actually advances a lead's status also gets one additional LLM call
+(`pipeline/llm_interview.py`) to pull structured date/time/format/interviewer
+details out of the invite, rewriting that conversation's summary from the
+plain email subject into something like *"Interview invite: Thursday, July
+24 at 2:00 PM ET (video) with Jane Smith, Engineering Manager"*.
+
+**The bug this grew out of:** `email/classifier.py`'s rejection patterns used
+to include a bare `"thank you for (your application|applying)"` match, on
+the theory that soft-decline templates often open with it. In practice
+that's also the exact opening line of a plain application-received
+confirmation that never rejects anything — a real Solace ATS auto-reply
+("Thank you for applying to the Data Engineer opportunity... We've received
+your information... We'll be in touch about next steps!") matched **only**
+that phrase and got classified `REJECTION`, which `pipeline/triage.py`
+auto-`SKIP`s without spending on extraction — silently archiving a live
+application's confirmation as a `JobTracker/SKIP`. That pattern is now
+removed from `classify()` entirely (every real rejection sample in the test
+suite already matches a second, unambiguous pattern independent of it); the
+phrase now only ever resolves to `APPLICATION_RECEIVED` via this module.
+
+```bash
+# One-time catch-up: rescan ALL stored job_conversations history (from
+# before this feature existed) and backfill job_leads.status for anything
+# that should have advanced already. Safe to re-run any number of times —
+# the same forward-only guard makes every case but the first a no-op.
+python scripts/backfill_post_application_signals.py --dry-run   # preview
+python scripts/backfill_post_application_signals.py --llm-fallback
 ```
 
 ## Limits

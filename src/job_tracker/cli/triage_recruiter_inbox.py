@@ -37,6 +37,35 @@ archived if extraction was judged complete (see
 `pipeline.triage.MessageTriageResult.extraction_complete`) — otherwise it's
 labeled but left visible in the inbox, since silently filing away a digest
 that wasn't fully picked apart is worse than a bit of inbox clutter.
+
+Existing-lead short-circuit (2026-07-22): comms-migration can re-label a
+*reply* within an ongoing recruiter conversation `Category/recruiter_job`
+just as readily as a brand-new job alert (e.g. a scheduling note or a
+follow-up question quoting the original JD) — before this fix, such a
+reply went through the exact same fresh classify -> extract -> LLM-score
+path as a brand-new posting, and a plain-text reply with no JD in it
+usually extracted nothing, landing on SKIP (job-tracker's own classifier
+reading it as NOISE) or NEEDS_REVIEW — either way, stamping a fresh,
+unrelated outcome onto an already-tracked lead's ongoing thread instead of
+recording it as what it actually is: another message in a conversation
+that's already being tracked. Real example: a DIRECTV thread via recruiter
+Cole Keener ended up carrying both JobTracker/NEEDS_REVIEW *and*
+JobTracker/SKIP simultaneously, from two different messages in the same
+thread triaged independently on two different runs.
+
+The fix: before running the fresh triage pipeline on a message, check
+`pipeline.comms_match.match_message_to_job`'s free Tier-1/Tier-2 matches
+(thread id or sender email already on file for a tracked job — no LLM
+spend). A match means this is a continuation of an existing, already-
+tracked lead, whatever its current status/verdict — it gets recorded as a
+`JobContact`/`JobConversation` against that lead (same mechanics
+`cli/scan_communications.py` already uses for LinkedIn replies) and
+labeled `JobTracker/Linked` + archived, without ever touching that lead's
+verdict or running a fresh classify/extract/LLM-score pass. Only messages
+with no thread/contact match at all — genuinely new, independent content —
+go through the normal PURSUE/SKIP/NEEDS_REVIEW triage below. `DEFAULT_QUERY`
+excludes `JobTracker/Linked` for the same reason it excludes the three
+outcome labels: once a message is linked, there's nothing left to redo.
 """
 
 from __future__ import annotations
@@ -56,12 +85,21 @@ from job_tracker.email.gmail_reader import (
     get_gmail_service_writable,
     list_message_ids,
 )
+from job_tracker.pipeline.comms_match import match_message_to_job
 from job_tracker.pipeline.llm_apply import DEFAULT_MODEL, DEFAULT_OUTPUT_ROOT
 from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_EXTRACT_MODEL
+from job_tracker.pipeline.llm_interview import extract_interview_details_llm
 from job_tracker.pipeline.models import JobContact, JobConversation
+from job_tracker.pipeline.post_application import (
+    PostApplicationLabel,
+    apply_post_application_signal,
+    classify_post_application,
+)
+from job_tracker.pipeline.signature import parse_signature
 from job_tracker.pipeline.store import (
     DEFAULT_DB_PATH,
     DEFAULT_REJECTION_COOLDOWN_DAYS,
+    GENERIC_RELAY_ADDRESSES,
     add_job_contact,
     add_job_conversation,
     advance_status,
@@ -84,7 +122,8 @@ from job_tracker.pipeline.triage import (
 
 DEFAULT_QUERY = (
     "label:Category/recruiter_job "
-    "-label:JobTracker/PURSUE -label:JobTracker/SKIP -label:JobTracker/NEEDS_REVIEW"
+    "-label:JobTracker/PURSUE -label:JobTracker/SKIP -label:JobTracker/NEEDS_REVIEW "
+    "-label:JobTracker/Linked"
 )
 
 # The recruiting account's own Gmail filter (not this repo) stamps this
@@ -103,6 +142,87 @@ _OUTCOME_LABELS = {
     SKIP: gmail_writer.SKIP_LABEL,
     NEEDS_REVIEW: gmail_writer.NEEDS_REVIEW_LABEL,
 }
+
+
+def _link_existing_conversation(
+    conn,
+    service,
+    message,
+    outcome,
+    linked_label_id: str | None,
+    *,
+    dry_run: bool,
+    use_llm_fallback: bool = False,
+    llm_extraction_model: str = DEFAULT_LLM_EXTRACT_MODEL,
+    llm_extract_client=None,
+) -> None:
+    """A message matched (via `pipeline.comms_match`) to an existing,
+    already-tracked job by thread id or contact email — record it as
+    another `JobContact`/`JobConversation` against that job (mirroring
+    `cli/scan_communications.py`'s inbound handling) and label it
+    `JobTracker/Linked`, without touching the lead's verdict or spending
+    anything on a fresh classify/extract/LLM-score pass. See module
+    docstring's "Existing-lead short-circuit" section for why this exists."""
+    print(f"\n[LINKED] {message.subject}  <{message.from_address}>  ({message.id})")
+    print(f"  matched an existing job via {outcome.tier}: {outcome.reason}")
+    if dry_run:
+        print("  (dry run — no Gmail label/archive applied, no conversation stored)")
+        return
+
+    # Real recruiter name/email/phone often sit in the message's own
+    # signature block even though `From:` is frequently a generic relay
+    # address — see pipeline/signature.py. Never record a generic relay
+    # address as *the* contact (poisons future thread/contact matching).
+    detected = parse_signature(message.combined_text)
+    contact_email = ""
+    if detected and detected.email:
+        contact_email = detected.email
+    elif message.from_address.strip().lower() not in GENERIC_RELAY_ADDRESSES:
+        contact_email = message.from_address
+
+    contact_id = None
+    if contact_email or (detected and (detected.name or detected.phone)):
+        contact_id = add_job_contact(
+            conn,
+            JobContact(
+                job_key=outcome.job_key,
+                name=detected.name if detected else "",
+                email=contact_email,
+                phone=detected.phone if detected else "",
+                role="recruiter",
+                source_message_id=message.id,
+            ),
+        )
+    # Post-application signal detection (2026-07-22): this reply may itself
+    # be a rejection, an application-received confirmation, or an interview
+    # invite for the lead it's linked to — see pipeline/post_application.py.
+    post_app = classify_post_application(message.combined_text)
+    conversation_summary = message.subject
+    if post_app.label == PostApplicationLabel.INTERVIEW_INVITE and use_llm_fallback:
+        details = extract_interview_details_llm(message, model=llm_extraction_model, client=llm_extract_client)
+        if details is not None and not details.is_empty:
+            conversation_summary = details.as_summary()
+    post_app_action = apply_post_application_signal(
+        conn, outcome.job_key, post_app, message_id=message.id, email_text=message.combined_text
+    )
+    if post_app_action:
+        print(f"  post-application signal: {post_app_action}")
+
+    add_job_conversation(
+        conn,
+        JobConversation(
+            job_key=outcome.job_key,
+            contact_id=contact_id,
+            message_id=message.id,
+            channel="email",
+            direction="inbound",
+            summary=conversation_summary,
+            thread_id=message.thread_id,
+            body_text=message.combined_text,
+        ),
+    )
+    if linked_label_id is not None:
+        gmail_writer.label_and_archive(service, message.id, linked_label_id, archive=True)
 
 
 def _print_result(result, *, dry_run: bool) -> None:
@@ -259,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
     postings_cache: dict[str, list] = {}
     results = []
     skipped_already_processed = 0
+    linked_to_existing_count = 0
     errored_message_ids: list[str] = []
 
     # Resolve every outcome label id once up front (not just the one this
@@ -267,11 +388,13 @@ def main(argv: list[str] | None = None) -> int:
     # second outcome label alongside it.
     outcome_label_ids: dict[str, str] = {}
     job_digests_label_id: str | None = None
+    linked_label_id: str | None = None
     if not args.dry_run:
         outcome_label_ids = {
             outcome: gmail_writer.get_or_create_label(service, label) for outcome, label in _OUTCOME_LABELS.items()
         }
         job_digests_label_id = gmail_writer.find_label_id(service, JOB_DIGESTS_LABEL_NAME)
+        linked_label_id = gmail_writer.get_or_create_label(service, gmail_writer.LINKED_LABEL)
 
     try:
         for message_id in message_ids:
@@ -287,6 +410,26 @@ def main(argv: list[str] | None = None) -> int:
 
             try:
                 message = fetch_message(service, message_id)
+
+                # Existing-lead short-circuit — see module docstring. A free
+                # (no LLM spend) thread-id/contact-email match means this is
+                # a continuation of an already-tracked lead's conversation,
+                # not a new posting to independently classify/score/verdict.
+                link_outcome = match_message_to_job(conn, message, direction="inbound")
+                if link_outcome.matched:
+                    _link_existing_conversation(
+                        conn,
+                        service,
+                        message,
+                        link_outcome,
+                        linked_label_id,
+                        dry_run=args.dry_run,
+                        use_llm_fallback=args.llm_fallback,
+                        llm_extraction_model=args.llm_extraction_model,
+                    )
+                    linked_to_existing_count += 1
+                    continue
+
                 result = triage_message(
                     message,
                     model=args.model,
@@ -441,6 +584,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if skipped_already_processed:
         print(f"\n(skipped {skipped_already_processed} message(s) already triaged in a prior run)", file=sys.stderr)
+
+    if linked_to_existing_count:
+        print(
+            f"\n(linked {linked_to_existing_count} message(s) to an existing tracked lead via thread/contact "
+            "match — recorded as a conversation, not re-triaged)",
+            file=sys.stderr,
+        )
 
     if errored_message_ids:
         print(

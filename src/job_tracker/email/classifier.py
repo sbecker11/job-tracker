@@ -43,7 +43,20 @@ _REJECTION_PATTERNS: list[tuple[str, Pattern[str]]] = [
     ("subject/body: after careful consideration/review/evaluation",
      re.compile(r"after careful (?:consideration|review|evaluation)", re.I)),
     ("subject/body: regret to inform", re.compile(r"regret to inform", re.I)),
-    ("subject/body: thank you for applying", re.compile(r"thank you for (?:your )?(?:application|applying)", re.I)),
+    # REMOVED 2026-07-22: "thank you for (your application|applying)" used to
+    # live here, on the theory that soft-decline templates often open with it
+    # before the actual regret language. In practice it's also the exact
+    # opening line of plain application-RECEIVED confirmations that never
+    # reject anything (e.g. a real Solace ATS auto-reply: "Thank you for
+    # applying to the Data Engineer opportunity... We've received your
+    # information... We'll be in touch about next steps!") — those emails
+    # matched ONLY this one pattern and got mislabeled REJECTION -> SKIP,
+    # silently archiving a live application's confirmation as if it had been
+    # declined. Every real rejection sample in this file's test suite already
+    # matches a second, unambiguous pattern below independent of this phrase
+    # (see test_classifier.py), so nothing is lost by dropping it. Genuine
+    # "thank you for applying" confirmations are now handled by
+    # pipeline/post_application.py's APPLICATION_RECEIVED detection instead.
     # Added 2026-07-14 from 8 real rejection samples gathered from Mail.app
     # archives: "move forward with other candidate(s)" (a very different verb
     # from the existing "pursue other candidates") was the single most common
@@ -131,6 +144,16 @@ _SCHEMA_ORG_MARKETING = re.compile(
 
 def _find_patterns(text: str, patterns: list[tuple[str, Pattern[str]]]) -> list[str]:
     return [name for name, pat in patterns if pat.search(text)]
+
+
+def detect_rejection_reasons(text: str) -> list[str]:
+    """The exact rejection-phrase check `classify()`'s step 1 uses, exposed
+    standalone (2026-07-22) so `pipeline/post_application.py` can reuse the
+    identical rule for messages already matched to an existing tracked lead
+    (a reply/follow-up, not a fresh inbound message) without duplicating the
+    pattern list or importing a private name. Empty list means no rejection
+    phrase matched."""
+    return _find_patterns(text, _REJECTION_PATTERNS)
 
 
 def _count_urls(text: str) -> int:

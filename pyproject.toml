@@ -43,6 +43,8 @@ process-awaiting-llm-review = "job_tracker.cli.process_awaiting_llm_review:main"
 review-direct-recruiter-outreach = "job_tracker.cli.review_direct_recruiter_outreach:main"
 set-direct-recruiter-outreach = "job_tracker.cli.set_direct_recruiter_outreach:main"
 merge-leads = "job_tracker.cli.merge_leads:main"
+triage-imap-inbox = "job_tracker.cli.triage_imap_inbox:main"
+backfill-post-application-signals = "job_tracker.cli.backfill_post_application_signals:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-cov>=5.0"]

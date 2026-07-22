@@ -597,6 +597,16 @@ def advance_status(
     conn.commit()
 
 
+def get_lead_status(conn: sqlite3.Connection, normalized_key: str) -> str | None:
+    """Current `job_leads.status` for `normalized_key`, or None if no such
+    lead exists. Added 2026-07-22 for `pipeline/post_application.py`'s
+    forward-only stage guard, which needs to know a lead's CURRENT stage
+    before deciding whether an auto-detected signal (rejection/application-
+    received/interview-invite) is safe to apply."""
+    row = conn.execute("SELECT status FROM job_leads WHERE normalized_key = ?", (normalized_key,)).fetchone()
+    return row["status"] if row is not None else None
+
+
 def record_rejection(
     conn: sqlite3.Connection,
     normalized_key: str,
@@ -1131,6 +1141,30 @@ def list_undecided_direct_recruiter_outreach(conn: sqlite3.Connection) -> list[s
     )
 
 
+def list_all_inbound_conversations_with_body(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Every inbound `job_conversations` row that has `body_text` on file,
+    across all jobs, oldest first. Added 2026-07-22 for
+    `cli/backfill_post_application_signals.py` — the only caller that needs
+    to rescan the FULL communications history rather than one job's, so it's
+    kept separate from `list_job_conversations` rather than adding an
+    optional `job_key=None` there."""
+    return list(
+        conn.execute(
+            "SELECT * FROM job_conversations WHERE direction = 'inbound' AND body_text IS NOT NULL "
+            "AND body_text != '' ORDER BY occurred_at ASC"
+        )
+    )
+
+
+def update_job_conversation_summary(conn: sqlite3.Connection, conversation_id: int, summary: str) -> None:
+    """Rewrite one `job_conversations.summary` in place — used by the
+    post-application backfill (2026-07-22) to replace a plain message
+    subject with a richer, LLM-extracted interview-detail summary once
+    detected, after the conversation row already exists."""
+    conn.execute("UPDATE job_conversations SET summary = ? WHERE id = ?", (summary, conversation_id))
+    conn.commit()
+
+
 def list_job_conversations(conn: sqlite3.Connection, job_key: str) -> list[sqlite3.Row]:
     return list(
         conn.execute(
@@ -1355,6 +1389,15 @@ GENERIC_RELAY_ADDRESSES = frozenset(
         "hit-reply@linkedin.com",
         "inmail-hit-reply@linkedin.com",
         "messaging-digest-noreply@linkedin.com",
+        # Found live 2026-07-22 dry-running triage_imap_inbox.py against
+        # shawn.becker@spexture.com's real inbox: these two LinkedIn digest
+        # senders and Jobcase's own digest sender reproduced the exact same
+        # bug this frozenset exists to prevent — a prior job_contacts row
+        # had one of these on file from a single lead, and Tier 2 matched
+        # every subsequent unrelated job-alert digest onto that one job.
+        "jobs-noreply@linkedin.com",
+        "jobalerts-noreply@linkedin.com",
+        "updates@pmail.jobcase.com",
     }
 )
 
@@ -1372,15 +1415,70 @@ def find_job_by_thread_id(conn: sqlite3.Connection, thread_id: str) -> str | Non
     return row["job_key"] if row else None
 
 
+# Multi-tenant ATS transactional-email domains: `no-reply@ashbyhq.com` and
+# `no-reply@us.greenhouse-mail.io` send "thank you for applying"/"application
+# update" receipts on behalf of MANY unrelated employers using that ATS —
+# unlike a company's own custom-domain ATS sender (e.g. a Workday instance
+# at a specific employer's own domain), which legitimately stays 1:1 with
+# one job forever. Found live 2026-07-22: both were still under
+# `_BROADCAST_SENDER_JOB_COUNT_THRESHOLD` (only 1 distinct job on file so
+# far each) yet already mismatched a real "Thank you for applying to Valon"
+# receipt onto an unrelated NextPatient lead purely because NextPatient's
+# receipt from the same shared address happened to be filed first — the
+# count-based guard alone can't catch a multi-tenant domain before it's
+# accumulated enough distinct jobs to cross the threshold. Checked by exact
+# domain suffix, not substring, so this can never over-match a company's own
+# subdomain that merely contains one of these as a substring.
+_GENERIC_RELAY_DOMAINS = frozenset({"ashbyhq.com", "greenhouse-mail.io"})
+
+
+def _is_generic_relay_domain(email: str) -> bool:
+    domain = email.rsplit("@", 1)[-1] if "@" in email else ""
+    return any(domain == d or domain.endswith(f".{d}") for d in _GENERIC_RELAY_DOMAINS)
+
+
+# Threshold for `find_job_by_contact_email`'s broadcast-sender guard below.
+# Found live 2026-07-22 dry-running triage_imap_inbox.py against
+# shawn.becker@spexture.com's real inbox: `GENERIC_RELAY_ADDRESSES` only ever
+# covered 3 known LinkedIn addresses by hand, but the exact same failure mode
+# (one address on file as "the contact" for an old lead, then matching EVERY
+# later unrelated message onto that one job — see GENERIC_RELAY_ADDRESSES'
+# own docstring) turned out to be much more widespread: `jobalerts-
+# noreply@linkedin.com` alone was already a job_contacts.email on 478
+# distinct jobs, `jobs@my.theladders.com` on 109, etc. — every one of them a
+# bulk job-board/ATS notification sender, not a real recruiter. A real human
+# recruiter pitching the same candidate for a second or even third distinct
+# role is plausible; a query confirmed a clean gap in the real data between
+# genuine recruiters (max 2 distinct jobs for any human-looking address) and
+# every bulk sender (6 and climbing, most in the dozens-to-hundreds). This
+# threshold check makes the guard self-maintaining — it does not need a new
+# address added to GENERIC_RELAY_ADDRESSES by hand every time a new job board
+# starts emailing job alerts.
+_BROADCAST_SENDER_JOB_COUNT_THRESHOLD = 3
+
+
 def find_job_by_contact_email(conn: sqlite3.Connection, email: str) -> str | None:
     """The job_key of a job_contacts row already on file for this email
     address, across ALL jobs (unlike add_job_contact's dedupe check, which
     is scoped to one job_key). If the same address is a contact on more
     than one job (e.g. a recruiter who's pitched you twice for different
     roles), the most recently contacted one wins — better than refusing to
-    guess, since Tier 2/3 would have even less to go on."""
+    guess, since Tier 2/3 would have even less to go on.
+
+    Returns None without matching at all if this address is already on file
+    across `_BROADCAST_SENDER_JOB_COUNT_THRESHOLD`+ distinct jobs — see that
+    constant's docstring. A real recruiter's own address should never
+    accumulate that many distinct jobs; only a shared bulk-sender address
+    does, and matching one of those to "whichever job was most recently
+    contacted" is close to a random guess.
+    """
     email = (email or "").strip().lower()
-    if not email:
+    if not email or _is_generic_relay_domain(email):
+        return None
+    distinct_jobs = conn.execute(
+        "SELECT COUNT(DISTINCT job_key) AS n FROM job_contacts WHERE lower(email) = ?", (email,)
+    ).fetchone()["n"]
+    if distinct_jobs >= _BROADCAST_SENDER_JOB_COUNT_THRESHOLD:
         return None
     row = conn.execute(
         "SELECT job_key FROM job_contacts WHERE lower(email) = ? ORDER BY last_contacted_at DESC LIMIT 1",

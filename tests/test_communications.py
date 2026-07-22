@@ -77,6 +77,57 @@ def test_find_job_by_contact_email_matches_across_jobs(seeded_db: Path):
     conn.close()
 
 
+def test_find_job_by_contact_email_ignores_broadcast_sender_past_threshold(seeded_db: Path):
+    """Regression test (2026-07-22): a bulk job-alert/digest sender address
+    that's already on file as a job_contacts.email for 3+ DISTINCT jobs
+    must never resolve via Tier 2 — "most recently contacted wins" against
+    a shared broadcast address is close to a random guess. Found live
+    dry-running triage_imap_inbox.py: `jobalerts-noreply@linkedin.com` alone
+    was already a contact on 478 distinct jobs, each one a completely
+    unrelated digest email."""
+    conn = connect(seeded_db)
+    for i in range(3):
+        lead = JobLead(company=f"Broadcast Co {i}", title="Some Role", source_message_id=f"b{i}", source_label="single-jd")
+        upsert_lead(conn, lead)
+        add_job_contact(conn, JobContact(job_key=lead.normalized_key, email="jobalerts-noreply@example.com"))
+
+    assert find_job_by_contact_email(conn, "jobalerts-noreply@example.com") is None
+    conn.close()
+
+
+def test_find_job_by_contact_email_still_matches_below_threshold(seeded_db: Path):
+    """A real recruiter legitimately pitching the same candidate for 2
+    distinct roles must still resolve — only 3+ distinct jobs trips the
+    broadcast-sender guard above."""
+    conn = connect(seeded_db)
+    key = _key(seeded_db, "Clevanoo LLC", "Senior Full Stack AI/ML Engineer")
+    add_job_contact(conn, JobContact(job_key=key, email="cole@crbworkforce.example"))
+    lead2 = JobLead(company="DIRECTV", title="Remote Senior Data Engineer", source_message_id="d0", source_label="single-jd")
+    upsert_lead(conn, lead2)
+    add_job_contact(conn, JobContact(job_key=lead2.normalized_key, email="cole@crbworkforce.example"))
+
+    assert find_job_by_contact_email(conn, "cole@crbworkforce.example") in (key, lead2.normalized_key)
+    conn.close()
+
+
+def test_find_job_by_contact_email_ignores_known_multi_tenant_ats_domains(seeded_db: Path):
+    """Regression test (2026-07-22): `no-reply@ashbyhq.com`/`no-reply@us.
+    greenhouse-mail.io` send "thank you for applying" receipts on behalf of
+    many unrelated employers using that ATS — found live mismatching a real
+    "Thank you for applying to Valon" receipt onto an unrelated NextPatient
+    lead, since NextPatient's own receipt from the same shared address
+    happened to be filed first (only 1 distinct job on file, under the
+    count-based threshold above) — a domain-level check catches this before
+    it ever accumulates enough distinct jobs to trip that guard."""
+    conn = connect(seeded_db)
+    key = _key(seeded_db, "Clevanoo LLC", "Senior Full Stack AI/ML Engineer")
+    add_job_contact(conn, JobContact(job_key=key, email="no-reply@ashbyhq.com"))
+
+    assert find_job_by_contact_email(conn, "no-reply@ashbyhq.com") is None
+    assert find_job_by_contact_email(conn, "no-reply@us.greenhouse-mail.io") is None
+    conn.close()
+
+
 def test_find_company_only_matches_requires_fuzzy_company_hit(seeded_db: Path):
     conn = connect(seeded_db)
     matches = find_company_only_matches(conn, "Clevanoo LLC")
@@ -473,6 +524,58 @@ def test_scan_communications_links_via_thread_id(mock_gmail, seeded_db: Path, ca
     convos = conn.execute("SELECT * FROM job_conversations WHERE job_key = ?", (key,)).fetchall()
     assert len(convos) == 2  # the seeded one + the newly linked one
     assert any(c["message_id"] == "msg-1" for c in convos)
+    conn.close()
+
+
+def test_scan_communications_rejection_reply_advances_lead_to_rejected(mock_gmail, seeded_db: Path):
+    """2026-07-22 post-application signal wiring: a rejection arriving as a
+    reply on an already-linked thread must flip the matched lead's status to
+    'rejected', not just archive it as an ordinary conversation."""
+    conn = connect(seeded_db)
+    key = _key(seeded_db, "Clevanoo LLC", "Senior Full Stack AI/ML Engineer")
+    add_job_conversation(conn, JobConversation(job_key=key, direction="inbound", summary="x", thread_id="thread-rej"))
+    conn.close()
+
+    body = "Unfortunately, we have decided to move forward with other candidates for this role."
+    raw = _raw_message_with_body(
+        "msg-rej", from_addr="hit-reply@linkedin.com", subject="Message replied: recruiter",
+        body=body, thread_id="thread-rej",
+    )
+    mock_gmail(_FakeGmailService(["msg-rej"], {"msg-rej": raw}))
+
+    rc = scan_main(["--db", str(seeded_db)])
+    assert rc == 0
+
+    conn = connect(seeded_db)
+    from job_tracker.pipeline.store import get_lead_status
+
+    assert get_lead_status(conn, key) == "rejected"
+    conn.close()
+
+
+def test_scan_communications_application_received_reply_advances_new_lead_to_applied(mock_gmail, seeded_db: Path):
+    """A plain application-received confirmation on an already-linked thread
+    must advance a 'new' lead to 'applied' — the exact real-world case
+    (Solace) that motivated this feature."""
+    conn = connect(seeded_db)
+    key = _key(seeded_db, "Clevanoo LLC", "Senior Full Stack AI/ML Engineer")
+    add_job_conversation(conn, JobConversation(job_key=key, direction="inbound", summary="x", thread_id="thread-applied"))
+    conn.close()
+
+    body = "Thank you for applying! We've received your application and will be reviewing it shortly."
+    raw = _raw_message_with_body(
+        "msg-applied", from_addr="hit-reply@linkedin.com", subject="Message replied: recruiter",
+        body=body, thread_id="thread-applied",
+    )
+    mock_gmail(_FakeGmailService(["msg-applied"], {"msg-applied": raw}))
+
+    rc = scan_main(["--db", str(seeded_db)])
+    assert rc == 0
+
+    conn = connect(seeded_db)
+    from job_tracker.pipeline.store import get_lead_status
+
+    assert get_lead_status(conn, key) == "applied"
     conn.close()
 
 

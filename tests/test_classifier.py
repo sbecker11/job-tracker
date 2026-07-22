@@ -48,6 +48,31 @@ def test_rejection_beats_job_keywords() -> None:
     assert result.confidence >= 0.8
 
 
+def test_application_received_confirmation_is_not_rejection() -> None:
+    """Regression for 2026-07-22: "thank you for applying" used to be one of
+    _REJECTION_PATTERNS on the theory that soft-decline templates open with
+    it — but a real Solace ATS auto-reply (pure confirmation, no decline
+    language at all) matched ONLY that phrase and got mislabeled REJECTION,
+    which SKIPs the message without ever telling the lead it was actually
+    just... received. See pipeline/post_application.py for where this
+    signal is now correctly handled for messages already linked to a lead."""
+    message = EmailMessage(
+        id="fixture-solace-application-received",
+        from_address="Solace Hiring Team <no-reply@ashbyhq.com>",
+        subject="Thank You for Applying to Solace!",
+        snippet="Hi Shawn, Thank you for applying",
+        body_plain=(
+            "Hi Shawn,\n\nThank you for applying to the Data Engineer opportunity here at Solace! "
+            "We've received your information and our recruiting team will be reviewing it as "
+            "quickly as they can. We'll be in touch about next steps!\n\nAll the best,\nTeam Solace"
+        ),
+        body_html="",
+        date="2026-07-20T18:46:00Z",
+    )
+    result = classify(message)
+    assert result.label != Label.REJECTION, f"got {result.label.value}; reasons={result.reasons}"
+
+
 def test_single_jd_includes_reasons() -> None:
     result = classify(load_fixture("stripe_single_jd.json"))
     assert result.label == Label.SINGLE_JD
