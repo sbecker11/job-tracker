@@ -112,10 +112,11 @@ def test_render_sorts_needs_decision_oldest_first_by_default(tmp_path: Path):
 
 
 def test_render_surfaces_direct_recruiter_flag_on_funnel_entries(tmp_path: Path):
-    """2026-07-21: a lead flagged direct_recruiter_outreach must carry
-    `directRecruiter: True` through to its funnel-bucket entry (for the
-    dashboard's 📨 badge), and `direct_recruiter_count` must total it up
-    across every bucket."""
+    """2026-07-21, tri-state: a lead's funnel-bucket entry must carry the
+    *actual* direct_recruiter_outreach value through as-is (True/False/None)
+    for the dashboard's tri-state badge (filled gold star / no badge / empty
+    outline star), and direct_recruiter_count must total up only the
+    explicit Trues across every bucket."""
     db_path = tmp_path / "leads.db"
     conn = connect(db_path)
     # match_pct >= LLM_REVIEW_GATE_PCT (70) with no llm_verdict yet lands a
@@ -127,6 +128,13 @@ def test_render_surfaces_direct_recruiter_flag_on_funnel_entries(tmp_path: Path)
     )
     conn.execute(
         "UPDATE job_leads SET direct_recruiter_outreach = 1 WHERE normalized_key = ?", (direct.normalized_key,)
+    )
+    not_direct = _make_lead(
+        conn, company="Reviewed Not Direct Co", title="Engineer", match_pct=80.0, verdict="review",
+        first_seen=(NOW - timedelta(days=1)).isoformat(),
+    )
+    conn.execute(
+        "UPDATE job_leads SET direct_recruiter_outreach = 0 WHERE normalized_key = ?", (not_direct.normalized_key,)
     )
     _make_lead(
         conn, company="Cold Digest Co", title="Engineer", match_pct=80.0, verdict="review",
@@ -143,11 +151,22 @@ def test_render_surfaces_direct_recruiter_flag_on_funnel_entries(tmp_path: Path)
     )
     by_company = {e["company"]: e for e in all_entries}
     assert by_company["WaferWire"]["directRecruiter"] is True
-    assert by_company["Cold Digest Co"]["directRecruiter"] is False
+    assert by_company["Reviewed Not Direct Co"]["directRecruiter"] is False
+    assert by_company["Cold Digest Co"]["directRecruiter"] is None
+    # normalizedKey (2026-07-21) must also be carried through — the
+    # dashboard's inline tri-state <select> needs it to target the setdro://
+    # helper at the right lead.
+    assert by_company["WaferWire"]["normalizedKey"] == direct.normalized_key
     assert data["direct_recruiter_count"] == 1
-    # "Cold Digest Co" was never explicitly reviewed (still NULL in the DB,
-    # just falsy for badge purposes) — it must still count as undecided.
+    # "Cold Digest Co" was never explicitly reviewed (still NULL in the DB)
+    # — it must still count as undecided.
     assert data["direct_recruiter_undecided_count"] == 1
+    # 2026-07-21: the subset of the undecided count that's actually visible
+    # in the funnel-bucket tables (and therefore recomputable client-side
+    # after an inline edit) — here all leads are in visible buckets, so it
+    # matches the whole-DB figure, but the two are NOT always equal (see
+    # the next test).
+    assert data["direct_recruiter_undecided_visible_count"] == 1
 
 
 def test_render_populates_age_days_on_funnel_buckets(tmp_path: Path):

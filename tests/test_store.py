@@ -24,10 +24,13 @@ from job_tracker.pipeline.store import (
     add_job_meeting,
     add_job_offer,
     advance_status,
+    canonicalize_company_casing,
     connect,
     find_matching_job,
     find_similar_jobs,
     get_job,
+    merge_leads,
+    rename_company,
     is_message_processed,
     processed_at,
     latest_conversation_at,
@@ -86,6 +89,40 @@ def test_update_llm_evaluation_persists_full_review_data(tmp_path: Path):
     assert row["llm_rationale"] == "Cleanest fit in the pipeline."
     assert json.loads(row["llm_framing_guidance"]) == ["Lead with the healthcare throughline."]
     assert row["llm_eval_cost_usd"] == pytest.approx(0.001)
+    conn.close()
+
+
+def test_canonicalize_company_casing_reuses_existing_casing_exact_fold_only(tmp_path: Path):
+    """2026-07-21: prevent the NICE/NiCE-style casing split from recurring
+    — a brand-new lead reuses whatever casing is already on file, but only
+    when the two strings fold to the exact same normalized_key-company
+    prefix (case/punctuation-insensitive). No fuzzy or suffix-stripped
+    matching here — that's out of scope for automatic action."""
+    conn = connect(tmp_path / "leads.db")
+    upsert_lead(
+        conn,
+        JobLead(company="NICE", title="Architect", source_message_id="m1", source_label="single-jd"),
+    )
+
+    # Exact fold match (just a casing difference) -> reuse existing casing.
+    assert canonicalize_company_casing(conn, "NiCE") == "NICE"
+    assert canonicalize_company_casing(conn, "nice") == "NICE"
+    # A brand-new company with nothing on file yet -> passed through as-is.
+    assert canonicalize_company_casing(conn, "Acme") == "Acme"
+    # Punctuation/suffix differences do NOT fold to the same key -> left
+    # alone (belongs to find_duplicate_companies.py + merge_leads.py instead).
+    assert canonicalize_company_casing(conn, "NICE, Inc.") == "NICE, Inc."
+
+    is_new = upsert_lead(
+        conn,
+        JobLead(company="NiCE", title="Principal Engineer", source_message_id="m2", source_label="single-jd"),
+    )
+    assert is_new is True
+    row = conn.execute(
+        "SELECT company FROM job_leads WHERE normalized_key = ?",
+        (JobLead(company="NiCE", title="Principal Engineer", source_message_id="m2", source_label="single-jd").normalized_key,),
+    ).fetchone()
+    assert row["company"] == "NICE"
     conn.close()
 
 
@@ -184,6 +221,26 @@ def test_set_direct_recruiter_outreach_and_list_undecided(tmp_path: Path):
 
     row = conn.execute("SELECT direct_recruiter_outreach FROM job_leads WHERE company='Acme'").fetchone()
     assert row["direct_recruiter_outreach"] == 1
+    conn.close()
+
+
+def test_set_direct_recruiter_outreach_accepts_none_to_reset_to_undecided(tmp_path: Path):
+    """2026-07-21: the dashboard's inline tri-state <select> needs a way to
+    explicitly move a *decided* lead back to undecided (unlike the
+    interactive review CLI, which only ever writes True/False)."""
+    conn = connect(tmp_path / "leads.db")
+    key = _seed_lead(conn)
+    set_direct_recruiter_outreach(conn, key, True)
+    assert conn.execute(
+        "SELECT direct_recruiter_outreach FROM job_leads WHERE normalized_key = ?", (key,)
+    ).fetchone()["direct_recruiter_outreach"] == 1
+
+    set_direct_recruiter_outreach(conn, key, None)
+
+    row = conn.execute("SELECT direct_recruiter_outreach FROM job_leads WHERE normalized_key = ?", (key,)).fetchone()
+    assert row["direct_recruiter_outreach"] is None
+    undecided = list_undecided_direct_recruiter_outreach(conn)
+    assert key in {r["normalized_key"] for r in undecided}
     conn.close()
 
 
@@ -511,6 +568,137 @@ def _seed_lead(conn, *, company="Acme", title="Software Engineer") -> str:
     lead = JobLead(company=company, title=title, source_message_id="m1", source_label="single-jd")
     upsert_lead(conn, lead)
     return lead.normalized_key
+
+
+# --- rename_company --------------------------------------------------------
+
+
+def test_rename_company_relabels_every_matching_row_without_touching_keys(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    key1 = _seed_lead(conn, company="Reddit, Inc.", title="ML Engineer")
+    key2 = _seed_lead(conn, company="Reddit, Inc.", title="Compute Platform Engineer")
+    other_key = _seed_lead(conn, company="Acme", title="Engineer")
+
+    count = rename_company(conn, from_company="Reddit, Inc.", to_company="Reddit")
+
+    assert count == 2
+    row1 = conn.execute("SELECT company, normalized_key FROM job_leads WHERE normalized_key = ?", (key1,)).fetchone()
+    row2 = conn.execute("SELECT company, normalized_key FROM job_leads WHERE normalized_key = ?", (key2,)).fetchone()
+    other = conn.execute("SELECT company FROM job_leads WHERE normalized_key = ?", (other_key,)).fetchone()
+    assert row1["company"] == "Reddit"
+    assert row2["company"] == "Reddit"
+    # normalized_key is untouched — each lead keeps its own identity/history.
+    assert row1["normalized_key"] == key1
+    assert row2["normalized_key"] == key2
+    assert other["company"] == "Acme"
+    conn.close()
+
+
+def test_rename_company_matches_exact_string_only(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    _seed_lead(conn, company="Reddit Inc", title="Engineer")  # no comma — not an exact match below
+
+    count = rename_company(conn, from_company="Reddit, Inc.", to_company="Reddit")
+
+    assert count == 0
+    conn.close()
+
+
+def test_rename_company_no_matches_returns_zero(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    _seed_lead(conn, company="Acme", title="Engineer")
+
+    count = rename_company(conn, from_company="Nonexistent Co", to_company="Something Else")
+
+    assert count == 0
+    conn.close()
+
+
+# --- merge_leads ---------------------------------------------------------
+
+
+def test_merge_leads_rekeys_all_crm_children_and_deletes_absorbed_row(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    keep_key = _seed_lead(conn, company="Scribd", title="Software Engineer")
+    absorb_key = _seed_lead(conn, company="Scribd, Inc.", title="Data Engineer")
+
+    add_job_contact(conn, JobContact(job_key=absorb_key, email="r@agency.com"))
+    add_job_conversation(conn, JobConversation(job_key=absorb_key, summary="Applied"))
+    add_job_document(conn, JobDocument(job_key=absorb_key, doc_type="resume", path_or_url="/tmp/resume.docx"))
+    add_job_meeting(conn, JobMeeting(job_key=absorb_key, kind="phone_screen"))
+    add_job_offer(conn, JobOffer(job_key=absorb_key, base_salary=150000))
+    conn.execute(
+        "INSERT INTO unmatched_messages (message_id, resolved_job_key) VALUES (?, ?)",
+        ("msg-1", absorb_key),
+    )
+    conn.commit()
+
+    counts = merge_leads(conn, keep_key=keep_key, absorb_key=absorb_key)
+
+    assert counts == {
+        "contacts": 1,
+        "conversations": 1,
+        "documents": 1,
+        "meetings": 1,
+        "offers": 1,
+        "unmatched_messages": 1,
+        "absorbed_lead": 1,
+    }
+    assert list_job_contacts(conn, keep_key)[0]["job_key"] == keep_key
+    assert list_job_conversations(conn, keep_key)[0]["job_key"] == keep_key
+    assert list_job_documents(conn, keep_key)[0]["job_key"] == keep_key
+    assert list_job_meetings(conn, keep_key)[0]["job_key"] == keep_key
+    assert list_job_offers(conn, keep_key)[0]["job_key"] == keep_key
+    resolved = conn.execute(
+        "SELECT resolved_job_key FROM unmatched_messages WHERE message_id = ?", ("msg-1",)
+    ).fetchone()
+    assert resolved["resolved_job_key"] == keep_key
+    assert conn.execute("SELECT 1 FROM job_leads WHERE normalized_key = ?", (absorb_key,)).fetchone() is None
+    conn.close()
+
+
+def test_merge_leads_enriches_survivor_without_clobbering_existing_fields(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    keep_key = _seed_lead(conn, company="Scribd", title="Software Engineer")
+    absorb_key = _seed_lead(conn, company="Scribd, Inc.", title="Data Engineer")
+    conn.execute(
+        "UPDATE job_leads SET first_seen = ?, last_seen = ?, times_seen = ?, jd_text = ? WHERE normalized_key = ?",
+        ("2026-07-01T00:00:00+00:00", "2026-07-01T00:00:00+00:00", 2, "", keep_key),
+    )
+    conn.execute(
+        "UPDATE job_leads SET first_seen = ?, last_seen = ?, times_seen = ?, jd_text = ?, "
+        "direct_recruiter_outreach = 1 WHERE normalized_key = ?",
+        ("2026-06-15T00:00:00+00:00", "2026-07-10T00:00:00+00:00", 3, "Full JD text here.", absorb_key),
+    )
+    conn.commit()
+
+    merge_leads(conn, keep_key=keep_key, absorb_key=absorb_key)
+
+    row = conn.execute("SELECT * FROM job_leads WHERE normalized_key = ?", (keep_key,)).fetchone()
+    assert row["first_seen"] == "2026-06-15T00:00:00+00:00"  # earliest of the two
+    assert row["last_seen"] == "2026-07-10T00:00:00+00:00"  # latest of the two
+    assert row["times_seen"] == 5  # summed
+    assert row["jd_text"] == "Full JD text here."  # survivor's was empty, so absorbed's wins
+    assert row["direct_recruiter_outreach"] == 1  # survivor was undecided, absorbed's decision wins
+    conn.close()
+
+
+def test_merge_leads_rejects_same_key_for_keep_and_absorb(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    key = _seed_lead(conn)
+    with pytest.raises(ValueError):
+        merge_leads(conn, keep_key=key, absorb_key=key)
+    conn.close()
+
+
+def test_merge_leads_rejects_unknown_keys(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    key = _seed_lead(conn)
+    with pytest.raises(ValueError):
+        merge_leads(conn, keep_key=key, absorb_key="nonexistent::key")
+    with pytest.raises(ValueError):
+        merge_leads(conn, keep_key="nonexistent::key", absorb_key=key)
+    conn.close()
 
 
 def test_add_job_contact_dedupes_on_email_within_a_job(tmp_path: Path):

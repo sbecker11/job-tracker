@@ -54,11 +54,20 @@ LEAD_STAGES: tuple[str, ...] = (
 )
 
 
-def normalize_key(company: str, title: str) -> str:
-    def clean(s: str) -> str:
-        return "".join(ch for ch in s.lower() if ch.isalnum() or ch.isspace()).split()
+def fold_for_key(s: str) -> str:
+    """Lowercase + strip everything but alnum/whitespace, collapsing runs of
+    whitespace — the exact fold `normalize_key()` applies to each half.
+    Exposed standalone (2026-07-21) so casing-canonicalization at ingestion
+    (`store.canonicalize_company_casing`) can compare a new company string
+    against existing ones using the *identical* fold normalize_key() uses,
+    guaranteeing that "safe to reuse existing casing" and "collapses to the
+    same normalized_key" are always the same question, never two that could
+    silently drift apart."""
+    return " ".join("".join(ch for ch in s.lower() if ch.isalnum() or ch.isspace()).split())
 
-    return " ".join(clean(company)) + "::" + " ".join(clean(title))
+
+def normalize_key(company: str, title: str) -> str:
+    return fold_for_key(company) + "::" + fold_for_key(title)
 
 
 @dataclass

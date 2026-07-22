@@ -655,29 +655,118 @@ messier to trust unattended than just asking:
 - `store.upsert_lead()` never touches this column on an update (a digest
   re-send, a follow-up JD-text merge, etc. all leave whatever's already
   there — decided or still undecided — completely alone); only
-  `store.set_direct_recruiter_outreach()` (called by the review CLI) writes
-  it.
+  `store.set_direct_recruiter_outreach()` writes it — either from the
+  interactive review CLI (`True`/`False` only) or from the dashboard's
+  inline selector below (all three states, incl. resetting back to
+  undecided).
 
-The dashboard (`render_pending_actions.py`) shows a ⭐ badge next to the
-company name for every explicitly-`True` lead in each funnel table, plus a
-running count of confirmed-direct and still-undecided leads in the footer
-note (nudging you to run `review-direct-recruiter-outreach`).
+The dashboard (`render_pending_actions.py`) renders this tri-state
+directly, as an editable `<select>` in its own unlabeled column just after
+"Age (days)" in every funnel table — no need to run the review CLI at all
+to see *or change* where a lead stands:
+
+- `True` → "⭐ Yes" — confirmed direct outreach. Deliberately the loudest
+  of the three: a solid filled gold badge (bold dark text on `--warning`),
+  not just a colored outline, so a confirmed lead is impossible to miss
+  while scanning down a table.
+- `NULL`/undecided → "☆ Undecided" — muted gray outline, most dimmed of
+  the three (not yet reviewed).
+- `False` → "— No" — muted gray outline, dimmed but slightly less than
+  Undecided (reviewed, confirmed NOT direct outreach).
+
+Picking a different option fires the `setdro://` custom URL scheme
+(`tools/set-direct-recruiter-outreach/`, install once with its
+`install.sh`) immediately — no separate save step. That tiny Mac helper
+app shells out to the `set-direct-recruiter-outreach` console script
+(`cli/set_direct_recruiter_outreach.py`), which is what actually calls
+`store.set_direct_recruiter_outreach()`. It's fire-and-forget, same as the
+`refreshpending://`/`revealfolder://` helpers already on this page — a
+static `file://` page can't get a return value back, so the `<select>`'s
+own CSS class updates optimistically and a failure (bad key, locked DB)
+surfaces as a native alert from the helper app itself, not on the page.
+
+The footer note carries two different counts, and only one of them can
+update live:
+
+- **Confirmed-direct** (`direct_recruiter_count`) and **visible-undecided**
+  (`direct_recruiter_undecided_visible_count`) recompute instantly in the
+  browser (`recomputeDirectRecruiterCounts()`) after every inline edit —
+  safe to do live because there's no pagination, so every lead in all 5
+  funnel tables is already fully loaded into the page's JS arrays; nothing
+  is ever hidden from the tally by scrolling or the "Needs your decision"
+  table's own search/priority filter (that only changes what's rendered
+  into that one table's rows, not the underlying data the count reads
+  from).
+- **Whole-DB undecided** (`direct_recruiter_undecided_count`) is a static
+  number baked in at the last regenerate — it necessarily includes leads
+  with statuses that never get loaded onto this page at all (`applied`,
+  `skipped`, etc.), so there's no way to keep it live client-side; re-run
+  `render_pending_actions.py` (or click **Regenerate page**) to refresh it.
+
+Both are still a useful review-progress prompt even with inline editing
+available, and `review-direct-recruiter-outreach` remains the faster way to
+plow through a large undecided backlog top-to-bottom rather than hunting
+row-by-row on the dashboard.
+
+### Company-name duplicates — auto-fixed casing vs. detect-and-reconcile
+
+Two different problems, two different risk levels:
+
+- **Pure casing/punctuation differences that fold to the exact same
+  `normalized_key` company-prefix** (e.g. the `NICE`/`NiCE` mismatch fixed
+  2026-07-21) are 100% safe to auto-reconcile — the key never changes
+  either way. `store.canonicalize_company_casing()` does this automatically
+  at ingestion time (wired into `upsert_lead()`): a brand-new lead reuses
+  whatever casing is already on file, so this specific bug can't recur.
+  Deliberately uses an **exact** fold match only (`models.fold_for_key()`)
+  — no fuzzy or corporate-suffix-stripped matching here, since that would
+  risk silently changing which `normalized_key` a lead lands under.
+
+- **Everything else that's harder** — a corporate-suffix difference like
+  ", Inc." / ", LLC", or a genuine abbreviation like "Communications" ->
+  "Comm" — does NOT fold to the same key, so it's a human call, not an
+  auto-fix. `scripts/find_duplicate_companies.py` detects these:
+  strips a whitelist of corporate suffixes (`_SUFFIXES`), then
+  fuzzy-matches every pair of distinct companies and reports pairs above
+  `--threshold` (default 0.90). Run with
+  `python scripts/find_duplicate_companies.py`.
+
+Once you've looked at a flagged pair, reconcile it with `merge-leads`
+(`cli/merge_leads.py`) — **most hits are the same company but two
+genuinely different open reqs** (different titles), not the same posting,
+so use whichever of its two modes actually fits:
+
+```bash
+# RENAME mode — same company, different real postings (the common case).
+# Just relabels every lead's `company` display field; each lead keeps its
+# own normalized_key/CRM history untouched.
+merge-leads --rename-from "Reddit, Inc." --rename-to "Reddit"
+
+# MERGE mode — the SAME posting under two spellings/extractions (titles
+# match too). Moves all CRM history (contacts/conversations/documents/
+# meetings/offers) from --absorb into --keep, then deletes the absorbed
+# row. Shows a JD-text similarity score first as a confidence signal —
+# low score is a hint you actually want RENAME mode instead.
+merge-leads --keep <normalized_key> --absorb <normalized_key>
+```
+
+Neither mode prompts-and-executes without confirmation (`--yes` skips the
+prompt), and neither touches the filesystem — move any already-generated
+documents folder to match by hand afterward.
 
 ### `find_duplicate_titles.py` — detecting semantically-duplicate titles
 
-Company-name case duplicates (e.g. the `NICE`/`NiCE` mismatch fixed
-2026-07-21) are safe to auto-merge — pure casing normalization. Title
-duplicates aren't: "Sr Backend Engineer" and "Sr Frontend Engineer" both
-start with "Sr" but are genuinely different postings, so auto-merging on
-similarity risks silently discarding one lead's real history (its
-contacts/conversations/documents).
+Title duplicates are the title-level version of the same problem: "Sr
+Backend Engineer" and "Sr Frontend Engineer" both start with "Sr" but are
+genuinely different postings, so auto-merging on similarity risks silently
+discarding one lead's real history.
 
 `scripts/find_duplicate_titles.py` is detection-only — it expands common
 recruiting-title abbreviations (`Snr`/`Sr` → `Senior`, roman numerals ↔
 digits, `Eng` → `Engineer`, etc. — see `_EXPANSIONS`), then fuzzy-matches
 titles *within the same company* and reports pairs above `--threshold`
-(default 0.85) for you to manually review and merge (there's no merge tool
-yet — do it via direct SQL, keeping whichever lead has more real history).
+(default 0.85) for you to manually review. If a pair really is the same
+posting, merge it with `merge-leads --keep ... --absorb ...` (see above).
 Run with `python scripts/find_duplicate_titles.py`.
 
 ### Manual (non-email) job management CLIs

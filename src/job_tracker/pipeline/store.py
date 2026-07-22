@@ -22,6 +22,7 @@ from job_tracker.pipeline.models import (
     JobMeeting,
     JobOffer,
     UnmatchedMessage,
+    fold_for_key,
     normalize_key,
     utc_now_iso,
 )
@@ -323,6 +324,37 @@ def connect(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     return conn
 
 
+def canonicalize_company_casing(conn: sqlite3.Connection, company: str) -> str:
+    """Reuse whichever casing is already on file for this company (e.g. an
+    incoming "NiCE" becomes "NICE" if "NICE" is already stored), rather than
+    letting two casing variants of the same normalized_key-company-prefix
+    sit side by side (the exact bug fixed manually on 2026-07-21 for
+    NICE/NiCE and Latter-Day/Latter-day). Added 2026-07-21 to stop it from
+    recurring, at ingestion time, automatically.
+
+    Exact match only (case-insensitive, punctuation-insensitive — the same
+    fold `normalize_key()` itself applies via `fold_for_key()`) — a company
+    only gets its casing rewritten here if doing so is 100% risk-free,
+    i.e. it doesn't change the resulting normalized_key at all. Deliberately
+    NOT a fuzzy or corporate-suffix-stripped match (e.g. "Scribd" vs.
+    "Scribd, Inc.") — that's a different, riskier question ("is this
+    actually the same company, just written differently?") that changes
+    which normalized_key a lead lands under, so it belongs to the
+    human-reviewed `find_duplicate_companies.py` + `merge_leads.py` flow
+    instead of silent auto-rewriting here.
+    """
+    folded = fold_for_key(company)
+    if not folded:
+        return company
+    row = conn.execute(
+        "SELECT company FROM job_leads WHERE normalized_key LIKE ? || '::%' LIMIT 1",
+        (folded,),
+    ).fetchone()
+    if row is not None and row["company"] != company:
+        return row["company"]
+    return company
+
+
 def upsert_lead(conn: sqlite3.Connection, lead: JobLead) -> bool:
     """Insert a new lead or refresh an existing one. Returns True if new."""
     key = lead.normalized_key
@@ -331,6 +363,8 @@ def upsert_lead(conn: sqlite3.Connection, lead: JobLead) -> bool:
     ).fetchone()
 
     if existing is None:
+        lead.company = canonicalize_company_casing(conn, lead.company)
+        key = lead.normalized_key  # unchanged by construction, but stay honest
         conn.execute(
             """
             INSERT INTO job_leads (
@@ -686,6 +720,119 @@ def _mark_lead_hidden(
         conn.commit()
 
 
+def rename_company(conn: sqlite3.Connection, *, from_company: str, to_company: str) -> int:
+    """Relabel every `job_leads.company` cell that exactly matches
+    `from_company` to `to_company` — for the common
+    `find_duplicate_companies.py` case where two spellings really are the
+    same company but the flagged leads are genuinely *different job
+    postings* (different titles), so merging them into one lead would
+    wrongly discard one posting's own identity and CRM history. Compare
+    `merge_leads()`, which is for two rows that are the same posting.
+
+    Does NOT touch `normalized_key` on any row (each lead's key, and every
+    CRM child row's `job_key`, is completely unaffected) — this only
+    changes the display string and, therefore, which company-folder
+    `render_pending_actions.py`'s `_lead_folder_and_count` groups a lead
+    under going forward. Nothing on the filesystem is touched — if a
+    renamed lead already had a package folder generated under the old
+    company name, move those files to the new folder by hand.
+
+    Matches `from_company` by exact string, not a fold/fuzzy match — pass
+    the precise spelling `find_duplicate_companies.py` printed. Returns the
+    number of rows updated.
+    """
+    cur = conn.execute("UPDATE job_leads SET company = ? WHERE company = ?", (to_company, from_company))
+    conn.commit()
+    return cur.rowcount
+
+
+def merge_leads(conn: sqlite3.Connection, *, keep_key: str, absorb_key: str) -> dict[str, int]:
+    """Merge two leads that are actually the same real job/company — e.g. a
+    `find_duplicate_companies.py`-flagged pair like "Scribd" / "Scribd, Inc."
+    that `canonicalize_company_casing()` couldn't safely reconcile on its
+    own (different normalized_key, so it's a human call). Written for
+    `cli/merge_leads.py` (2026-07-21); not reachable from the ingestion
+    pipeline.
+
+    Every CRM child row (contacts, conversations, documents, meetings,
+    offers) currently under `absorb_key` is re-keyed to `keep_key`, and any
+    `unmatched_messages.resolved_job_key` pointer is updated too, so nothing
+    is silently orphaned. The surviving `keep_key` row is enriched with
+    whatever the absorbed row had that it didn't — the earlier of the two
+    `first_seen`, the later of the two `last_seen`, summed `times_seen`, the
+    absorbed row's `direct_recruiter_outreach` decision if the survivor was
+    still undecided, and the absorbed row's `jd_text` if the survivor's was
+    empty. Every other field on the surviving row (status, verdict, match_pct,
+    etc.) is left exactly as-is — pick which key to `--keep` based on which
+    one has the more-advanced status/real history.
+
+    The absorbed `job_leads` row itself is then hard-deleted. Deliberately
+    does NOT touch anything on the filesystem — if `absorb_key` had its own
+    documents folder on disk, review/move those files manually.
+
+    Raises ValueError if `keep_key == absorb_key` or either key isn't a
+    real row. Returns per-table reassignment counts plus `absorbed_lead: 1`.
+    """
+    if keep_key == absorb_key:
+        raise ValueError("--keep and --absorb must refer to two different leads")
+
+    keep_row = conn.execute("SELECT * FROM job_leads WHERE normalized_key = ?", (keep_key,)).fetchone()
+    absorb_row = conn.execute("SELECT * FROM job_leads WHERE normalized_key = ?", (absorb_key,)).fetchone()
+    if keep_row is None:
+        raise ValueError(f"--keep key not found in job_leads: {keep_key!r}")
+    if absorb_row is None:
+        raise ValueError(f"--absorb key not found in job_leads: {absorb_key!r}")
+
+    new_dro = keep_row["direct_recruiter_outreach"]
+    if new_dro is None:
+        new_dro = absorb_row["direct_recruiter_outreach"]
+    conn.execute(
+        """
+        UPDATE job_leads
+        SET first_seen = ?,
+            last_seen = ?,
+            times_seen = ?,
+            direct_recruiter_outreach = ?,
+            jd_text = ?
+        WHERE normalized_key = ?
+        """,
+        (
+            min(keep_row["first_seen"], absorb_row["first_seen"]),
+            max(keep_row["last_seen"], absorb_row["last_seen"]),
+            (keep_row["times_seen"] or 0) + (absorb_row["times_seen"] or 0),
+            new_dro,
+            keep_row["jd_text"] or absorb_row["jd_text"],
+            keep_key,
+        ),
+    )
+
+    counts = {
+        "contacts": conn.execute(
+            "UPDATE job_contacts SET job_key = ? WHERE job_key = ?", (keep_key, absorb_key)
+        ).rowcount,
+        "conversations": conn.execute(
+            "UPDATE job_conversations SET job_key = ? WHERE job_key = ?", (keep_key, absorb_key)
+        ).rowcount,
+        "documents": conn.execute(
+            "UPDATE job_documents SET job_key = ? WHERE job_key = ?", (keep_key, absorb_key)
+        ).rowcount,
+        "meetings": conn.execute(
+            "UPDATE job_meetings SET job_key = ? WHERE job_key = ?", (keep_key, absorb_key)
+        ).rowcount,
+        "offers": conn.execute(
+            "UPDATE job_offers SET job_key = ? WHERE job_key = ?", (keep_key, absorb_key)
+        ).rowcount,
+        "unmatched_messages": conn.execute(
+            "UPDATE unmatched_messages SET resolved_job_key = ? WHERE resolved_job_key = ?",
+            (keep_key, absorb_key),
+        ).rowcount,
+    }
+    conn.execute("DELETE FROM job_leads WHERE normalized_key = ?", (absorb_key,))
+    conn.commit()
+    counts["absorbed_lead"] = 1
+    return counts
+
+
 def purge_lead(conn: sqlite3.Connection, normalized_key: str) -> dict[str, int]:
     """Hard-delete a lead and all CRM children (contacts, conversations,
     documents, meetings, offers). Irreversible. Returns per-table delete counts.
@@ -955,14 +1102,19 @@ def set_awaiting_response(
     conn.commit()
 
 
-def set_direct_recruiter_outreach(conn: sqlite3.Connection, normalized_key: str, value: bool) -> None:
+def set_direct_recruiter_outreach(conn: sqlite3.Connection, normalized_key: str, value: bool | None) -> None:
     """The only writer of `job_leads.direct_recruiter_outreach` (2026-07-21
-    redesign — see models.JobLead's docstring): a human's explicit yes/no
-    from `scripts/review_direct_recruiter_outreach.py`. Deliberately not
-    reachable from the ingestion pipeline itself."""
+    redesign — see models.JobLead's docstring): a human's explicit
+    yes/no/undecided, from `cli/review_direct_recruiter_outreach.py`'s
+    interactive prompt (`True`/`False` only) or `cli/set_direct_recruiter_
+    outreach.py`'s one-shot CLI (all three, incl. `None` to explicitly
+    reset back to undecided — added 2026-07-21 for the dashboard's inline
+    tri-state selector; see `directRecruiterCellHtml()` in
+    render_pending_actions.py). Deliberately not reachable from the
+    ingestion pipeline itself."""
     conn.execute(
         "UPDATE job_leads SET direct_recruiter_outreach = ? WHERE normalized_key = ?",
-        (int(value), normalized_key),
+        (None if value is None else int(value), normalized_key),
     )
     conn.commit()
 

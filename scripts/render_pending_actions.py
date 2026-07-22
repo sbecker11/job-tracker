@@ -214,17 +214,24 @@ def render(conn, *, output_root: Path, now: datetime) -> dict:
         entry = {
             "company": r["company"],
             "title": r["title"],
+            "normalizedKey": r["normalized_key"],
             "fileCount": fc,
             "folderPath": folder_path,
             "companyFolderPath": company_folder_path,
             "ageDays": _age_days(r["first_seen"], now),
             "applyUrl": r["apply_url"] or "",
-            # A human recruiter personally reached out about this lead —
-            # see models.JobLead.direct_recruiter_outreach's docstring.
-            # Surfaced as a gold-star badge (⭐) next to the company name in
-            # every funnel table so these leads are visually easy to
-            # prioritize over a cold job-board posting (2026-07-21).
-            "directRecruiter": bool(r["direct_recruiter_outreach"]),
+            # Tri-state, preserved as-is (not coerced to bool) so the
+            # dashboard can render three distinct, inline-editable states —
+            # see models.JobLead.direct_recruiter_outreach's docstring and
+            # directRecruiterCellHtml() below: True -> "Yes" (gold),
+            # None (not yet reviewed) -> "Undecided" (dim), False
+            # (reviewed, confirmed not direct) -> "No" (dim). Lets you see
+            # the size of the still-undecided backlog, AND change the
+            # decision, directly on the dashboard, without running the
+            # interactive review CLI.
+            "directRecruiter": (
+                None if r["direct_recruiter_outreach"] is None else bool(r["direct_recruiter_outreach"])
+            ),
         }
 
         if status == "package_generated":
@@ -302,16 +309,24 @@ def render(conn, *, output_root: Path, now: datetime) -> dict:
     ]
     unmatched_communications.sort(key=lambda m: -m["ageDays"])
 
-    direct_recruiter_count = sum(
-        1
-        for bucket in (jd_unresolved, awaiting_llm_review, needs_decision, needs_decision_forced, ready_to_apply)
-        for lead in bucket
-        if lead["directRecruiter"]
-    )
+    _funnel_buckets = (jd_unresolved, awaiting_llm_review, needs_decision, needs_decision_forced, ready_to_apply)
+    direct_recruiter_count = sum(1 for bucket in _funnel_buckets for lead in bucket if lead["directRecruiter"])
     # Whole-DB, not just the funnel buckets above — the review queue
     # (review_direct_recruiter_outreach.py) walks every lead regardless of
     # status, so this should match what that command would actually show.
+    # Static — only known server-side (leads with e.g. status='applied'
+    # aren't loaded into any of the funnel-bucket JS arrays at all, so this
+    # number can't be recomputed client-side after an inline edit; see
+    # direct_recruiter_undecided_visible_count below for the subset that
+    # can).
     direct_recruiter_undecided_count = sum(1 for r in rows if r["direct_recruiter_outreach"] is None)
+    # Just the funnel buckets shown in the tables above — every lead here
+    # has a live <select> (directRecruiterCellHtml()), so this *can* be
+    # recomputed client-side after each inline edit (recomputeDirectRecruiterCounts()
+    # below), unlike the whole-DB figure above.
+    direct_recruiter_undecided_visible_count = sum(
+        1 for bucket in _funnel_buckets for lead in bucket if lead["directRecruiter"] is None
+    )
 
     return {
         "jd_unresolved": jd_unresolved,
@@ -321,6 +336,7 @@ def render(conn, *, output_root: Path, now: datetime) -> dict:
         "ready_to_apply": ready_to_apply,
         "direct_recruiter_count": direct_recruiter_count,
         "direct_recruiter_undecided_count": direct_recruiter_undecided_count,
+        "direct_recruiter_undecided_visible_count": direct_recruiter_undecided_visible_count,
         "not_prioritized_count": len(not_prioritized),
         "manual_handled": manual_handled,
         # scripts/scan_communications.py's parking lot (2026-07-17) — a
@@ -456,7 +472,31 @@ _TEMPLATE = r"""<!DOCTYPE html>
   td { padding: 8px 10px; vertical-align: middle; }
   td.company { font-weight: 600; }
   .direct-cell { text-align: center; padding-left: 4px; padding-right: 4px; }
-  .direct-badge { font-size: 12px; cursor: default; }
+  .direct-select {
+    font-size: 12px;
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 3px;
+    cursor: pointer;
+    max-width: 62px;
+  }
+  .direct-select option { background: var(--panel); color: var(--text); }
+  /* Yes is deliberately the loudest of the three states (2026-07-21) — a
+     confirmed direct-recruiter lead is worth catching at a glance while
+     scanning down a table, so it gets a solid filled badge instead of just
+     a colored outline; Undecided and No both stay muted/outline-only since
+     neither needs to draw the eye. */
+  .direct-select-undecided { color: var(--text-tertiary); opacity: 0.6; border-color: var(--border); }
+  .direct-select-yes {
+    color: #241900;
+    background: var(--warning);
+    border-color: var(--warning);
+    font-weight: 700;
+    opacity: 1;
+  }
+  .direct-select-no { color: var(--text-tertiary); opacity: 0.85; border-color: var(--border); }
   td.title { color: var(--text-secondary); }
   .table-scroll { max-height: 520px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
   .table-scroll.short { max-height: 340px; }
@@ -852,18 +892,83 @@ function companyCellHtml(company, companyFolderPath) {
   return `<a class="company-link" href="${folderUrl(companyFolderPath)}" title="Open company folder in Finder">${escapeHtml(company)}</a>`;
 }
 
-// The ⭐ badge (2026-07-21, moved to its own column 2026-07-21) marks a lead
-// flagged `directRecruiter` — a real human recruiter personally reached out
-// (LinkedIn InMail/reply, or a personalized email pitch), not a cold
-// job-board digest. See models.JobLead.direct_recruiter_outreach's
-// docstring for exactly how that's decided. Lives in its own unlabeled
-// column just after "Age (days)" rather than inline with the company name,
-// so it reads as a distinct signal instead of decorating the link.
-function directRecruiterCellHtml(directRecruiter) {
-  const badge = directRecruiter
-    ? `<span class="direct-badge" title="direct_recruiter_outreach">\u{2B50}</span>`
-    : "";
-  return `<td class="direct-cell">${badge}</td>`;
+// Tri-state `directRecruiter` selector (2026-07-21, moved to its own column
+// same day, made tri-state 2026-07-21, made inline-editable 2026-07-21) —
+// see models.JobLead.direct_recruiter_outreach's docstring for exactly how
+// the value is decided. "yes" -> filled gold star (confirmed a real
+// recruiter personally reached out); "undecided" -> empty outline star (not
+// yet reviewed); "no" -> a muted dash (reviewed, confirmed NOT direct
+// outreach). A plain <select> rather than a click-to-cycle badge, so the
+// three states are always visible/discoverable and there's no ambiguity
+// about what a bare click would do. Picking a new option immediately fires
+// setDirectRecruiterOutreach() below — no separate "save" step. Lives in
+// its own unlabeled column just after "Age (days)" rather than inline with
+// the company name, so it reads as a distinct signal instead of decorating
+// the link.
+function directRecruiterCellHtml(directRecruiter, normalizedKey) {
+  const value = directRecruiter === true ? "yes" : directRecruiter === false ? "no" : "undecided";
+  const opt = (v, glyph, label) =>
+    `<option value="${v}"${v === value ? " selected" : ""}>${glyph} ${label}</option>`;
+  return `<td class="direct-cell">
+    <select class="direct-select direct-select-${value}" title="direct_recruiter_outreach"
+      onchange="setDirectRecruiterOutreach('${normalizedKey}', this.value, this)">
+      ${opt("undecided", "\u2606", "Undecided")}
+      ${opt("yes", "\u2B50", "Yes")}
+      ${opt("no", "\u2014", "No")}
+    </select>
+  </td>`;
+}
+
+// Every lead with a live <select> lives in exactly one of these 5 arrays —
+// used both by setDirectRecruiterOutreach() (to update the in-memory
+// record a click just changed) and recomputeDirectRecruiterCounts() (to
+// re-tally from them). Declared once here rather than re-listed in both.
+const DIRECT_RECRUITER_BUCKETS = [JD_UNRESOLVED, AWAITING_LLM_REVIEW, NEEDS_DECISION, NEEDS_DECISION_FORCED, READY_TO_APPLY];
+
+// Live re-tally of the two footer sub-counts that CAN be known purely from
+// what's already loaded into the browser (compare direct_recruiter_
+// undecided_count in the footer text, which is whole-DB and therefore
+// server-only — see render()'s comment). Called after every inline edit so
+// the footer reflects your choices instantly instead of going stale until
+// the next full regenerate.
+function recomputeDirectRecruiterCounts() {
+  let yesCount = 0;
+  let undecidedCount = 0;
+  for (const bucket of DIRECT_RECRUITER_BUCKETS) {
+    for (const lead of bucket) {
+      if (lead.directRecruiter === true) yesCount++;
+      else if (lead.directRecruiter === null || lead.directRecruiter === undefined) undecidedCount++;
+    }
+  }
+  const yesEl = document.getElementById("direct-recruiter-count");
+  const undecidedEl = document.getElementById("direct-recruiter-undecided-visible-count");
+  if (yesEl) yesEl.textContent = String(yesCount);
+  if (undecidedEl) undecidedEl.textContent = String(undecidedCount);
+}
+
+// Fires the setdro:// custom URL scheme (tools/set-direct-recruiter-
+// outreach/main.swift), which shells out to
+// `set-direct-recruiter-outreach --key ... --value ...` to persist the
+// change to leads.db. Fire-and-forget, like refreshpending://'s regen
+// button — a static file:// page can't get a return value back from the
+// helper app, so this just applies the new selected-state CSS class and
+// the live footer re-tally immediately (optimistic UI), trusting the
+// helper's own NSAlert to surface a failure (e.g. a locked DB). The
+// whole-DB undecided figure in the footer text still only refreshes on a
+// full regenerate — see recomputeDirectRecruiterCounts()'s comment.
+function setDirectRecruiterOutreach(normalizedKey, value, selectEl) {
+  selectEl.className = "direct-select direct-select-" + value;
+  const newValue = value === "yes" ? true : value === "no" ? false : null;
+  for (const bucket of DIRECT_RECRUITER_BUCKETS) {
+    const lead = bucket.find(l => l.normalizedKey === normalizedKey);
+    if (lead) {
+      lead.directRecruiter = newValue;
+      break;
+    }
+  }
+  recomputeDirectRecruiterCounts();
+  window.location.href =
+    "setdro://set?key=" + encodeURIComponent(normalizedKey) + "&value=" + encodeURIComponent(value);
 }
 function titleCellHtml(title, folderPath, fileCount) {
   const countSuffix = fileCount > 0 ? `<span class="file-count">(${fileCount} file${fileCount === 1 ? "" : "s"})</span>` : "";
@@ -987,7 +1092,7 @@ function renderTable() {
       <td class="num">${lead.matchPct}%</td>
       <td><span class="verdict-badge ${lead.verdict}">${lead.verdict.toUpperCase()}</span></td>
       ${ageCellHtml(lead.ageDays)}
-      ${directRecruiterCellHtml(lead.directRecruiter)}
+      ${directRecruiterCellHtml(lead.directRecruiter, lead.normalizedKey)}
       <td><span class="count-pill">${PRIORITY_LABEL[priorityOf(lead.matchPct)]}</span></td>
       <td><button class="copy-btn" data-idx="${idx}">Copy prompt</button></td>
     </tr>`).join("");
@@ -1025,7 +1130,7 @@ function renderJdUnresolved() {
       <td class="company">${companyCellHtml(l.company, l.companyFolderPath)}</td>
       <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount)}</td>
       ${ageCellHtml(l.ageDays)}
-      ${directRecruiterCellHtml(l.directRecruiter)}
+      ${directRecruiterCellHtml(l.directRecruiter, l.normalizedKey)}
     </tr>`).join("");
 }
 
@@ -1037,7 +1142,7 @@ function renderAwaitingLlmReview() {
       <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount)}</td>
       <td class="num">${l.matchPct}%</td>
       ${ageCellHtml(l.ageDays)}
-      ${directRecruiterCellHtml(l.directRecruiter)}
+      ${directRecruiterCellHtml(l.directRecruiter, l.normalizedKey)}
     </tr>`).join("");
 }
 
@@ -1050,7 +1155,7 @@ function renderNeedsDecisionForced() {
       <td><span class="verdict-badge ${l.verdict}">${l.verdict.toUpperCase()}</span></td>
       <td class="num">${l.matchPct}%</td>
       ${ageCellHtml(l.ageDays)}
-      ${directRecruiterCellHtml(l.directRecruiter)}
+      ${directRecruiterCellHtml(l.directRecruiter, l.normalizedKey)}
     </tr>`).join("");
 }
 
@@ -1062,7 +1167,7 @@ function renderReadyToApply() {
       <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount)}</td>
       <td class="num">${l.matchPct}%</td>
       ${ageCellHtml(l.ageDays)}
-      ${directRecruiterCellHtml(l.directRecruiter)}
+      ${directRecruiterCellHtml(l.directRecruiter, l.normalizedKey)}
       <td>${applyButtonHtml(l.applyUrl)}</td>
     </tr>`).join("");
 }
@@ -1267,9 +1372,13 @@ def _render_html(data: dict, *, output_root: Path) -> str:
             else "none"
         )
         + f". {len(data['unmatched_communications'])} unmatched communication(s) awaiting manual resolution."
-        + f" {data['direct_recruiter_count']} of the leads above (\u2B50) are confirmed direct recruiter "
-        f"outreach. {data['direct_recruiter_undecided_count']} lead(s) total still await that review — run "
-        "`review-direct-recruiter-outreach` to go through them."
+        + f' <span id="direct-recruiter-count">{data["direct_recruiter_count"]}</span> of the leads above '
+        "(\u2B50) are confirmed direct recruiter outreach — this updates live as you use the \u2606/\u2B50/"
+        f'\u2014 dropdown in the tables above. {data["direct_recruiter_undecided_count"]} lead(s) total '
+        "still await that review as of this regenerate (run `review-direct-recruiter-outreach` to go "
+        'through all of them); <span id="direct-recruiter-undecided-visible-count">'
+        f'{data["direct_recruiter_undecided_visible_count"]}</span> of those are visible in the tables '
+        "above right now (this sub-count also updates live)."
     )
     html = _TEMPLATE
     html = html.replace("${GENERATED_AT}", data["generated_at"].strftime("%Y-%m-%d %H:%M %Z") or data["generated_at"].strftime("%Y-%m-%d %H:%M"))

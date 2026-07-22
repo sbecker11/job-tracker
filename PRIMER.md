@@ -130,7 +130,14 @@ the hourly `run_cycle.sh` cycle already regenerated on its own; it skips a
 cycle rather than clobbering an in-progress search-box filter, and restores
 your scroll position across the reload. Browsers will ask to allow each
 custom URL scheme the first time you click a `refreshpending://` /
-`revealfolder://` link. The **Ready to apply** table also has its own
+`revealfolder://` / `setdro://` link. Every funnel table also has an
+unlabeled column right after **Age (days)** — a `<select>` for that lead's
+`direct_recruiter_outreach` (Undecided / Yes / No — see
+models.JobLead's docstring for what it means); picking a new option fires
+`setdro://` immediately (`tools/set-direct-recruiter-outreach/install.sh`),
+no separate save step, no page reload — it's a fire-and-forget write
+straight to `leads.db`, same pattern as the other two helpers, just for an
+edit instead of a read-only action. The **Ready to apply** table also has its own
 **Apply** column (2026-07-19, scoped down to just that one section on
 2026-07-19 per feedback — the other 4 sections are "review it first," not
 "go apply," so a live apply link there would invite skipping the review
