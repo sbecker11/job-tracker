@@ -1202,6 +1202,50 @@ python scripts/backfill_post_application_signals.py --dry-run   # preview
 python scripts/backfill_post_application_signals.py --llm-fallback
 ```
 
+## Weekly unemployment-claim report (2026-07-23)
+
+`scripts/unemployment_claim_report.py` — a reusable version of the ad-hoc
+query built by hand on 2026-07-23 for the Jul 5 / Jul 12 / Jul 19 weekly
+claims. Generates one CSV per week: `company, title, date_of_communication,
+recruiter_email, job_status, notes`, one row per job lead using its
+*earliest* "genuine contact attempt" within that week — an application,
+follow-up, interview, offer, or acceptance stamped on the lead
+(`applied_at`/`following_up_at`/`interviewing_at`/`offered_at`/
+`accepted_at`), OR anything you personally sent/logged (an outbound
+`job_conversations` row, or any non-email channel like a call), never a
+passive inbound job-alert digest.
+
+```bash
+python scripts/unemployment_claim_report.py                       # this week, real run
+python scripts/unemployment_claim_report.py --week-start 2026-07-26
+python scripts/unemployment_claim_report.py --week-start 2026-07-26 --weeks 3
+python scripts/unemployment_claim_report.py --dry-run              # preview only, no files written
+```
+
+Two rules baked in after the first hand-built version:
+
+- **Each company+title lands on only one weekly claim, ever** — a
+  persistent registry (`--state-file`, defaults to
+  `<output-dir>/.reported_job_keys.json`, itself inside
+  `~/Desktop/Unemployment_Claims/`) remembers every `job_key` already
+  reported on a prior week's CSV, so a lead with renewed activity later
+  (e.g. a second-round interview two weeks after applying) never gets
+  double-counted across two separate claims. `--force-include
+  NORMALIZED_KEY` deliberately overrides this for one run, if you ever
+  need to.
+- **`notes` flags, never silently drops or edits, anything questionable**
+  — a system/no-reply sender (LinkedIn job-alert bots, `theladders.com`,
+  Ashby/Greenhouse ATS confirmations, etc. — see `_SYSTEM_SENDER_DOMAINS`)
+  gets `"system/no-reply address, not a named human contact"`; a
+  malformed value in the email field (e.g. a LinkedIn profile URL, seen
+  live in the Meta lead) gets `"malformed email value — verify before
+  filing"`. Look these over before submitting — they're exactly what's on
+  file for how the lead was sourced, not necessarily a person you can
+  name on the form.
+
+Also prints a `WARNING` to the console (doesn't block anything) if a
+week's count falls below `--min-contacts` (default 4).
+
 ## Limits
 
 - **Workday** has no clean public board API — expect misses; fallback TBD.
