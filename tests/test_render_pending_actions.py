@@ -15,8 +15,15 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from job_tracker.pipeline.models import JobLead, UnmatchedMessage
-from job_tracker.pipeline.store import connect, record_unmatched_message, update_llm_evaluation, upsert_lead
+from job_tracker.pipeline.models import JobContact, JobConversation, JobLead, UnmatchedMessage
+from job_tracker.pipeline.store import (
+    add_job_contact,
+    add_job_conversation,
+    connect,
+    record_unmatched_message,
+    update_llm_evaluation,
+    upsert_lead,
+)
 from job_tracker.pipeline.llm_apply import CallMetrics, EvaluationResult
 
 _SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "render_pending_actions.py"
@@ -252,10 +259,74 @@ def test_html_wires_title_and_company_finder_links(tmp_path: Path):
     assert "companyFolderPath" in text
     assert "Open this role's folder in Finder" in text
     assert "Open company folder in Finder" in text
-    assert "titleCellHtml(lead.title, lead.folderPath, lead.fileCount)" in text
+    assert "titleCellHtml(lead.title, lead.folderPath, lead.fileCount, lead.commCount, lead.company)" in text
     assert "companyCellHtml(lead.company, lead.companyFolderPath)" in text
     assert '"companyFolderPath": "Acme"' in text
     assert '"folderPath": "Acme"' in text
+
+
+def test_render_computes_comm_count_per_lead(tmp_path: Path):
+    """2026-07-22: each funnel entry carries commCount — the number of
+    archived job_conversations rows for that lead — so the dashboard can
+    show a clickable "view full history" badge next to the title without
+    embedding the full conversation text (unlike unmatched_communications,
+    where the whole body has to be inlined since there's no per-lead
+    "generate a fresh PDF on click" helper for THOSE unresolved messages)."""
+    db_path = tmp_path / "leads.db"
+    conn = connect(db_path)
+    lead = _make_lead(
+        conn, company="Chatty Co", title="Engineer", match_pct=80.0, verdict="review",
+        first_seen=NOW.isoformat(),
+    )
+    quiet_lead = _make_lead(
+        conn, company="Quiet Co", title="Engineer", match_pct=80.0, verdict="review",
+        first_seen=NOW.isoformat(),
+    )
+    _set_llm_review(conn, lead, llm_verdict="review", llm_match_pct=80.0)
+    _set_llm_review(conn, quiet_lead, llm_verdict="review", llm_match_pct=80.0)
+    contact_id = add_job_contact(conn, JobContact(job_key=lead.normalized_key, name="Jane Doe", email="jane@chatty.example"))
+    add_job_conversation(
+        conn,
+        JobConversation(
+            job_key=lead.normalized_key, contact_id=contact_id, message_id="m1",
+            direction="inbound", summary="Hello", occurred_at=NOW.isoformat(),
+        ),
+    )
+    add_job_conversation(
+        conn,
+        JobConversation(
+            job_key=lead.normalized_key, contact_id=contact_id, message_id="m2",
+            direction="outbound", summary="Re: Hello", occurred_at=NOW.isoformat(),
+        ),
+    )
+
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    conn.close()
+
+    by_company = {e["company"]: e for e in data["needs_decision"]}
+    assert by_company["Chatty Co"]["commCount"] == 2
+    assert by_company["Quiet Co"]["commCount"] == 0
+
+
+def test_html_wires_communications_badge(tmp_path: Path):
+    """The 💬-badge markup/CSS and the viewcomms:// URL builder must be
+    present in the rendered page — mirrors test_html_wires_title_and_
+    company_finder_links' pattern for folderUrl()."""
+    db_path = tmp_path / "leads.db"
+    conn = connect(db_path)
+    lead = _make_lead(
+        conn, company="Acme", title="Engineer", match_pct=80.0, verdict="pursue",
+        first_seen=NOW.isoformat(),
+    )
+    _set_llm_review(conn, lead, llm_verdict="review", llm_match_pct=80.0)
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    conn.close()
+
+    text = render_pending_actions._render_html(data, output_root=tmp_path)
+    assert "function commsUrl(" in text
+    assert "viewcomms://open?company=" in text
+    assert "comms-badge" in text
+    assert '"commCount": 0' in text
 
 
 def test_unmatched_communications_carries_full_body_alongside_preview(tmp_path: Path):

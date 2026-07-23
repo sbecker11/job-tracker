@@ -716,6 +716,32 @@ available, and `review-direct-recruiter-outreach` remains the faster way to
 plow through a large undecided backlog top-to-bottom rather than hunting
 row-by-row on the dashboard.
 
+### Communications-count badge — jump straight to a lead's full message history (2026-07-22)
+
+Every lead's title cell in every funnel table on `pending-actions.html`
+carries a 💬 badge showing how many `job_conversations` rows are archived
+for it (`commCount`, computed in `render()` via `store.list_job_conversations()`)
+— e.g. `Senior Data Engineer (3 files) 💬 4`. The badge is omitted entirely
+when `commCount` is 0 (mirrors the file-count badge's own "only show it if
+there's something to show" rule), so a lead with no archived correspondence
+yet doesn't clutter the row.
+
+Unlike the file count (which is just a number — there's already a Finder
+link right there via `folderUrl()`), the 💬 badge is itself a link. Clicking
+it fires the `viewcomms://` custom URL scheme
+(`tools/view-communications/`, install once with its `install.sh`), whose
+tiny Mac helper app shells out to the `export-communications` console
+script (`cli/export_communications.py`) to render that lead's full
+conversation history to a **fresh** PDF (same file
+`export-communications`/`list_leads.py --show-communications` would
+produce by hand — see "Review stored leads" above), then opens it in
+Preview. Chosen over embedding the full conversation text in the page
+itself (the way `unmatched_communications`' preview/body fields do) because
+every single lead already has at least one conversation once triaged —
+inlining full bodies for all of them, rather than just the handful of
+parked unmatched messages, would make this static page dramatically
+larger for comparatively little benefit over a one-click PDF.
+
 ### Company-name duplicates — auto-fixed casing vs. detect-and-reconcile
 
 Two different problems, two different risk levels:

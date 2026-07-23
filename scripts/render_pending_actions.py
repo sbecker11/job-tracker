@@ -35,7 +35,12 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT, _safe_filename  # noqa: E402
-from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect, list_unmatched_messages  # noqa: E402
+from job_tracker.pipeline.store import (  # noqa: E402
+    DEFAULT_DB_PATH,
+    connect,
+    list_job_conversations,
+    list_unmatched_messages,
+)
 from job_tracker.scoring.scorer import DEFAULT_FRAMEWORK_PATH, load_framework, score_jd  # noqa: E402
 
 DEFAULT_OUTPUT_HTML = _REPO_ROOT / "var" / "pending-actions.html"
@@ -216,6 +221,16 @@ def render(conn, *, output_root: Path, now: datetime) -> dict:
             "title": r["title"],
             "normalizedKey": r["normalized_key"],
             "fileCount": fc,
+            # Count only (2026-07-22) — the full job_conversations text is
+            # NOT embedded here (unlike unmatched_communications' body/
+            # preview fields below): every lead already has one, so
+            # inlining full bodies for all of them would bloat this static
+            # page a lot more than the handful of parked unmatched
+            # messages does. Clicking the badge instead shells out to
+            # export-communications via the viewcomms:// helper (see
+            # commsUrl()/titleCellHtml() below) to render a fresh PDF on
+            # demand and open it.
+            "commCount": len(list_job_conversations(conn, r["normalized_key"])),
             "folderPath": folder_path,
             "companyFolderPath": company_folder_path,
             "ageDays": _age_days(r["first_seen"], now),
@@ -588,6 +603,8 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .company-link, .title-link { color: var(--text); text-decoration: none; }
   .company-link:hover, .title-link:hover { text-decoration: underline; color: var(--info); }
   .file-count { color: var(--text-tertiary); font-weight: 400; font-size: 11px; margin-left: 4px; }
+  .comms-badge { color: var(--info); font-weight: 400; font-size: 11px; margin-left: 4px; text-decoration: none; white-space: nowrap; }
+  .comms-badge:hover { text-decoration: underline; }
   .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
   .page-header h1 { margin: 0; }
   .header-actions { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
@@ -907,6 +924,16 @@ function companyCellHtml(company, companyFolderPath) {
   return `<a class="company-link" href="${folderUrl(companyFolderPath)}" title="Open company folder in Finder">${escapeHtml(company)}</a>`;
 }
 
+// Opens this lead's full communications history (job_conversations) as a
+// freshly-exported PDF via the local ViewCommunications helper
+// (tools/view-communications/) — mirrors folderUrl()'s revealfolder://
+// pattern; a static file:// page can neither query sqlite nor shell out to
+// export-communications/open a PDF on its own. Install once:
+// tools/view-communications/install.sh
+function commsUrl(company, title) {
+  return `viewcomms://open?company=${encodeURIComponent(company)}&title=${encodeURIComponent(title)}`;
+}
+
 // Tri-state `directRecruiter` selector (2026-07-21, moved to its own column
 // same day, made tri-state 2026-07-21, made inline-editable 2026-07-21) —
 // see models.JobLead.direct_recruiter_outreach's docstring for exactly how
@@ -985,9 +1012,14 @@ function setDirectRecruiterOutreach(normalizedKey, value, selectEl) {
   window.location.href =
     "setdro://set?key=" + encodeURIComponent(normalizedKey) + "&value=" + encodeURIComponent(value);
 }
-function titleCellHtml(title, folderPath, fileCount) {
+function titleCellHtml(title, folderPath, fileCount, commCount, company) {
   const countSuffix = fileCount > 0 ? `<span class="file-count">(${fileCount} file${fileCount === 1 ? "" : "s"})</span>` : "";
-  return `<a class="title-link" href="${folderUrl(folderPath)}" title="Open this role's folder in Finder">${escapeHtml(title)}</a>${countSuffix}`;
+  const commsSuffix = commCount > 0
+    ? ` <a class="comms-badge" href="${commsUrl(company, title)}" ` +
+      `title="View ${commCount} communication${commCount === 1 ? "" : "s"} for this lead ` +
+      `(exports a fresh PDF and opens it)">\uD83D\uDCAC ${commCount}</a>`
+    : "";
+  return `<a class="title-link" href="${folderUrl(folderPath)}" title="Open this role's folder in Finder">${escapeHtml(title)}</a>${countSuffix}${commsSuffix}`;
 }
 
 // "Apply for this job-lead" (2026-07-19) — applyUrl comes straight from the
@@ -1104,7 +1136,7 @@ function renderTable() {
   body.innerHTML = filtered.map((lead, idx) => `
     <tr class="${lead.verdict === "pursue" ? "pursue" : (priorityOf(lead.matchPct) === "high" ? "high" : "")}">
       <td class="company">${companyCellHtml(lead.company, lead.companyFolderPath)}</td>
-      <td class="title">${titleCellHtml(lead.title, lead.folderPath, lead.fileCount)}</td>
+      <td class="title">${titleCellHtml(lead.title, lead.folderPath, lead.fileCount, lead.commCount, lead.company)}</td>
       <td class="num">${lead.matchPct}%</td>
       <td><span class="verdict-badge ${lead.verdict}">${lead.verdict.toUpperCase()}</span></td>
       ${ageCellHtml(lead.ageDays)}
@@ -1144,7 +1176,7 @@ function renderJdUnresolved() {
   document.getElementById("jd-unresolved-body").innerHTML = JD_UNRESOLVED.map(l => `
     <tr>
       <td class="company">${companyCellHtml(l.company, l.companyFolderPath)}</td>
-      <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount)}</td>
+      <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount, l.commCount, l.company)}</td>
       ${ageCellHtml(l.ageDays)}
       ${directRecruiterCellHtml(l.directRecruiter, l.normalizedKey)}
     </tr>`).join("");
@@ -1155,7 +1187,7 @@ function renderAwaitingLlmReview() {
   document.getElementById("awaiting-llm-review-body").innerHTML = AWAITING_LLM_REVIEW.map(l => `
     <tr>
       <td class="company">${companyCellHtml(l.company, l.companyFolderPath)}</td>
-      <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount)}</td>
+      <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount, l.commCount, l.company)}</td>
       <td class="num">${l.matchPct}%</td>
       ${ageCellHtml(l.ageDays)}
       ${directRecruiterCellHtml(l.directRecruiter, l.normalizedKey)}
@@ -1167,7 +1199,7 @@ function renderNeedsDecisionForced() {
   document.getElementById("needs-decision-forced-body").innerHTML = NEEDS_DECISION_FORCED.map(l => `
     <tr>
       <td class="company">${companyCellHtml(l.company, l.companyFolderPath)}</td>
-      <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount)}</td>
+      <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount, l.commCount, l.company)}</td>
       <td><span class="verdict-badge ${l.verdict}">${l.verdict.toUpperCase()}</span></td>
       <td class="num">${l.matchPct}%</td>
       ${ageCellHtml(l.ageDays)}
@@ -1180,7 +1212,7 @@ function renderReadyToApply() {
   document.getElementById("ready-to-apply-body").innerHTML = READY_TO_APPLY.map(l => `
     <tr>
       <td class="company">${companyCellHtml(l.company, l.companyFolderPath)}</td>
-      <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount)}</td>
+      <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount, l.commCount, l.company)}</td>
       <td class="num">${l.matchPct}%</td>
       ${ageCellHtml(l.ageDays)}
       ${directRecruiterCellHtml(l.directRecruiter, l.normalizedKey)}
