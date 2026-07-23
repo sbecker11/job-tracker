@@ -220,6 +220,55 @@ def test_list_leads_show_contacts_handles_no_contacts(seeded_db: Path, capsys):
     assert "no contacts tracked" in out
 
 
+def test_list_leads_show_communications_prints_conversation_history(seeded_db: Path, capsys):
+    conn = connect(seeded_db)
+    key = JobLead(company="Stripe", title="Software Engineer", source_message_id="m1", source_label="single-jd").normalized_key
+    contact_id = add_job_contact(conn, JobContact(job_key=key, name="Jane Doe", email="jane@stripe.com", role="recruiter"))
+    add_job_conversation(
+        conn,
+        JobConversation(
+            job_key=key,
+            contact_id=contact_id,
+            message_id="msg-1",
+            direction="inbound",
+            summary="Following up on your application",
+            body_text="Hi Shawn, just checking in on your availability.",
+            occurred_at="2026-06-01T00:00:00Z",
+        ),
+    )
+    add_job_conversation(
+        conn,
+        JobConversation(
+            job_key=key,
+            message_id="msg-2",
+            direction="outbound",
+            summary="Re: Following up",
+            body_text="Happy to chat this week!",
+            occurred_at="2026-06-02T00:00:00Z",
+        ),
+    )
+    conn.close()
+
+    rc = list_leads_main(["--db", str(seeded_db), "--company", "Stripe", "--show-communications"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Software Engineer @ Stripe" in out
+    assert "<-" in out and "Jane Doe" in out  # inbound, attributed to the contact
+    assert "->" in out  # outbound
+    assert "Following up on your application" in out
+    assert "just checking in on your availability" in out
+    assert "Happy to chat this week!" in out
+    # Oldest first (2026-06-01 before 2026-06-02).
+    assert out.index("checking in") < out.index("Happy to chat")
+
+
+def test_list_leads_show_communications_handles_no_conversations(seeded_db: Path, capsys):
+    rc = list_leads_main(["--db", str(seeded_db), "--company", "BigCorp", "--show-communications"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "no communications archived" in out
+
+
 def test_list_leads_waiting_filter_only_shows_awaiting_response_leads(seeded_db: Path, capsys):
     conn = connect(seeded_db)
     key = JobLead(company="Stripe", title="Software Engineer", source_message_id="m1", source_label="single-jd").normalized_key

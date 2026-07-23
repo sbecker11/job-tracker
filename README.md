@@ -504,6 +504,12 @@ python scripts/list_leads.py --csv ~/Desktop/job_leads.csv
 python scripts/list_leads.py --company "Acme" --title "Software Engineer" --show-contacts
 python scripts/list_leads.py --waiting
 
+# Full communications history for a lead (every inbound/outbound message already
+# archived by triage_recruiter_inbox.py/scan_communications.py/triage_imap_inbox.py),
+# oldest first, straight to the terminal — the quick alternative to generating a PDF
+# via export_communications.py when you just want to read the thread.
+python scripts/list_leads.py --company "Acme" --title "Software Engineer" --show-communications
+
 # Advance leads through their lifecycle (models.LEAD_STAGES) as real-world progress happens
 python scripts/list_leads.py --verdict pursue --set-status pursued
 python scripts/list_leads.py --company "Acme" --title "Software Engineer" --set-status applied --on 2026-07-10

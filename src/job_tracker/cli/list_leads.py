@@ -10,7 +10,14 @@ from pathlib import Path
 
 from job_tracker.pipeline.llm_apply import EvaluationResult, render_jd_review
 from job_tracker.pipeline.models import LEAD_STAGES
-from job_tracker.pipeline.store import DEFAULT_DB_PATH, advance_status, connect, list_job_contacts, list_leads
+from job_tracker.pipeline.store import (
+    DEFAULT_DB_PATH,
+    advance_status,
+    connect,
+    list_job_contacts,
+    list_job_conversations,
+    list_leads,
+)
 
 _COLUMNS = [
     "company",
@@ -123,6 +130,14 @@ def main(argv: list[str] | None = None) -> int:
         "(best combined with --company/--title to narrow to one)",
     )
     ap.add_argument(
+        "--show-communications",
+        action="store_true",
+        help="Print the full communications history (job_conversations — every inbound/outbound message "
+        "already archived by triage_recruiter_inbox.py/scan_communications.py/triage_imap_inbox.py) for "
+        "each matching lead, oldest first (best combined with --company/--title to narrow to one). For a "
+        "shareable PDF instead of a terminal dump, see scripts/export_communications.py.",
+    )
+    ap.add_argument(
         "--waiting",
         action="store_true",
         help="Only show leads currently awaiting a response (awaiting_response_since is set)",
@@ -184,6 +199,16 @@ def main(argv: list[str] | None = None) -> int:
         for r in rows:
             contacts_by_key[r["normalized_key"]] = [dict(c) for c in list_job_contacts(conn, r["normalized_key"])]
 
+    conversations_by_key: dict[str, list] = {}
+    contact_names_by_key: dict[str, dict[int, str]] = {}
+    if args.show_communications:
+        for r in rows:
+            key = r["normalized_key"]
+            conversations_by_key[key] = [dict(c) for c in list_job_conversations(conn, key)]
+            contact_names_by_key[key] = {
+                c["id"]: c["name"] or c["email"] or "(unnamed)" for c in list_job_contacts(conn, key) if c["id"] is not None
+            }
+
     conn.close()
 
     if not rows:
@@ -236,6 +261,27 @@ def main(argv: list[str] | None = None) -> int:
                 phone = f"  {c['phone']}" if c.get("phone") else ""
                 email = f"  {c['email']}" if c.get("email") else ""
                 print(f"  {c.get('name') or '(no name)'}{role}{email}{phone}")
+        return 0
+
+    if args.show_communications:
+        for i, r in enumerate(rows):
+            if i:
+                print("\n" + "=" * 70 + "\n")
+            print(f"{r['title']} @ {r['company']}")
+            conversations = conversations_by_key.get(r["normalized_key"], [])
+            if not conversations:
+                print("  (no communications archived for this lead)")
+                continue
+            contact_names = contact_names_by_key.get(r["normalized_key"], {})
+            for c in conversations:
+                arrow = "->" if c.get("direction") == "outbound" else "<-"
+                who = contact_names.get(c.get("contact_id"), "")
+                who_str = f"  {who}" if who else ""
+                print(f"\n  [{c.get('occurred_at') or '?'}] {arrow}{who_str}  ({c.get('channel') or 'email'})")
+                print(f"  {c.get('summary') or '(no subject)'}")
+                body = (c.get("body_text") or "").strip()
+                if body:
+                    print("  " + "\n  ".join(body.splitlines()))
         return 0
 
     header = (
