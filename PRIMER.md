@@ -198,6 +198,83 @@ generated package — Stage 4 is deliberately **not** automatic for every
 cover letter for everything the model calls "pursue" would spend real money
 on leads you might reject at a glance (bad location, stale posting, etc.).
 
+## Human playbook: what to do at each decision point
+
+The funnel section above describes what each dashboard box *means*. This is
+the follow-up: given a specific lead in front of you, what do you actually
+*do* — one short recipe per scenario, cross-referenced back to the exact
+commands above rather than repeating them.
+
+**Before deciding anything, check the lead's own history:**
+
+```bash
+python scripts/list_leads.py --company "Acme" --title "Software Engineer" --show-review          # the full stored verdict/dealbreaker sweep/skills alignment
+python scripts/list_leads.py --company "Acme" --title "Software Engineer" --show-communications   # every archived message, oldest first
+```
+
+(Or on `pending-actions.html` itself: click the 💬 badge next to the title
+for a one-click PDF of the same communications history — see
+`tools/view-communications/README.md`.) A nonzero 💬 count is not
+automatically a live conversation worth acting on — check it; LinkedIn/ATS
+job-alert digests get archived here too, not just real recruiter replies.
+
+**Box 3 — "Needs your decision" (`llm_verdict='review'`, `status='new'`, no
+package yet):**
+- **Pursue** → `python scripts/apply_package.py --company "..." --title "..." --force`
+  (`--force` because the LLM's own verdict wasn't literally "pursue" — see
+  Stage 4 below). This generates the package and lands the lead in box 2
+  instead of box 1, which is the intended signal that a human, not the
+  model, made this call.
+- **Pass** → `python scripts/list_leads.py --company "..." --title "..." --set-status skipped`
+
+**Box 2 — "Needs your decision (forced package)" (package already exists
+on a non-pursue verdict — someone already ran `--force`, possibly you, in
+an earlier session):**
+- **Submit anyway** → same as "I decided to submit" below.
+- **Pass** → `--set-status skipped`, same as above.
+
+**Box 5 — "JD unresolved" (`verdict='REVIEW NEEDED'`, no usable JD text):**
+Find the real posting (see "Resolving JDs for link-only digest leads"
+below), then ask the assistant to run the full chain against the text you
+found: store it as `jd_text` → free rescore (`no_llm_review.py --write`) →
+full LLM review if it clears the gate (`apply_package.py`). Don't bother if
+the lead already has `jd_resolved=1` and a stored `llm_verdict` — that
+means Stage 2's review already ran; only worth re-running if the JD you
+found is materially different from what's on file (check with
+`--show-jd-text` first).
+
+**Box 4 — "Awaiting full-LLM-review":** nothing to decide yet — either wait
+for the next hourly cycle, or force it now:
+```bash
+python scripts/apply_package.py --company "..." --title "..."   # no --force: respects both gates
+```
+
+**"I decided to submit an application":**
+1. Check the apply URL first — on the dashboard, the Apply button/link
+   already reads `apply_url` live; if it shows "No link" instead, tell the
+   assistant the URL you found so it can be added (there's no CLI flag for
+   this today — see Stage 4's "Which URL wins" note for how it's normally
+   captured automatically).
+2. Fill out and submit the application using the docx package already on
+   disk. Nothing to tell the assistant mid-way — there's no "in progress"
+   status in `LEAD_STAGES` (`package_generated` → `applied` is a direct
+   jump), so narrating "I'm starting" doesn't move anything.
+3. Once submitted: `python scripts/list_leads.py --company "..." --title "..." --set-status applied`
+   — do this even though a post-application confirmation email will often
+   auto-advance the status on its own (see below); the email can lag by
+   hours and you already know the real answer right now.
+
+**What's automatic now vs. what still needs you to say so (2026-07-22):**
+Once a lead is linked to an inbound reply — by `triage_recruiter_inbox.py`,
+`scan_communications.py`, or `triage_imap_inbox.py` — a rejection,
+"application received" confirmation, or interview invite in that message's
+text auto-advances `status` on its own (`pipeline/post_application.py`),
+respecting a forward-only guard so nothing already past that stage gets
+walked backward. This covers the passive case (a company/ATS emails you
+first); it does **not** cover you *deciding* to act (submitting, following
+up, withdrawing) — those are still always the human calling it, via
+`--set-status` as above.
+
 ## Stage 4 — Generate the targeted docx package (one lead at a time, by design)
 
 ```bash
