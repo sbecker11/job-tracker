@@ -20,6 +20,7 @@ def test_log_env_key_source_from_shell(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(job_tracker, "_PROJECT_ROOT_ENV", empty)
     monkeypatch.setattr(job_tracker, "_SHARED_ENV", empty)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "shell-key-xyz")
+    monkeypatch.setenv("JOB_TRACKER_LOG_ENV_SOURCE", "1")
     job_tracker._log_env_key_source("ANTHROPIC_API_KEY")
     out = capsys.readouterr().out
     assert "pre-existing shell/process environment" in out
@@ -33,6 +34,7 @@ def test_log_env_key_source_from_local(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(job_tracker, "_PROJECT_ROOT_ENV", local)
     monkeypatch.setattr(job_tracker, "_SHARED_ENV", shared)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "local-key-abc")  # pragma: allowlist secret
+    monkeypatch.setenv("JOB_TRACKER_LOG_ENV_SOURCE", "1")
     job_tracker._log_env_key_source("ANTHROPIC_API_KEY")
     out = capsys.readouterr().out
     assert "local .env" in out
@@ -46,6 +48,25 @@ def test_log_env_key_source_from_shared(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(job_tracker, "_PROJECT_ROOT_ENV", local)
     monkeypatch.setattr(job_tracker, "_SHARED_ENV", shared)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "shared-key-def")  # pragma: allowlist secret
+    monkeypatch.setenv("JOB_TRACKER_LOG_ENV_SOURCE", "1")
     job_tracker._log_env_key_source("ANTHROPIC_API_KEY")
     out = capsys.readouterr().out
     assert "shared .env" in out
+
+
+def test_log_env_key_source_quiet_by_default(monkeypatch, capsys, tmp_path):
+    """The success-path diagnostic is opt-in (JOB_TRACKER_LOG_ENV_SOURCE=1) —
+    quiet for interactive CLI use, since run_cycle.sh is the only caller that
+    actually needs it in a durable log (see job_tracker/__init__.py's
+    module docstring)."""
+    local = tmp_path / "local.env"
+    shared = tmp_path / "shared.env"
+    local.write_text("ANTHROPIC_API_KEY=local-key-abc\n")  # pragma: allowlist secret
+    shared.write_text("")
+    monkeypatch.setattr(job_tracker, "_PROJECT_ROOT_ENV", local)
+    monkeypatch.setattr(job_tracker, "_SHARED_ENV", shared)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "local-key-abc")  # pragma: allowlist secret
+    monkeypatch.delenv("JOB_TRACKER_LOG_ENV_SOURCE", raising=False)
+    job_tracker._log_env_key_source("ANTHROPIC_API_KEY")
+    out = capsys.readouterr().out
+    assert out == ""

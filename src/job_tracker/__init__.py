@@ -30,6 +30,14 @@ shared-.env fallback actually worked, instead of that only being answerable
 via an ad-hoc `python -c` check — and so a missing key surfaces here as a
 clear one-line warning instead of a confusing 401 deep inside whichever
 Anthropic call site hits it first.
+
+Gated behind `JOB_TRACKER_LOG_ENV_SOURCE=1` (added 2026-07-24) since printing
+this on every single interactive CLI invocation (list_leads, apply_package,
+etc.) turned out to be pure noise for a human running commands one at a
+time — the durable-log value described above only actually matters for the
+unattended hourly cycle, so `run_cycle.sh` sets the env var and everything
+else stays quiet by default. The missing-key WARNING below is NOT gated —
+that's an actionable error worth seeing regardless of context.
 """
 
 from __future__ import annotations
@@ -63,6 +71,8 @@ def _log_env_key_source(key: str) -> None:
     # present-but-blank entry in either file (which load_dotenv treats as
     # "already set" and won't let a later call override) can't be misreported
     # as the source when it actually contributed nothing.
+    if os.environ.get("JOB_TRACKER_LOG_ENV_SOURCE") != "1":
+        return
     if dotenv_values(_PROJECT_ROOT_ENV).get(key) == value:
         source = f"local .env ({_PROJECT_ROOT_ENV})"
     elif dotenv_values(_SHARED_ENV).get(key) == value:
