@@ -19,13 +19,21 @@ def main(argv: list[str] | None = None) -> int:
     ap = ArgumentParser(description="List tracked contacts (name, company, role, phone, email).")
     ap.add_argument("--db", type=Path, default=DEFAULT_DB_PATH, help=f"Leads DB path (default: {DEFAULT_DB_PATH})")
     ap.add_argument("--company", help="Filter to companies containing this text (case-insensitive)")
+    ap.add_argument(
+        "--contact",
+        help=(
+            "Filter to a contact by name, email, or phone (case-insensitive substring match) — "
+            "e.g. --contact 'Cole Keener' or --contact crbworkforce.com to look someone up when "
+            "they call, and see every lead they're attached to."
+        ),
+    )
     ap.add_argument("--csv", type=Path, help="Write results to this CSV path instead of printing")
     ap.add_argument("--json", action="store_true", help="Print JSON instead of a table")
     args = ap.parse_args(argv)
 
     conn = connect(args.db)
     try:
-        rows = [dict(r) for r in list_all_contacts(conn, company=args.company)]
+        rows = [dict(r) for r in list_all_contacts(conn, company=args.company, contact=args.contact)]
     finally:
         conn.close()
 

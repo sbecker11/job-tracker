@@ -478,6 +478,33 @@ _TEMPLATE = r"""<!DOCTYPE html>
   thead th[data-sort]:hover { color: var(--text); }
   thead th[data-sort].sorted { color: var(--text); }
   thead th[data-sort] .arrow { color: var(--accent); margin-left: 3px; }
+  /* Instant-hover icon tooltip for icon-only headers (2026-07-24) — a plain
+     `title` attribute works too, but browsers impose their own ~1s hover
+     delay before showing it. This uses a `data-tooltip` attribute + a CSS
+     ::after with no transition, so it appears the instant you hover instead
+     of after a pause. */
+  th.icon-header { text-align: center; cursor: default; position: relative; }
+  th.icon-header[data-tooltip]::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    margin-top: 6px;
+    padding: 4px 8px;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 400;
+    white-space: nowrap;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    z-index: 10;
+  }
+  th.icon-header[data-tooltip]:hover::after { opacity: 1; visibility: visible; }
   td.age { color: var(--text-secondary); }
   td.age.stale { color: var(--warning); font-weight: 600; }
   tbody tr { border-bottom: 1px solid var(--border); }
@@ -659,6 +686,8 @@ _TEMPLATE = r"""<!DOCTYPE html>
         <input type="checkbox" id="auto-refresh-toggle" />
         Auto-refresh <span class="auto-refresh-status" id="auto-refresh-status"></span>
       </label>
+      <a class="regen-btn" id="contacts-link" href="contacts.html"
+         title="Static contacts lookup (scripts/render_contacts.py) — search any recruiter/hiring manager by name, company, phone, or email">Contacts lookup</a>
       <span class="regen-spinner" id="regen-spinner" hidden aria-hidden="true"></span>
       <button class="regen-btn" id="regen-btn"
          title="Re-run scripts/render_pending_actions.py (via local RefreshPending helper), then reload this same tab">Regenerate page</button>
@@ -686,7 +715,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
-          <thead><tr><th>Company</th><th>Title</th><th class="num">Match %</th><th class="num">Age (days)</th><th></th><th>Apply</th></tr></thead>
+          <thead><tr><th>Company</th><th>Title</th><th class="num">Match %</th><th class="num">Age (days)</th><th class="icon-header" data-tooltip="direct_recruiter_outreach">⭐</th><th>Apply</th></tr></thead>
           <tbody id="ready-to-apply-body"></tbody>
         </table>
       </div>
@@ -706,7 +735,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
-          <thead><tr><th>Company</th><th>Title</th><th>Verdict</th><th class="num">Match %</th><th class="num">Age (days)</th><th></th></tr></thead>
+          <thead><tr><th>Company</th><th>Title</th><th>Verdict</th><th class="num">Match %</th><th class="num">Age (days)</th><th class="icon-header" data-tooltip="direct_recruiter_outreach">⭐</th></tr></thead>
           <tbody id="needs-decision-forced-body"></tbody>
         </table>
       </div>
@@ -735,7 +764,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
               <th class="num" data-sort="matchPct">Match %</th>
               <th data-sort="verdict">Verdict</th>
               <th class="num" data-sort="ageDays">Age (days)</th>
-              <th></th>
+              <th class="icon-header" data-tooltip="direct_recruiter_outreach">⭐</th>
               <th>Priority</th>
               <th>Action</th>
             </tr>
@@ -763,7 +792,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
-          <thead><tr><th>Company</th><th>Title</th><th class="num">Match %</th><th class="num">Age (days)</th><th></th></tr></thead>
+          <thead><tr><th>Company</th><th>Title</th><th class="num">Match %</th><th class="num">Age (days)</th><th class="icon-header" data-tooltip="direct_recruiter_outreach">⭐</th></tr></thead>
           <tbody id="awaiting-llm-review-body"></tbody>
         </table>
       </div>
@@ -782,7 +811,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
-          <thead><tr><th>Company</th><th>Title</th><th class="num">Age (days)</th><th></th></tr></thead>
+          <thead><tr><th>Company</th><th>Title</th><th class="num">Age (days)</th><th class="icon-header" data-tooltip="direct_recruiter_outreach">⭐</th></tr></thead>
           <tbody id="jd-unresolved-body"></tbody>
         </table>
       </div>

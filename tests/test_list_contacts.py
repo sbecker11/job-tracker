@@ -67,3 +67,67 @@ def test_list_contacts_handles_no_matches(seeded_db: Path, capsys):
     rc = list_contacts_main(["--db", str(seeded_db), "--company", "nonexistent"])
     assert rc == 0
     assert "No matching contacts" in capsys.readouterr().out
+
+
+def test_list_contacts_filters_by_contact_name(seeded_db: Path, capsys):
+    rc = list_contacts_main(["--db", str(seeded_db), "--contact", "jane doe"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Jane Doe" in out
+    assert "John Roe" not in out
+
+
+def test_list_contacts_filters_by_contact_email(seeded_db: Path, capsys):
+    rc = list_contacts_main(["--db", str(seeded_db), "--contact", "john@globex.com"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "John Roe" in out
+    assert "Jane Doe" not in out
+
+
+def test_list_contacts_filters_by_contact_phone(seeded_db: Path, capsys):
+    rc = list_contacts_main(["--db", str(seeded_db), "--contact", "555-1111"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Jane Doe" in out
+    assert "John Roe" not in out
+
+
+def test_list_contacts_by_contact_surfaces_every_related_lead(tmp_path: Path, capsys):
+    """The 'a recruiter I've worked with before just called' lookup: one
+    recruiter sourced two different leads, and looking them up by name
+    should surface both, not just the most recent."""
+    db_path = tmp_path / "leads.db"
+    conn = connect(db_path)
+    initech = JobLead(company="Initech", title="Backend Engineer", source_message_id="m3", source_label="single-jd")
+    hooli = JobLead(company="Hooli", title="Platform Engineer", source_message_id="m4", source_label="single-jd")
+    upsert_lead(conn, initech)
+    upsert_lead(conn, hooli)
+    add_job_contact(
+        conn,
+        JobContact(
+            job_key=initech.normalized_key,
+            name="Cole Keener",
+            email="cole@crbworkforce.com",
+            phone="530-722-7548",
+            role="recruiter",
+        ),
+    )
+    add_job_contact(
+        conn,
+        JobContact(
+            job_key=hooli.normalized_key,
+            name="Cole Keener",
+            email="cole@crbworkforce.com",
+            phone="530-722-7548",
+            role="recruiter",
+        ),
+    )
+    conn.close()
+
+    rc = list_contacts_main(["--db", str(db_path), "--contact", "Cole Keener"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Initech" in out
+    assert "Hooli" in out
+    assert out.count("Cole Keener") == 2

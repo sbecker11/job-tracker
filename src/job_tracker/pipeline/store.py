@@ -1028,21 +1028,37 @@ def list_job_contacts(conn: sqlite3.Connection, job_key: str) -> list[sqlite3.Ro
     )
 
 
-def list_all_contacts(conn: sqlite3.Connection, *, company: str | None = None) -> list[sqlite3.Row]:
+def list_all_contacts(
+    conn: sqlite3.Connection, *, company: str | None = None, contact: str | None = None
+) -> list[sqlite3.Row]:
     """Every JobContact across every job, joined with the job's own
     company/title — the basis for `list_contacts.py`'s report, since
-    `job_contacts` alone has no company column (it's implicit via job_key)."""
+    `job_contacts` alone has no company column (it's implicit via job_key).
+
+    `contact` (added 2026-07-24) matches against the contact's own name,
+    email, or phone — the "a recruiter I've worked with before just called,
+    who are they and what have we got going with them" lookup. Since one
+    JobContact row exists per job_key the person is attached to, a recruiter
+    who's sourced multiple leads naturally surfaces every one of them here
+    rather than needing a separate join per company."""
     sql = """
         SELECT jc.*, jl.company AS job_company, jl.title AS job_title
         FROM job_contacts jc
         JOIN job_leads jl ON jl.normalized_key = jc.job_key
     """
-    params: tuple = ()
+    clauses: list[str] = []
+    params: list[str] = []
     if company:
-        sql += " WHERE lower(jl.company) LIKE ?"
-        params = (f"%{company.lower()}%",)
+        clauses.append("lower(jl.company) LIKE ?")
+        params.append(f"%{company.lower()}%")
+    if contact:
+        clauses.append("(lower(jc.name) LIKE ? OR lower(jc.email) LIKE ? OR jc.phone LIKE ?)")
+        needle = f"%{contact.lower()}%"
+        params.extend([needle, needle, f"%{contact}%"])
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
     sql += " ORDER BY jl.company ASC, jc.first_contacted_at ASC"
-    return list(conn.execute(sql, params))
+    return list(conn.execute(sql, tuple(params)))
 
 
 def add_job_conversation(
