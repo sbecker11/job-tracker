@@ -73,6 +73,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 from job_tracker.email import gmail_writer
@@ -259,7 +260,25 @@ def main(argv: list[str] | None = None) -> int:
         "résumé/cover letter on 'pursue', then relabel PURSUE/SKIP/NEEDS_REVIEW and archive."
     )
     ap.add_argument("--query", default=DEFAULT_QUERY, help=f"Gmail search query (default: {DEFAULT_QUERY!r})")
-    ap.add_argument("--limit", type=int, help="Max messages to process this run")
+    ap.add_argument(
+        "--inbox-batch-message-cap",
+        type=int,
+        default=None,
+        help=(
+            "Max messages to start this run (Gmail list fetch + loop cap). "
+            "Combined with --inbox-batch-wall-budget-secs: stop when either bound is hit."
+        ),
+    )
+    ap.add_argument(
+        "--inbox-batch-wall-budget-secs",
+        type=int,
+        default=None,
+        help=(
+            "Soft wall-clock budget for this run (seconds). Before each new message, if "
+            "elapsed time has reached this budget, stop cleanly (exit 0) and leave remaining "
+            "mail for the next cycle. Does not HALT the schedule. Omit for no time budget."
+        ),
+    )
     ap.add_argument("--newer-than", type=int, metavar="DAYS")
     ap.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Anthropic model id/alias (default: {DEFAULT_MODEL})")
@@ -369,7 +388,7 @@ def main(argv: list[str] | None = None) -> int:
     query = args.query
     if args.newer_than:
         query = f"{query} newer_than:{args.newer_than}d"
-    message_ids = list_message_ids(service, query=query, limit=args.limit)
+    message_ids = list_message_ids(service, query=query, limit=args.inbox_batch_message_cap)
 
     if not message_ids:
         print("No messages matched the query.", file=sys.stderr)
@@ -381,6 +400,8 @@ def main(argv: list[str] | None = None) -> int:
     skipped_already_processed = 0
     linked_to_existing_count = 0
     errored_message_ids: list[str] = []
+    stopped_for_wall_budget = False
+    batch_started_at = time.monotonic()
 
     # Resolve every outcome label id once up front (not just the one this
     # message ends up with) so a --force re-triage can strip a stale
@@ -397,7 +418,21 @@ def main(argv: list[str] | None = None) -> int:
         linked_label_id = gmail_writer.get_or_create_label(service, gmail_writer.LINKED_LABEL)
 
     try:
+        # Dual bound: message list is already capped by inbox_batch_message_cap;
+        # wall budget stops mid-list cleanly so a heavy LLM batch does not trip
+        # recruiting-automation's hard step_stall_kill (HALT).
         for message_id in message_ids:
+            if args.inbox_batch_wall_budget_secs is not None:
+                elapsed = time.monotonic() - batch_started_at
+                if elapsed >= args.inbox_batch_wall_budget_secs:
+                    print(
+                        f"Stopping: inbox_batch_wall_budget_secs "
+                        f"({args.inbox_batch_wall_budget_secs}s) reached after {elapsed:.0f}s; "
+                        f"remaining messages deferred to next run.",
+                        file=sys.stderr,
+                    )
+                    stopped_for_wall_budget = True
+                    break
             if not args.dry_run:
                 if args.force_since:
                     last_processed = processed_at(conn, message_id)
@@ -584,6 +619,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if skipped_already_processed:
         print(f"\n(skipped {skipped_already_processed} message(s) already triaged in a prior run)", file=sys.stderr)
+
+    if stopped_for_wall_budget:
+        print(
+            "\n(stopped early for inbox_batch_wall_budget_secs — exit 0; schedule should keep running)",
+            file=sys.stderr,
+        )
 
     if linked_to_existing_count:
         print(

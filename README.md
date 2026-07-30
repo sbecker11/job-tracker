@@ -262,11 +262,11 @@ the existing readonly token and needs no new consent.
 ```bash
 # Preview: LLM-score every unlabeled Category/recruiter_job message, generate
 # packages for pursue verdicts, but never touch Gmail or the DB
-python scripts/triage_recruiter_inbox.py --dry-run --limit 10
+python scripts/triage_recruiter_inbox.py --dry-run --inbox-batch-message-cap 10
 
 # For real: also relabels JobTracker/PURSUE|SKIP|NEEDS_REVIEW and archives
 # (first run without --dry-run opens the gmail.modify consent screen above)
-python scripts/triage_recruiter_inbox.py --limit 10
+python scripts/triage_recruiter_inbox.py --inbox-batch-message-cap 10
 
 # Score only, never spend on résumé/cover-letter generation even on a pursue verdict
 python scripts/triage_recruiter_inbox.py --no-generate

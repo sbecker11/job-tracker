@@ -167,6 +167,45 @@ def test_triage_skips_already_processed(monkeypatch, mock_gmail, tmp_path: Path,
     assert "already triaged" in capsys.readouterr().err
 
 
+def test_triage_stops_cleanly_when_wall_budget_exhausted(monkeypatch, mock_gmail, tmp_path: Path, capsys):
+    """Soft wall budget: exit 0 mid-batch; remaining messages stay for next run."""
+    triaged: list[str] = []
+    clock = {"t": 0.0}
+
+    monkeypatch.setattr(triage_cli.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(triage_cli, "list_message_ids", lambda *a, **k: ["msg-1", "msg-2", "msg-3"])
+
+    def fetch(service, mid):
+        return _msg(mid)
+
+    def triage_message(message, **kwargs):
+        triaged.append(message.id)
+        clock["t"] += 10.0  # each message burns 10s of wall budget
+        return _result(mid=message.id, roles=[_role()])
+
+    monkeypatch.setattr(triage_cli, "fetch_message", fetch)
+    monkeypatch.setattr(triage_cli, "triage_message", triage_message)
+
+    rc = triage_main(
+        [
+            "--dry-run",
+            "--db",
+            str(tmp_path / "leads.db"),
+            "--inbox-batch-message-cap",
+            "30",
+            "--inbox-batch-wall-budget-secs",
+            "15",
+        ]
+    )
+    assert rc == 0
+    # msg-1 at t=0, finishes at t=10; msg-2 starts at t=10 (<15), finishes at t=20;
+    # msg-3 would start at t=20 (>=15) and must not run.
+    assert triaged == ["msg-1", "msg-2"]
+    err = capsys.readouterr().err
+    assert "inbox_batch_wall_budget_secs" in err
+    assert "stopped early" in err
+
+
 def test_triage_error_continues(monkeypatch, mock_gmail, tmp_path: Path, capsys):
     monkeypatch.setattr(triage_cli, "list_message_ids", lambda *a, **k: ["bad", "good"])
     monkeypatch.setattr(

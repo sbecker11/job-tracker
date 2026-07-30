@@ -56,6 +56,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 from job_tracker.cli.scan_communications import (
@@ -342,7 +343,25 @@ def main(argv: list[str] | None = None) -> int:
         help="Env var prefix for <PREFIX>_IMAP_HOST/PORT/USER/PASSWORD (default: SPEXTURE)",
     )
     ap.add_argument("--folder", default="INBOX", help="IMAP folder to scan (default: INBOX)")
-    ap.add_argument("--limit", type=int, help="Max messages to process this run")
+    ap.add_argument(
+        "--inbox-batch-message-cap",
+        type=int,
+        default=None,
+        help=(
+            "Max messages to start this run (IMAP list + loop cap). "
+            "Combined with --inbox-batch-wall-budget-secs: stop when either bound is hit."
+        ),
+    )
+    ap.add_argument(
+        "--inbox-batch-wall-budget-secs",
+        type=int,
+        default=None,
+        help=(
+            "Soft wall-clock budget for this run (seconds). Before each new message, if "
+            "elapsed time has reached this budget, stop cleanly (exit 0) and leave remaining "
+            "mail for the next cycle. Does not HALT the schedule. Omit for no time budget."
+        ),
+    )
     ap.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Anthropic model id/alias (default: {DEFAULT_MODEL})")
     ap.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
@@ -376,7 +395,7 @@ def main(argv: list[str] | None = None) -> int:
 
     account = ImapAccount.from_env(args.imap_prefix)
     imap_conn = connect(account)
-    uids = list_message_uids(imap_conn, folder=args.folder, criteria="ALL", limit=args.limit)
+    uids = list_message_uids(imap_conn, folder=args.folder, criteria="ALL", limit=args.inbox_batch_message_cap)
 
     if not uids:
         print("No messages in this folder.", file=sys.stderr)
@@ -389,13 +408,29 @@ def main(argv: list[str] | None = None) -> int:
     skipped_already_processed = 0
     linked_to_existing_count = 0
     errored_uids: list[str] = []
+    stopped_for_wall_budget = False
+    batch_started_at = time.monotonic()
 
     if not args.dry_run:
         for folder in list(_OUTCOME_FOLDERS.values()) + [_LINKED_FOLDER, _NEEDS_FOLLOWUP_FOLDER]:
             ensure_folder(imap_conn, folder)
 
     try:
+        # Dual bound: UID list is already capped by inbox_batch_message_cap;
+        # wall budget stops mid-list cleanly so a heavy LLM batch does not trip
+        # recruiting-automation's hard step_stall_kill (HALT).
         for uid in uids:
+            if args.inbox_batch_wall_budget_secs is not None:
+                elapsed = time.monotonic() - batch_started_at
+                if elapsed >= args.inbox_batch_wall_budget_secs:
+                    print(
+                        f"Stopping: inbox_batch_wall_budget_secs "
+                        f"({args.inbox_batch_wall_budget_secs}s) reached after {elapsed:.0f}s; "
+                        f"remaining messages deferred to next run.",
+                        file=sys.stderr,
+                    )
+                    stopped_for_wall_budget = True
+                    break
             try:
                 message = fetch_message(imap_conn, uid, folder=args.folder)
             except Exception as exc:
@@ -539,6 +574,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if skipped_already_processed:
         print(f"\n(skipped {skipped_already_processed} message(s) already triaged in a prior run)", file=sys.stderr)
+
+    if stopped_for_wall_budget:
+        print(
+            "\n(stopped early for inbox_batch_wall_budget_secs — exit 0; schedule should keep running)",
+            file=sys.stderr,
+        )
     if linked_to_existing_count:
         print(
             f"\n(linked {linked_to_existing_count} message(s) to an existing tracked lead via thread/contact "
