@@ -196,6 +196,121 @@ def test_triage_imap_existing_lead_interview_invite_advances_status(monkeypatch,
     conn.close()
 
 
+def test_triage_imap_rejection_fallback_matches_untracked_thread_and_marks_rejected(
+    monkeypatch, mock_imap, tmp_path: Path, capsys
+):
+    """2026-07-31 fix, mirroring triage_recruiter_inbox.py's identical bug: a
+    rejection email with no existing thread/contact on file must not
+    silently vanish as an ordinary SKIP just because it arrived via IMAP
+    (shawn.becker@spexture.com) instead of Gmail."""
+    db = tmp_path / "leads.db"
+    conn = connect(db)
+    lead = JobLead(
+        company="Pattern",
+        title="Senior Software Engineer - Backend",
+        source_message_id="imap:<msg-0>",
+        source_label="single-jd",
+    )
+    upsert_lead(conn, lead)
+    job_key = lead.normalized_key
+    conn.execute("UPDATE job_leads SET status = 'applied' WHERE normalized_key = ?", (job_key,))
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(imap_cli, "list_message_uids", lambda *a, **k: ["1"])
+    monkeypatch.setattr(
+        imap_cli,
+        "fetch_message",
+        lambda *a, **k: _msg(
+            "imap:<msg-1>",
+            from_address="no-reply@hire.lever.co",
+            body_plain="Unfortunately, we've decided to move forward with other candidates.",
+        ),
+    )
+    monkeypatch.setattr(
+        imap_cli,
+        "triage_message",
+        lambda *a, **k: MessageTriageResult(
+            message_id="imap:<msg-1>",
+            subject="Senior Software Engineer - Backend @ Pattern",
+            from_address="no-reply@hire.lever.co",
+            outcome=SKIP,
+            reason="classified as rejection",
+            classifier_label="rejection",
+            roles=[],
+            extraction_complete=True,
+        ),
+    )
+
+    def fake_match_message_to_job(conn, message, *, direction="inbound", use_llm_fallback=False, llm_model=None):
+        if use_llm_fallback:
+            return MatchOutcome(job_key, "llm_company_title", "matched")
+        return MatchOutcome(None, "unmatched", "no match")
+
+    monkeypatch.setattr(imap_cli, "match_message_to_job", fake_match_message_to_job)
+
+    rc = imap_main(["--db", str(db), "--llm-fallback"])
+    assert rc == 0
+    assert "post-application signal (rejection fallback match): status -> rejected" in capsys.readouterr().out
+
+    conn = connect(db)
+    row = conn.execute("SELECT status FROM job_leads WHERE normalized_key = ?", (job_key,)).fetchone()
+    assert row["status"] == "rejected"
+    convo = conn.execute("SELECT job_key FROM job_conversations WHERE message_id = 'imap:<msg-1>'").fetchone()
+    assert convo["job_key"] == job_key
+    conn.close()
+
+
+def test_triage_imap_rejection_fallback_noop_without_llm_fallback_flag(monkeypatch, mock_imap, tmp_path: Path, capsys):
+    """Without --llm-fallback, a fresh rejection with no thread/contact match
+    stays a plain SKIP — no paid LLM call is made."""
+    db = tmp_path / "leads.db"
+    conn = connect(db)
+    lead = JobLead(
+        company="Pattern",
+        title="Senior Software Engineer - Backend",
+        source_message_id="imap:<msg-0>",
+        source_label="single-jd",
+    )
+    upsert_lead(conn, lead)
+    job_key = lead.normalized_key
+    conn.execute("UPDATE job_leads SET status = 'applied' WHERE normalized_key = ?", (job_key,))
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(imap_cli, "list_message_uids", lambda *a, **k: ["1"])
+    monkeypatch.setattr(imap_cli, "fetch_message", lambda *a, **k: _msg("imap:<msg-1>", from_address="no-reply@hire.lever.co"))
+    monkeypatch.setattr(
+        imap_cli,
+        "triage_message",
+        lambda *a, **k: MessageTriageResult(
+            message_id="imap:<msg-1>",
+            subject="s",
+            from_address="no-reply@hire.lever.co",
+            outcome=SKIP,
+            reason="classified as rejection",
+            classifier_label="rejection",
+            roles=[],
+            extraction_complete=True,
+        ),
+    )
+
+    def fail_if_llm_fallback_requested(conn, message, *, direction="inbound", use_llm_fallback=False, llm_model=None):
+        assert not use_llm_fallback, "must never request the paid LLM fallback without --llm-fallback"
+        return MatchOutcome(None, "unmatched", "no match")
+
+    monkeypatch.setattr(imap_cli, "match_message_to_job", fail_if_llm_fallback_requested)
+
+    rc = imap_main(["--db", str(db)])
+    assert rc == 0
+    assert "post-application signal" not in capsys.readouterr().out
+
+    conn = connect(db)
+    row = conn.execute("SELECT status FROM job_leads WHERE normalized_key = ?", (job_key,)).fetchone()
+    assert row["status"] == "applied"
+    conn.close()
+
+
 def test_triage_imap_linkedin_reply_matched_existing_lead(monkeypatch, mock_imap, tmp_path: Path, capsys):
     """hit-reply@linkedin.com mail with a thread/contact match is handled by
     the LinkedIn-reply branch, not the generic classify()/triage_message()

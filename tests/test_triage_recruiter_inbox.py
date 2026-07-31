@@ -553,6 +553,131 @@ def test_triage_link_dry_run_writes_nothing(monkeypatch, mock_gmail, tmp_path: P
     conn.close()
 
 
+def test_triage_rejection_fallback_matches_untracked_thread_and_marks_rejected(
+    monkeypatch, mock_gmail, tmp_path: Path, capsys
+):
+    """2026-07-31 fix: a rejection email for a lead with no existing thread/
+    contact on file (the common ATS-only case — applied via a web form, no
+    prior email correspondence, so the free Tier-1/2 match in the main loop
+    fails) must not silently vanish as an ordinary SKIP. Regression test for
+    the live incident where Pattern, Solace, Lightspeed DMS, Kiddom, and
+    OpenTeams rejections all sat unprocessed because pipeline.triage._decide()
+    short-circuits Label.REJECTION straight to SKIP with zero lead-matching —
+    fixed via a second, paid LLM-fallback match attempt specifically for
+    messages the classifier already labeled 'rejection'."""
+    db = tmp_path / "leads.db"
+    conn = connect(db)
+    lead = JobLead(
+        company="Pattern", title="Senior Software Engineer - Backend", source_message_id="msg-0", source_label="single-jd"
+    )
+    upsert_lead(conn, lead)
+    job_key = lead.normalized_key
+    conn.execute("UPDATE job_leads SET status = 'applied' WHERE normalized_key = ?", (job_key,))
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(triage_cli, "list_message_ids", lambda *a, **k: ["msg-1"])
+    monkeypatch.setattr(
+        triage_cli,
+        "fetch_message",
+        lambda *a, **k: _msg(
+            "msg-1",
+            from_address="no-reply@hire.lever.co",
+            body_plain="Unfortunately, we've decided to move forward with other candidates.",
+        ),
+    )
+    # What the real pipeline.triage._decide() produces for a fresh
+    # Label.REJECTION message: SKIP, zero extracted roles, classifier_label
+    # "rejection" — the free Tier-1/2 match already failed by the time we get
+    # here, hence no roles/lead of its own.
+    monkeypatch.setattr(
+        triage_cli,
+        "triage_message",
+        lambda *a, **k: MessageTriageResult(
+            message_id="msg-1",
+            subject="Senior Software Engineer - Backend @ Pattern",
+            from_address="no-reply@hire.lever.co",
+            outcome=SKIP,
+            reason="classified as rejection: subject/body: move forward with other candidate",
+            classifier_label="rejection",
+            roles=[],
+            extraction_complete=True,
+        ),
+    )
+
+    def fake_match_message_to_job(conn, message, *, direction="inbound", use_llm_fallback=False, llm_model=None):
+        if use_llm_fallback:
+            return SimpleNamespace(matched=True, job_key=job_key, tier="llm_company_title", extracted_role=None)
+        return SimpleNamespace(matched=False, job_key=None, tier="unmatched")
+
+    monkeypatch.setattr(triage_cli, "match_message_to_job", fake_match_message_to_job)
+    monkeypatch.setattr(triage_cli.gmail_writer, "get_or_create_label", lambda service, label: f"id-{label}")
+    monkeypatch.setattr(triage_cli.gmail_writer, "find_label_id", lambda *a, **k: None)
+    monkeypatch.setattr(triage_cli.gmail_writer, "label_and_archive", lambda *a, **k: None)
+
+    rc = triage_main(["--db", str(db), "--llm-fallback"])
+    assert rc == 0
+    assert "post-application signal (rejection fallback match): status -> rejected" in capsys.readouterr().out
+
+    conn = connect(db)
+    row = conn.execute("SELECT status FROM job_leads WHERE normalized_key = ?", (job_key,)).fetchone()
+    assert row["status"] == "rejected"
+    convo = conn.execute("SELECT job_key FROM job_conversations WHERE message_id = 'msg-1'").fetchone()
+    assert convo["job_key"] == job_key
+    conn.close()
+
+
+def test_triage_rejection_fallback_noop_without_llm_fallback_flag(monkeypatch, mock_gmail, tmp_path: Path, capsys):
+    """Without --llm-fallback, a fresh rejection with no thread/contact match
+    stays a plain SKIP — no paid LLM call is made, matching the free-by-
+    default behavior everywhere else in this script."""
+    db = tmp_path / "leads.db"
+    conn = connect(db)
+    lead = JobLead(
+        company="Pattern", title="Senior Software Engineer - Backend", source_message_id="msg-0", source_label="single-jd"
+    )
+    upsert_lead(conn, lead)
+    job_key = lead.normalized_key
+    conn.execute("UPDATE job_leads SET status = 'applied' WHERE normalized_key = ?", (job_key,))
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(triage_cli, "list_message_ids", lambda *a, **k: ["msg-1"])
+    monkeypatch.setattr(triage_cli, "fetch_message", lambda *a, **k: _msg("msg-1", from_address="no-reply@hire.lever.co"))
+    monkeypatch.setattr(
+        triage_cli,
+        "triage_message",
+        lambda *a, **k: MessageTriageResult(
+            message_id="msg-1",
+            subject="s",
+            from_address="no-reply@hire.lever.co",
+            outcome=SKIP,
+            reason="classified as rejection",
+            classifier_label="rejection",
+            roles=[],
+            extraction_complete=True,
+        ),
+    )
+
+    def fail_if_llm_fallback_requested(conn, message, *, direction="inbound", use_llm_fallback=False, llm_model=None):
+        assert not use_llm_fallback, "must never request the paid LLM fallback without --llm-fallback"
+        return SimpleNamespace(matched=False, job_key=None, tier="unmatched")
+
+    monkeypatch.setattr(triage_cli, "match_message_to_job", fail_if_llm_fallback_requested)
+    monkeypatch.setattr(triage_cli.gmail_writer, "get_or_create_label", lambda service, label: f"id-{label}")
+    monkeypatch.setattr(triage_cli.gmail_writer, "find_label_id", lambda *a, **k: None)
+    monkeypatch.setattr(triage_cli.gmail_writer, "label_and_archive", lambda *a, **k: None)
+
+    rc = triage_main(["--db", str(db)])
+    assert rc == 0
+    assert "post-application signal" not in capsys.readouterr().out
+
+    conn = connect(db)
+    row = conn.execute("SELECT status FROM job_leads WHERE normalized_key = ?", (job_key,)).fetchone()
+    assert row["status"] == "applied"  # untouched
+    conn.close()
+
+
 def test_triage_pass_verdict_advances_skipped(monkeypatch, mock_gmail, tmp_path: Path):
     db = tmp_path / "leads.db"
     monkeypatch.setattr(triage_cli, "list_message_ids", lambda *a, **k: ["msg-1"])

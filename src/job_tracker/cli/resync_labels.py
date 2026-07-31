@@ -127,8 +127,20 @@ def main(argv: list[str] | None = None) -> int:
 
         checked = 0
         changed = 0
+        skipped_non_gmail = 0
         for entry in processed:
             message_id = entry["message_id"]
+            # IMAP-sourced messages (spexture.com mailbox, or LinkedIn replies
+            # ingested via IMAP) are namespaced "imap:<Message-Id>" or
+            # "imap-uid:<folder>:<uid>" by imap_reader.parse_rfc822_message —
+            # see triage_imap_inbox.py's module docstring. They were never
+            # Gmail-labeled in the first place, so passing one to Gmail's
+            # messages.modify 400s with "Invalid id value" (verified live
+            # 2026-07-30, tripped the HALT sentinel). Nothing to resync here;
+            # skip before it ever reaches the Gmail API.
+            if message_id.startswith("imap:") or message_id.startswith("imap-uid:"):
+                skipped_non_gmail += 1
+                continue
             lead_rows = get_lead_labeling_info(conn, entry["lead_keys"])
             if not lead_rows:
                 # Every linked lead has since been deleted — nothing left to
@@ -157,7 +169,11 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         verb = "would need relabeling" if args.dry_run else "were relabeled"
-        print(f"\nChecked {checked} triaged message(s) with linked leads: {changed} {verb}.", file=sys.stderr)
+        print(
+            f"\nChecked {checked} triaged message(s) with linked leads: {changed} {verb} "
+            f"({skipped_non_gmail} IMAP-sourced message(s) skipped — not Gmail-labeled).",
+            file=sys.stderr,
+        )
     finally:
         conn.close()
 

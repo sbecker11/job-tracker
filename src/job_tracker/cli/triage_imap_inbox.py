@@ -513,6 +513,38 @@ def main(argv: list[str] | None = None) -> int:
                 continue
 
             lead_keys = []
+
+            # Rejection-for-an-untracked-thread fallback (2026-07-31) — mirrors
+            # triage_recruiter_inbox.py's identical fix. pipeline.triage._decide()
+            # short-circuits Label.REJECTION straight to SKIP with zero
+            # lead-matching (see triage.py's _SKIP_LABELS), which is wrong when
+            # the free Tier-1/2 match above already failed (no thread/contact on
+            # file) even though a real, already-applied lead exists for it.
+            if result.classifier_label == "rejection" and args.llm_fallback:
+                fallback_outcome = match_message_to_job(
+                    conn, message, direction="inbound", use_llm_fallback=True, llm_model=args.llm_extraction_model
+                )
+                if fallback_outcome.matched:
+                    post_app = classify_post_application(message.combined_text)
+                    post_app_action = apply_post_application_signal(
+                        conn, fallback_outcome.job_key, post_app, message_id=message.id, email_text=message.combined_text
+                    )
+                    if post_app_action:
+                        print(f"    post-application signal (rejection fallback match): {post_app_action}")
+                    add_job_conversation(
+                        conn,
+                        JobConversation(
+                            job_key=fallback_outcome.job_key,
+                            message_id=message.id,
+                            channel="email",
+                            direction="inbound",
+                            summary=result.subject,
+                            thread_id=message.thread_id,
+                            body_text=message.combined_text,
+                        ),
+                    )
+                    lead_keys.append(fallback_outcome.job_key)
+
             for role_outcome in result.roles:
                 upsert_lead(conn, role_outcome.lead)
                 key = role_outcome.lead.normalized_key

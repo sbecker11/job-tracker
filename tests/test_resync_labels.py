@@ -178,3 +178,33 @@ def test_no_triaged_messages_returns_cleanly(mock_gmail, seeded_db: Path):
     rc = resync_main(["--db", str(seeded_db)])
     assert rc == 0
     assert service.modify_calls == []
+
+
+def test_imap_sourced_message_is_skipped_without_calling_gmail_modify(mock_gmail, seeded_db: Path, capsys):
+    """Live bug 2026-07-30: a message ingested via triage_imap_inbox.py is
+    namespaced 'imap:<Message-Id>' (or 'imap-uid:<folder>:<uid>') and was
+    never Gmail-labeled in the first place — passing it to Gmail's
+    messages.modify 400s with 'Invalid id value' and trips the HALT
+    sentinel. resync_labels.py must recognize and skip both id shapes before
+    ever reaching the Gmail API, even though its verdict genuinely changed."""
+    key = _key("Tractable", "Senior SWE")
+    conn = connect(seeded_db)
+    record_message_processed(
+        conn,
+        "imap:<2053778989.3760674.1785362890796@lor1-app122084.prod.linkedin.com>",
+        outcome="SKIP",
+        lead_keys=[key],
+        label_applied=gmail_writer.SKIP_LABEL,
+    )
+    record_message_processed(
+        conn, "imap-uid:INBOX:42", outcome="SKIP", lead_keys=[key], label_applied=gmail_writer.SKIP_LABEL
+    )
+    conn.execute("UPDATE job_leads SET llm_verdict = 'pursue' WHERE normalized_key = ?", (key,))
+    conn.commit()
+    conn.close()
+
+    service = mock_gmail(_FakeGmailService({}))
+    rc = resync_main(["--db", str(seeded_db)])
+    assert rc == 0
+    assert service.modify_calls == []
+    assert "2 IMAP-sourced message(s) skipped" in capsys.readouterr().err
