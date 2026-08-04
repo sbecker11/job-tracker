@@ -66,6 +66,16 @@ with no thread/contact match at all — genuinely new, independent content —
 go through the normal PURSUE/SKIP/NEEDS_REVIEW triage below. `DEFAULT_QUERY`
 excludes `JobTracker/Linked` for the same reason it excludes the three
 outcome labels: once a message is linked, there's nothing left to redo.
+
+LinkedIn personal-reply routing (2026-08-01): `hit-reply@` /
+`inmail-hit-reply@` messages that land on `Category/recruiter_job` (via
+comms-migration subject heuristics) must NOT run through `triage_message`.
+That path often extracts nothing → NEEDS_REVIEW with empty `lead_keys`,
+records `processed_messages`, and permanently blocks
+`scan_communications` via `is_communication_seen`. Instead, those senders
+are handed to `scan_communications._scan_one` (same stub-lead / park /
+link path IMAP already uses). `DEFAULT_QUERY` also excludes
+`JobTracker/NeedsFollowup` so parked InMails aren't re-listed forever.
 """
 
 from __future__ import annotations
@@ -76,6 +86,11 @@ import sys
 import time
 from pathlib import Path
 
+from job_tracker.cli.scan_communications import (
+    _scan_one as _scan_linkedin_message,
+    is_linkedin_personal_reply_sender,
+    is_reclaimable_linkedin_poison,
+)
 from job_tracker.email import gmail_writer
 from job_tracker.email.gmail_reader import (
     KNOWN_ACCOUNTS,
@@ -106,6 +121,7 @@ from job_tracker.pipeline.store import (
     advance_status,
     connect,
     find_matching_job,
+    is_communication_seen,
     is_message_processed,
     processed_at,
     record_message_processed,
@@ -124,7 +140,7 @@ from job_tracker.pipeline.triage import (
 DEFAULT_QUERY = (
     "label:Category/recruiter_job "
     "-label:JobTracker/PURSUE -label:JobTracker/SKIP -label:JobTracker/NEEDS_REVIEW "
-    "-label:JobTracker/Linked"
+    "-label:JobTracker/Linked -label:JobTracker/NeedsFollowup"
 )
 
 # The recruiting account's own Gmail filter (not this repo) stamps this
@@ -410,12 +426,19 @@ def main(argv: list[str] | None = None) -> int:
     outcome_label_ids: dict[str, str] = {}
     job_digests_label_id: str | None = None
     linked_label_id: str | None = None
+    linkedin_label_ids: dict[str, str] | None = None
+    linkedin_handled_count = 0
     if not args.dry_run:
         outcome_label_ids = {
             outcome: gmail_writer.get_or_create_label(service, label) for outcome, label in _OUTCOME_LABELS.items()
         }
         job_digests_label_id = gmail_writer.find_label_id(service, JOB_DIGESTS_LABEL_NAME)
         linked_label_id = gmail_writer.get_or_create_label(service, gmail_writer.LINKED_LABEL)
+        linkedin_label_ids = {
+            "linked": linked_label_id,
+            "needs_followup": gmail_writer.get_or_create_label(service, gmail_writer.NEEDS_FOLLOWUP_LABEL),
+            "remove": list(outcome_label_ids.values()),
+        }
 
     try:
         # Dual bound: message list is already capped by inbox_batch_message_cap;
@@ -440,11 +463,47 @@ def main(argv: list[str] | None = None) -> int:
                         skipped_already_processed += 1
                         continue
                 elif not args.force and is_message_processed(conn, message_id):
-                    skipped_already_processed += 1
-                    continue
+                    # Allow reclaim of LinkedIn InMails wrongly parked as
+                    # NEEDS_REVIEW with empty lead_keys (see module docstring).
+                    if not is_reclaimable_linkedin_poison(conn, message_id):
+                        skipped_already_processed += 1
+                        continue
 
             try:
                 message = fetch_message(service, message_id)
+
+                # LinkedIn personal-reply path (2026-08-01) — never run
+                # triage_message on hit-reply@ / inmail-hit-reply@. See
+                # module docstring. Skips when scan/comms already handled it
+                # (conversation or unmatched park), unless reclaimable poison.
+                if is_linkedin_personal_reply_sender(message.from_address):
+                    if (
+                        not args.dry_run
+                        and not args.force
+                        and is_communication_seen(conn, message_id)
+                        and not is_reclaimable_linkedin_poison(conn, message_id)
+                    ):
+                        skipped_already_processed += 1
+                        continue
+                    scan_result = _scan_linkedin_message(
+                        conn,
+                        service,
+                        message_id,
+                        direction="inbound",
+                        use_llm_fallback=args.llm_fallback,
+                        llm_model=args.llm_extraction_model,
+                        dry_run=args.dry_run,
+                        output_root=args.output_root,
+                        label_ids=linkedin_label_ids,
+                    )
+                    print(
+                        f"\n[LINKEDIN] {scan_result.get('subject', message.subject)}  "
+                        f"<{message.from_address}>  ({message_id})"
+                    )
+                    print(f"  {scan_result.get('tier')}: {scan_result.get('reason')}")
+                    print(f"  -> {scan_result.get('action') or '(dry run)'}")
+                    linkedin_handled_count += 1
+                    continue
 
                 # Existing-lead short-circuit — see module docstring. A free
                 # (no LLM spend) thread-id/contact-email match means this is
@@ -670,6 +729,13 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"\n(linked {linked_to_existing_count} message(s) to an existing tracked lead via thread/contact "
             "match — recorded as a conversation, not re-triaged)",
+            file=sys.stderr,
+        )
+
+    if linkedin_handled_count:
+        print(
+            f"\n(routed {linkedin_handled_count} LinkedIn hit-reply/inmail message(s) through "
+            "scan_communications — never through triage_message)",
             file=sys.stderr,
         )
 

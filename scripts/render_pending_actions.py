@@ -24,9 +24,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sys
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +46,20 @@ from job_tracker.pipeline.store import (  # noqa: E402
 from job_tracker.scoring.scorer import DEFAULT_FRAMEWORK_PATH, load_framework, score_jd  # noqa: E402
 
 DEFAULT_OUTPUT_HTML = _REPO_ROOT / "var" / "pending-actions.html"
+
+# Keep in sync with scan_communications.LINKEDIN_PERSONAL_REPLY_SENDERS —
+# duplicated here so this script doesn't import the whole Gmail CLI package.
+_LINKEDIN_PERSONAL_REPLY_SENDERS = frozenset(
+    {"hit-reply@linkedin.com", "inmail-hit-reply@linkedin.com"}
+)
+
+# Same sibling layout as recruiting-automation/install.sh's WORKSPACE_ROOT.
+_DEFAULT_AUTOMATION_STATE = (
+    Path(os.environ.get("RECRUITING_AUTOMATION_BASE", "")) / "state"
+    if os.environ.get("RECRUITING_AUTOMATION_BASE")
+    else Path.home() / "workspace-recruiting-automation" / "recruiting-automation" / "state"
+)
+STALE_CYCLE_HOURS = int(os.environ.get("RECRUITING_AUTOMATION_STALE_CYCLE_HOURS", "6"))
 
 # The same gate `scoring.scorer.should_run_llm_review()` uses to decide
 # whether a `status='new'` lead is worth spending a real LLM call on.
@@ -169,7 +185,186 @@ def _age_days(first_seen: str | None, now: datetime) -> int:
     return max(0, (now - seen).days)
 
 
-def render(conn, *, output_root: Path, now: datetime) -> dict:
+_RUN_LOG_NAME_RE = re.compile(r"^run-(\d{8})-(\d{6})\.log$")
+_CYCLE_COMPLETE_MARKER = "=== Cycle complete ==="
+
+
+def _calendar_month_uptime(logs_dir: Path, *, now: datetime) -> dict:
+    """Calendar-month schedule uptime for the hourly recruiting-automation
+    cycle (2026-08-02).
+
+    Definition (local time of `now`):
+      expected = hours from month-start 00:00 through the current hour (inclusive)
+      covered  = distinct local hours in that window with ≥1 run-*.log that
+                 contains the Cycle-complete marker (same OK signal status.sh uses)
+      uptime%  = 100 * covered / expected
+
+    Multiple cycles in one hour (e.g. install RunAtLoad + hourly tick) still
+    count as one covered hour. Missing/incomplete/halted hours count as down.
+    """
+    local_now = now.astimezone() if now.tzinfo else now.replace(tzinfo=timezone.utc).astimezone()
+    month_start = local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    current_hour = local_now.replace(minute=0, second=0, microsecond=0)
+    expected = int((current_hour - month_start).total_seconds() // 3600) + 1
+    month_label = local_now.strftime("%b %Y")
+    month_prefix = local_now.strftime("run-%Y%m")
+
+    covered_hours: set[datetime] = set()
+    ok_cycles = 0
+    if logs_dir.is_dir():
+        for path in logs_dir.glob(f"{month_prefix}*.log"):
+            m = _RUN_LOG_NAME_RE.match(path.name)
+            if m is None:
+                continue
+            try:
+                started = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").replace(
+                    tzinfo=local_now.tzinfo
+                )
+            except ValueError:
+                continue
+            if started < month_start or started > local_now:
+                continue
+            try:
+                # Completion marker is written at the end — read a small tail.
+                with path.open("rb") as fh:
+                    fh.seek(0, os.SEEK_END)
+                    size = fh.tell()
+                    fh.seek(max(0, size - 8192))
+                    tail = fh.read().decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            if _CYCLE_COMPLETE_MARKER not in tail:
+                continue
+            ok_cycles += 1
+            covered_hours.add(started.replace(minute=0, second=0, microsecond=0))
+
+    covered = len(covered_hours)
+    if expected <= 0:
+        pct: float | None = None
+        pct_display = "—"
+    else:
+        pct = round(100.0 * covered / expected, 1)
+        pct_display = f"{pct:g}%"
+
+    return {
+        "monthLabel": month_label,
+        "uptimePct": pct,
+        "uptimeDisplay": pct_display,
+        "coveredHours": covered,
+        "expectedHours": expected,
+        "okCycles": ok_cycles,
+        "headerLabel": f"{month_label} uptime {pct_display}",
+    }
+
+
+def _read_automation_schedule_health(
+    state_dir: Path, *, now: datetime, stale_hours: int = STALE_CYCLE_HOURS
+) -> dict:
+    """Snapshot of recruiting-automation schedule health for the pending-
+    actions banner (2026-08-01). Pure filesystem reads — no launchctl —
+    so this page stays a static regenerable artifact."""
+    halt_path = state_dir / "HALT"
+    last_ok_path = state_dir / "last_ok_cycle"
+    expiry_path = state_dir / "expiry_epoch"
+    logs_dir = state_dir.parent / "logs"
+
+    halted = halt_path.is_file()
+    halt_reason = halt_path.read_text(encoding="utf-8").strip() if halted else ""
+
+    last_ok_epoch: int | None = None
+    last_ok_iso = ""
+    hours_since_ok: float | None = None
+    if last_ok_path.is_file():
+        raw = last_ok_path.read_text(encoding="utf-8").strip()
+        try:
+            last_ok_epoch = int(raw)
+            last_ok_dt = datetime.fromtimestamp(last_ok_epoch, tz=timezone.utc).astimezone()
+            last_ok_iso = last_ok_dt.strftime("%Y-%m-%d %H:%M %Z")
+            hours_since_ok = max(0.0, (now.astimezone() - last_ok_dt).total_seconds() / 3600.0)
+        except ValueError:
+            last_ok_epoch = None
+
+    expiry_iso = ""
+    if expiry_path.is_file():
+        try:
+            expiry_iso = (
+                datetime.fromtimestamp(int(expiry_path.read_text(encoding="utf-8").strip()), tz=timezone.utc)
+                .astimezone()
+                .strftime("%Y-%m-%d %H:%M %Z")
+            )
+        except ValueError:
+            expiry_iso = ""
+
+    month_uptime = _calendar_month_uptime(logs_dir, now=now)
+
+    stale = hours_since_ok is not None and hours_since_ok >= stale_hours
+    if halted:
+        level = "danger"
+        summary = f"HALTED — {halt_reason or '(no reason recorded)'}"
+    elif hours_since_ok is None:
+        level = "info"
+        summary = "No last_ok_cycle yet (first install, or marker not written)."
+    elif stale:
+        level = "warning"
+        summary = (
+            f"No successful cycle in {hours_since_ok:.0f}h "
+            f"(threshold {stale_hours}h). LinkedIn/inbox triage may be behind."
+        )
+    else:
+        level = "ok"
+        summary = f"Last successful cycle {hours_since_ok:.1f}h ago."
+
+    return {
+        "level": level,
+        "summary": summary,
+        "halted": halted,
+        "haltReason": halt_reason,
+        "lastOkIso": last_ok_iso,
+        "hoursSinceOk": None if hours_since_ok is None else round(hours_since_ok, 1),
+        "stale": stale,
+        "staleHoursThreshold": stale_hours,
+        "expiryIso": expiry_iso,
+        "stateDir": str(state_dir),
+        "monthUptime": month_uptime,
+    }
+
+
+def _list_poisoned_linkedin_messages(conn, *, now: datetime) -> list[dict]:
+    """LinkedIn hit-reply/inmail messages that triage_recruiter_inbox stamped
+    NEEDS_REVIEW with zero leads — the wrong path that previously blocked
+    scan_communications forever. Surfaced so the gap is visible even before
+    the reclaim pass runs."""
+    rows = conn.execute(
+        """
+        SELECT message_id, subject, from_address, outcome, lead_keys, processed_at
+        FROM processed_messages
+        WHERE upper(outcome) = 'NEEDS_REVIEW'
+          AND (lead_keys IS NULL OR lead_keys = '' OR lead_keys = '[]')
+          AND lower(from_address) IN ({placeholders})
+        ORDER BY processed_at DESC
+        """.format(placeholders=",".join("?" for _ in _LINKEDIN_PERSONAL_REPLY_SENDERS)),
+        tuple(sorted(_LINKEDIN_PERSONAL_REPLY_SENDERS)),
+    ).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        mid = r["message_id"]
+        if conn.execute("SELECT 1 FROM job_conversations WHERE message_id = ?", (mid,)).fetchone():
+            continue
+        if conn.execute("SELECT 1 FROM unmatched_messages WHERE message_id = ?", (mid,)).fetchone():
+            continue
+        out.append(
+            {
+                "messageId": mid,
+                "subject": r["subject"] or "(no subject)",
+                "fromAddress": r["from_address"] or "",
+                "processedAt": r["processed_at"] or "",
+                "ageDays": _age_days(r["processed_at"], now),
+            }
+        )
+    return out
+
+
+def render(conn, *, output_root: Path, now: datetime, automation_state_dir: Path | None = None) -> dict:
     """Builds a "sales funnel toward Ready to apply" (added 2026-07-15,
     replacing the earlier flatter needs-review/auto-skipped/unresolved
     split): every `status='new'` or `status='package_generated'` lead lands
@@ -324,6 +519,11 @@ def render(conn, *, output_root: Path, now: datetime) -> dict:
     ]
     unmatched_communications.sort(key=lambda m: -m["ageDays"])
 
+    poisoned_linkedin = _list_poisoned_linkedin_messages(conn, now=now)
+    schedule_health = _read_automation_schedule_health(
+        automation_state_dir or _DEFAULT_AUTOMATION_STATE, now=now
+    )
+
     _funnel_buckets = (jd_unresolved, awaiting_llm_review, needs_decision, needs_decision_forced, ready_to_apply)
     direct_recruiter_count = sum(1 for bucket in _funnel_buckets for lead in bucket if lead["directRecruiter"])
     # Whole-DB, not just the funnel buckets above — the review queue
@@ -363,6 +563,8 @@ def render(conn, *, output_root: Path, now: datetime) -> dict:
         # still surfaced prominently since it's real, actionable signal
         # sitting untracked otherwise. See resolve_communication.py.
         "unmatched_communications": unmatched_communications,
+        "poisoned_linkedin": poisoned_linkedin,
+        "schedule_health": schedule_health,
         "total_leads": len(rows),
         "generated_at": now,
     }
@@ -400,6 +602,21 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .subtitle { color: var(--text-secondary); font-size: 13px; margin-bottom: 24px; }
   .subtitle code { color: var(--text); background: var(--panel); padding: 1px 5px; border-radius: 4px; }
   .funnel-caption { font-size: 12px; color: var(--text-tertiary); margin-bottom: 8px; }
+  .schedule-health {
+    margin: 12px 0 16px;
+    padding: 12px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .schedule-health.ok { border-color: #2f5d45; background: #132019; }
+  .schedule-health.warning { border-color: #7a5a1e; background: #2a2110; color: #f0d9a0; }
+  .schedule-health.danger { border-color: #7a3030; background: #2a1414; color: #f0b4b4; }
+  .schedule-health.info { border-color: #2a4a6a; background: #121c28; }
+  .schedule-health strong { display: block; margin-bottom: 4px; }
+  .schedule-health .meta { color: var(--text-secondary); font-size: 12px; margin-top: 4px; }
   .funnel { display: flex; align-items: stretch; gap: 0; margin-bottom: 8px; overflow-x: auto; }
   .funnel-box {
     flex: 1 1 0;
@@ -633,7 +850,16 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .comms-badge { color: var(--info); font-weight: 400; font-size: 11px; margin-left: 4px; text-decoration: none; white-space: nowrap; }
   .comms-badge:hover { text-decoration: underline; }
   .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
+  .page-header-titles { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .page-header h1 { margin: 0; }
+  .month-uptime {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    letter-spacing: 0.01em;
+  }
+  .month-uptime .pct { color: var(--text); }
+  .month-uptime .detail { font-weight: 400; color: var(--text-tertiary); }
   .header-actions { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
   .auto-refresh-label {
     display: flex;
@@ -679,7 +905,13 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <body>
 <div class="wrap">
   <div class="page-header">
-    <h1>Pending job-tracker actions</h1>
+    <div class="page-header-titles">
+      <h1>Pending job-tracker actions</h1>
+      <div class="month-uptime" id="month-uptime"
+           title="Calendar-month schedule uptime: distinct local hours with a completed hourly cycle ÷ hours elapsed since month start (inclusive of the current hour). Same OK signal as status.sh (=== Cycle complete ===).">
+        ${MONTH_UPTIME_HEADER}
+      </div>
+    </div>
     <div class="header-actions">
       <label class="auto-refresh-label"
              title="Reloads this tab from disk on an interval to pick up the hourly recruiting-automation run automatically. Free — never triggers a re-render or rescore, just re-reads whatever's already on disk.">
@@ -700,10 +932,16 @@ _TEMPLATE = r"""<!DOCTYPE html>
     or leave <strong>Auto-refresh</strong> on to pick up the hourly automation run on its own.
   </div>
 
+  <div class="schedule-health ${SCHEDULE_HEALTH_LEVEL}" id="schedule-health">
+    <strong>Schedule health</strong>
+    <div id="schedule-health-summary">${SCHEDULE_HEALTH_SUMMARY}</div>
+    <div class="meta" id="schedule-health-meta">${SCHEDULE_HEALTH_META}</div>
+  </div>
+
   <div class="funnel-caption">
     <strong>Ready to apply</strong> (target) is on the far left. Boxes 2-5 are things currently blocking
-    leads from getting there; box 6 (unmatched communications) is a separate signal &mdash; a recruiter
-    reply that couldn't be auto-linked to any lead yet. Click any box to jump to its list below.
+    leads from getting there; boxes 6-7 are LinkedIn/comms signals (unmatched park + wrongly-triaged
+    InMails). Click any box to jump to its list below.
   </div>
   <div class="funnel" id="funnel"></div>
   <div class="funnel-note" id="funnel-note"></div>
@@ -827,7 +1065,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
 
   <hr class="divider" />
 
-  <details id="section-unmatched-communications">
+  <details open id="section-unmatched-communications">
     <summary>6. Unmatched communications &mdash; couldn't auto-link to a tracked job <span class="header-count-pill" id="unmatched-communications-count"></span></summary>
     <div class="card-body">
       <div class="table-scroll short">
@@ -844,6 +1082,26 @@ _TEMPLATE = r"""<!DOCTYPE html>
         <strong>Action:</strong> run <code>python3 scripts/resolve_communication.py --list</code> to see the
         full text, then <code>resolve_communication.py --message-id &lt;id&gt; --company "&hellip;" --title
         "&hellip;"</code> (add <code>--create</code> if it's a genuinely new lead with no JD yet).
+      </div>
+    </div>
+  </details>
+
+  <details open id="section-poisoned-linkedin">
+    <summary>7. LinkedIn InMails wrongly parked as NEEDS_REVIEW (empty leads) <span class="header-count-pill" id="poisoned-linkedin-count"></span></summary>
+    <div class="card-body">
+      <div class="table-scroll short">
+        <table>
+          <thead><tr><th>Subject</th><th>From</th><th class="num">Age (days)</th><th>Message id</th></tr></thead>
+          <tbody id="poisoned-linkedin-body"></tbody>
+        </table>
+      </div>
+      <div class="hint">
+        These <code>hit-reply@</code> / <code>inmail-hit-reply@</code> messages were processed by
+        <code>triage_recruiter_inbox</code> as generic recruiter-job mail, landed on
+        <code>JobTracker/NEEDS_REVIEW</code> with no extracted leads, and used to permanently block
+        the LinkedIn scan path. As of 2026-08-01 the next <code>scan_communications</code> /
+        triage cycle <strong>reclaims</strong> them automatically. This list is the visibility layer
+        so you don't have to open Gmail to notice the gap.
       </div>
     </div>
   </details>
@@ -874,6 +1132,7 @@ const JD_UNRESOLVED = ${JD_UNRESOLVED_JSON};
 const NOT_PRIORITIZED_COUNT = ${NOT_PRIORITIZED_COUNT_JSON};
 const MANUAL_HANDLED = ${MANUAL_HANDLED_JSON};
 const UNMATCHED_COMMUNICATIONS = ${UNMATCHED_COMMUNICATIONS_JSON};
+const POISONED_LINKEDIN = ${POISONED_LINKEDIN_JSON};
 
 // PENDING_REVIEW kept as the name of the main filterable table's backing
 // array (section 3, "Needs your decision") purely so the rest of this
@@ -1084,6 +1343,7 @@ const FUNNEL_STEPS = [
   { count: () => AWAITING_LLM_REVIEW.length, label: "Awaiting full-LLM-review", cls: "blocker", sectionId: "section-awaiting-llm-review" },
   { count: () => JD_UNRESOLVED.length, label: "JD unresolved", cls: "blocker-far", sectionId: "section-jd-unresolved" },
   { count: () => UNMATCHED_COMMUNICATIONS.length, label: "Unmatched communications", cls: "blocker-far", sectionId: "section-unmatched-communications" },
+  { count: () => POISONED_LINKEDIN.length, label: "LinkedIn NEEDS_REVIEW (empty)", cls: "blocker-far", sectionId: "section-poisoned-linkedin" },
 ];
 
 function renderFunnel() {
@@ -1246,6 +1506,17 @@ function renderReadyToApply() {
       ${ageCellHtml(l.ageDays)}
       ${directRecruiterCellHtml(l.directRecruiter, l.normalizedKey)}
       <td>${applyButtonHtml(l.applyUrl)}</td>
+    </tr>`).join("");
+}
+
+function renderPoisonedLinkedin() {
+  document.getElementById("poisoned-linkedin-count").textContent = POISONED_LINKEDIN.length;
+  document.getElementById("poisoned-linkedin-body").innerHTML = POISONED_LINKEDIN.map(m => `
+    <tr>
+      <td class="title">${escapeHtml(m.subject)}</td>
+      <td class="title">${escapeHtml(m.fromAddress)}</td>
+      ${ageCellHtml(m.ageDays)}
+      <td class="title"><code>${escapeHtml(m.messageId)}</code></td>
     </tr>`).join("");
 }
 
@@ -1416,6 +1687,7 @@ renderNeedsDecisionForced();
 renderAwaitingLlmReview();
 renderJdUnresolved();
 renderUnmatchedCommunications();
+renderPoisonedLinkedin();
 renderManualHandled();
 
 // Restore scroll position stashed by reloadSelf() above, if any — must run
@@ -1449,6 +1721,7 @@ def _render_html(data: dict, *, output_root: Path) -> str:
             else "none"
         )
         + f". {len(data['unmatched_communications'])} unmatched communication(s) awaiting manual resolution."
+        + f" {len(data['poisoned_linkedin'])} LinkedIn InMail(s) wrongly parked as NEEDS_REVIEW."
         + f' <span id="direct-recruiter-count">{data["direct_recruiter_count"]}</span> of the leads above '
         "(\u2B50) are confirmed direct recruiter outreach — this updates live as you use the \u2606/\u2B50/"
         f'\u2014 dropdown in the tables above. {data["direct_recruiter_undecided_count"]} lead(s) total '
@@ -1468,6 +1741,34 @@ def _render_html(data: dict, *, output_root: Path) -> str:
     html = html.replace("${NOT_PRIORITIZED_COUNT_JSON}", json.dumps(data["not_prioritized_count"]))
     html = html.replace("${MANUAL_HANDLED_JSON}", json.dumps(data["manual_handled"]))
     html = html.replace("${UNMATCHED_COMMUNICATIONS_JSON}", json.dumps(data["unmatched_communications"]))
+    html = html.replace("${POISONED_LINKEDIN_JSON}", json.dumps(data["poisoned_linkedin"]))
+    health = data["schedule_health"]
+    month_uptime = health.get("monthUptime") or {}
+    meta_bits = []
+    if month_uptime.get("uptimeDisplay"):
+        meta_bits.append(
+            f"{month_uptime.get('monthLabel', 'Month')} uptime {month_uptime['uptimeDisplay']} "
+            f"({month_uptime.get('coveredHours', 0)}/{month_uptime.get('expectedHours', 0)}h)"
+        )
+    if health.get("lastOkIso"):
+        meta_bits.append(f"Last OK: {health['lastOkIso']}")
+    if health.get("expiryIso"):
+        meta_bits.append(f"Window expires: {health['expiryIso']}")
+    meta_bits.append(f"State: {health.get('stateDir', '')}")
+    html = html.replace("${SCHEDULE_HEALTH_LEVEL}", health.get("level", "info"))
+    html = html.replace("${SCHEDULE_HEALTH_SUMMARY}", health.get("summary", ""))
+    html = html.replace("${SCHEDULE_HEALTH_META}", " · ".join(meta_bits))
+    covered = month_uptime.get("coveredHours", 0)
+    expected = month_uptime.get("expectedHours", 0)
+    month_label = month_uptime.get("monthLabel", "")
+    pct_display = month_uptime.get("uptimeDisplay", "—")
+    html = html.replace(
+        "${MONTH_UPTIME_HEADER}",
+        (
+            f'{month_label} uptime <span class="pct">{pct_display}</span> '
+            f'<span class="detail">({covered}/{expected}h covered)</span>'
+        ),
+    )
     html = html.replace("${FOLDER_ROOT}", str(output_root))
     html = html.replace("${STALE_DAYS_THRESHOLD}", str(STALE_DAYS_THRESHOLD))
     html = html.replace("${LLM_REVIEW_GATE_PCT}", str(LLM_REVIEW_GATE_PCT))

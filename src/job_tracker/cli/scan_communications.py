@@ -118,6 +118,7 @@ from job_tracker.pipeline.store import (
     connect,
     get_sibling_titles,
     is_communication_seen,
+    record_message_processed,
     record_unmatched_message,
     upsert_lead,
 )
@@ -126,8 +127,41 @@ from job_tracker.scoring.scorer import score_jd
 # The two LinkedIn sender addresses that carry actual message text (a
 # fresh InMail, or a "Message replied: ..." notification quoting the
 # reply) rather than just a name + a link to go read it on-site.
+LINKEDIN_PERSONAL_REPLY_SENDERS = frozenset(
+    {"hit-reply@linkedin.com", "inmail-hit-reply@linkedin.com"}
+)
 DEFAULT_INBOUND_QUERY = "(from:hit-reply@linkedin.com OR from:inmail-hit-reply@linkedin.com)"
 DEFAULT_SENT_QUERY = "in:sent"
+
+
+def is_linkedin_personal_reply_sender(address: str) -> bool:
+    return (address or "").strip().lower() in LINKEDIN_PERSONAL_REPLY_SENDERS
+
+
+def is_reclaimable_linkedin_poison(conn, message_id: str) -> bool:
+    """True when `triage_recruiter_inbox` already stamped this LinkedIn
+    personal-reply message NEEDS_REVIEW with zero leads — the wrong path —
+    so this scan should reclaim it. A message already in job_conversations
+    or unmatched_messages was handled correctly and must not be reclaimed."""
+    if conn.execute("SELECT 1 FROM job_conversations WHERE message_id = ?", (message_id,)).fetchone():
+        return False
+    if conn.execute("SELECT 1 FROM unmatched_messages WHERE message_id = ?", (message_id,)).fetchone():
+        return False
+    row = conn.execute(
+        "SELECT outcome, from_address, lead_keys FROM processed_messages WHERE message_id = ?",
+        (message_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    if not is_linkedin_personal_reply_sender(row["from_address"] or ""):
+        return False
+    if (row["outcome"] or "").upper() != "NEEDS_REVIEW":
+        return False
+    try:
+        keys = json.loads(row["lead_keys"] or "[]")
+    except (TypeError, json.JSONDecodeError):
+        keys = []
+    return not keys
 
 
 def _save_message_txt(
@@ -376,11 +410,45 @@ def _scan_one(
     # Sent-folder messages are never labeled, and `label_ids` is None
     # entirely in `--dry-run` (see `main()`), so this whole block is a
     # no-op there, matching the DB writes it's already skipping.
+    #
+    # Strip any stale JobTracker/PURSUE|SKIP|NEEDS_REVIEW ids when present
+    # (2026-08-01): reclaiming a LinkedIn InMail that the recruiter-job
+    # triage path wrongly parked as NEEDS_REVIEW would otherwise leave both
+    # labels stacked.
     if direction == "inbound" and label_ids:
+        remove_ids = list(label_ids.get("remove") or [])
         if job_key is not None:
-            gmail_writer.label_and_archive(service, message_id, label_ids["linked"], archive=True)
+            gmail_writer.label_and_archive(
+                service, message_id, label_ids["linked"], remove_label_ids=remove_ids, archive=True
+            )
+            record_message_processed(
+                conn,
+                message_id,
+                outcome="LINKED",
+                subject=message.subject,
+                from_address=message.from_address,
+                lead_keys=[job_key],
+                label_applied=gmail_writer.LINKED_LABEL,
+                archived=True,
+            )
         else:
-            gmail_writer.label_and_archive(service, message_id, label_ids["needs_followup"], archive=False)
+            gmail_writer.label_and_archive(
+                service,
+                message_id,
+                label_ids["needs_followup"],
+                remove_label_ids=remove_ids,
+                archive=False,
+            )
+            record_message_processed(
+                conn,
+                message_id,
+                outcome="NEEDS_FOLLOWUP",
+                subject=message.subject,
+                from_address=message.from_address,
+                lead_keys=[],
+                label_applied=gmail_writer.NEEDS_FOLLOWUP_LABEL,
+                archived=False,
+            )
     return result
 
 
@@ -439,6 +507,11 @@ def main(argv: list[str] | None = None) -> int:
         label_ids = {
             "linked": gmail_writer.get_or_create_label(service, gmail_writer.LINKED_LABEL),
             "needs_followup": gmail_writer.get_or_create_label(service, gmail_writer.NEEDS_FOLLOWUP_LABEL),
+            "remove": [
+                gmail_writer.get_or_create_label(service, gmail_writer.PURSUE_LABEL),
+                gmail_writer.get_or_create_label(service, gmail_writer.SKIP_LABEL),
+                gmail_writer.get_or_create_label(service, gmail_writer.NEEDS_REVIEW_LABEL),
+            ],
         }
 
     conn = connect(args.db)
@@ -448,7 +521,13 @@ def main(argv: list[str] | None = None) -> int:
             service, query=args.inbound_query, limit=args.limit, newer_than_days=args.newer_than
         )
         for message_id in inbound_ids:
-            if is_communication_seen(conn, message_id):
+            # Skip already-handled mail, except LinkedIn InMails that
+            # triage_recruiter_inbox wrongly stamped NEEDS_REVIEW with no
+            # leads (2026-08-01 reclaim) — is_communication_seen alone would
+            # leave those permanently invisible.
+            if is_communication_seen(conn, message_id) and not is_reclaimable_linkedin_poison(
+                conn, message_id
+            ):
                 continue
             results.append(
                 _scan_one(

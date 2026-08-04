@@ -20,6 +20,7 @@ from job_tracker.pipeline.store import (
     add_job_contact,
     add_job_conversation,
     connect,
+    record_message_processed,
     record_unmatched_message,
     update_llm_evaluation,
     upsert_lead,
@@ -327,6 +328,85 @@ def test_html_wires_communications_badge(tmp_path: Path):
     assert "viewcomms://open?company=" in text
     assert "comms-badge" in text
     assert '"commCount": 0' in text
+
+
+def test_calendar_month_uptime_counts_distinct_ok_hours(tmp_path: Path):
+    """Uptime = distinct local hours with Cycle-complete ÷ hours since month start."""
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    # NOW is 2026-07-15 12:00 UTC → expected hours from Jul 1 00:00 local through 12:00
+    local_now = NOW.astimezone()
+    month_start = local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    # Two OK cycles in the same hour → one covered hour; one incomplete → ignored
+    h1 = month_start + timedelta(hours=3)
+    (logs_dir / f"run-{h1.strftime('%Y%m%d-%H%M%S')}.log").write_text(
+        "start\n=== Cycle complete ===\n", encoding="utf-8"
+    )
+    (logs_dir / f"run-{(h1 + timedelta(minutes=10)).strftime('%Y%m%d-%H%M%S')}.log").write_text(
+        "start\n=== Cycle complete ===\n", encoding="utf-8"
+    )
+    h2 = month_start + timedelta(hours=5)
+    (logs_dir / f"run-{h2.strftime('%Y%m%d-%H%M%S')}.log").write_text(
+        "start\nFAILED: something\n", encoding="utf-8"
+    )
+    h3 = month_start + timedelta(hours=8)
+    (logs_dir / f"run-{h3.strftime('%Y%m%d-%H%M%S')}.log").write_text(
+        "start\n=== Cycle complete ===\n", encoding="utf-8"
+    )
+
+    result = render_pending_actions._calendar_month_uptime(logs_dir, now=NOW)
+    expected = int((local_now.replace(minute=0, second=0, microsecond=0) - month_start).total_seconds() // 3600) + 1
+    assert result["expectedHours"] == expected
+    assert result["coveredHours"] == 2
+    assert result["okCycles"] == 3
+    assert result["uptimePct"] == round(100.0 * 2 / expected, 1)
+    assert "Jul 2026" in result["headerLabel"]
+
+
+def test_schedule_health_banner_and_poisoned_linkedin(tmp_path: Path):
+    """2026-08-01: pending-actions must surface schedule gaps + wrongly-triaged InMails."""
+    state_dir = tmp_path / "automation-state"
+    state_dir.mkdir()
+    logs_dir = state_dir.parent / "logs"
+    logs_dir.mkdir()
+    # last OK was 10h ago → stale at 6h threshold
+    last_ok = int((NOW - timedelta(hours=10)).timestamp())
+    (state_dir / "last_ok_cycle").write_text(str(last_ok), encoding="utf-8")
+    (state_dir / "expiry_epoch").write_text(str(int((NOW + timedelta(days=2)).timestamp())), encoding="utf-8")
+    # One OK cycle in July so month uptime is computable / wired into the header
+    ok_at = NOW.replace(day=2, hour=9, minute=0, second=0, microsecond=0)
+    (logs_dir / f"run-{ok_at.strftime('%Y%m%d-%H%M%S')}.log").write_text(
+        "=== Cycle complete ===\n", encoding="utf-8"
+    )
+
+    db_path = tmp_path / "leads.db"
+    conn = connect(db_path)
+    record_message_processed(
+        conn,
+        "msg-poison-li",
+        outcome="NEEDS_REVIEW",
+        subject="Boomi InMail",
+        from_address="inmail-hit-reply@linkedin.com",
+        lead_keys=[],
+        label_applied="JobTracker/NEEDS_REVIEW",
+    )
+    data = render_pending_actions.render(
+        conn, output_root=tmp_path, now=NOW, automation_state_dir=state_dir
+    )
+    conn.close()
+
+    assert data["schedule_health"]["stale"] is True
+    assert data["schedule_health"]["level"] == "warning"
+    assert data["schedule_health"]["monthUptime"]["coveredHours"] == 1
+    assert len(data["poisoned_linkedin"]) == 1
+    assert data["poisoned_linkedin"][0]["messageId"] == "msg-poison-li"
+
+    text = render_pending_actions._render_html(data, output_root=tmp_path)
+    assert "schedule-health" in text
+    assert "month-uptime" in text
+    assert "Jul 2026 uptime" in text
+    assert "POISONED_LINKEDIN" in text
+    assert "section-poisoned-linkedin" in text
 
 
 def test_unmatched_communications_carries_full_body_alongside_preview(tmp_path: Path):

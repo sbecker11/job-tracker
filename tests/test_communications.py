@@ -727,6 +727,95 @@ def test_scan_communications_creates_new_lead_and_archives_txt(mock_gmail, monke
     conn.close()
 
 
+def test_is_reclaimable_linkedin_poison_detects_empty_needs_review(seeded_db: Path):
+    """2026-08-01: InMails wrongly stamped NEEDS_REVIEW with no leads must be
+    reclaimable by scan_communications even though processed_messages has a row."""
+    from job_tracker.cli.scan_communications import is_reclaimable_linkedin_poison
+
+    conn = connect(seeded_db)
+    record_message_processed(
+        conn,
+        "msg-poison",
+        outcome="NEEDS_REVIEW",
+        subject="Hiring A AI/ML Engineer",
+        from_address="inmail-hit-reply@linkedin.com",
+        lead_keys=[],
+        label_applied="JobTracker/NEEDS_REVIEW",
+        archived=True,
+    )
+    assert is_reclaimable_linkedin_poison(conn, "msg-poison") is True
+
+    # Once parked unmatched, it's been handled correctly — do not reclaim.
+    record_unmatched_message(
+        conn,
+        UnmatchedMessage(
+            message_id="msg-poison-2",
+            direction="inbound",
+            from_address="hit-reply@linkedin.com",
+            subject="x",
+            body_text="y",
+        ),
+    )
+    record_message_processed(
+        conn,
+        "msg-poison-2",
+        outcome="NEEDS_REVIEW",
+        from_address="hit-reply@linkedin.com",
+        lead_keys=[],
+    )
+    assert is_reclaimable_linkedin_poison(conn, "msg-poison-2") is False
+    conn.close()
+
+
+def test_scan_communications_reclaims_linkedin_poison(mock_gmail, monkeypatch, seeded_db: Path, tmp_path: Path):
+    """A poisoned NEEDS_REVIEW InMail must be re-scanned and able to create a stub lead."""
+    conn = connect(seeded_db)
+    record_message_processed(
+        conn,
+        "msg-poison-reclaim",
+        outcome="NEEDS_REVIEW",
+        subject="Exciting opportunity",
+        from_address="inmail-hit-reply@linkedin.com",
+        lead_keys=[],
+        label_applied="JobTracker/NEEDS_REVIEW",
+        archived=True,
+    )
+    conn.close()
+
+    monkeypatch.setattr(
+        "job_tracker.pipeline.comms_match.extract_roles_llm_cached",
+        lambda conn, message, model=None: [
+            ExtractedRole(
+                company="Reclaim Co",
+                title="Staff Engineer",
+                confidence=0.9,
+                snippet="Staff Engineer, remote, W2.",
+            )
+        ],
+    )
+    raw = _raw_message(
+        "msg-poison-reclaim",
+        from_addr="inmail-hit-reply@linkedin.com",
+        subject="Exciting opportunity",
+    )
+    mock_gmail(_FakeGmailService(["msg-poison-reclaim"], {"msg-poison-reclaim": raw}))
+
+    rc = scan_main(
+        ["--db", str(seeded_db), "--llm-fallback", "--output-root", str(tmp_path / "resumes")]
+    )
+    assert rc == 0
+    conn = connect(seeded_db)
+    lead = conn.execute("SELECT * FROM job_leads WHERE company = 'Reclaim Co'").fetchone()
+    assert lead is not None
+    row = conn.execute(
+        "SELECT outcome, lead_keys FROM processed_messages WHERE message_id = ?",
+        ("msg-poison-reclaim",),
+    ).fetchone()
+    assert row["outcome"] == "LINKED"
+    assert "reclaim co" in (row["lead_keys"] or "").lower()
+    conn.close()
+
+
 def test_scan_communications_updates_jd_text_on_existing_new_lead(mock_gmail, monkeypatch, seeded_db: Path, tmp_path: Path):
     """A follow-up message that extraction fuzzy-matches onto an EXISTING
     (still status='new') lead should append its excerpt to jd_text and
@@ -839,7 +928,10 @@ def test_scan_communications_labels_needs_followup_without_archiving_when_parked
     assert len(calls) == 1
     from job_tracker.email import gmail_writer
 
-    assert calls[0]["body"]["removeLabelIds"] == []
+    # INBOX must stay (not archived). Stale JobTracker/PURSUE|SKIP|NEEDS_REVIEW
+    # ids may be listed for stripping (2026-08-01 reclaim path) — Gmail no-ops
+    # any the message never had.
+    assert "INBOX" not in calls[0]["body"]["removeLabelIds"]
     needs_followup_id = service._labels[gmail_writer.NEEDS_FOLLOWUP_LABEL]
     assert calls[0]["body"]["addLabelIds"] == [needs_followup_id]
 

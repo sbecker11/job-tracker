@@ -392,6 +392,57 @@ def test_default_query_excludes_linked():
     assert "-label:JobTracker/Linked" in triage_cli.DEFAULT_QUERY
 
 
+def test_default_query_excludes_needs_followup():
+    """2026-08-01: parked LinkedIn InMails get JobTracker/NeedsFollowup and
+    must not be re-listed forever by the recruiter_job query."""
+    assert "-label:JobTracker/NeedsFollowup" in triage_cli.DEFAULT_QUERY
+
+
+def test_triage_routes_linkedin_inmail_through_scan_not_triage_message(
+    monkeypatch, mock_gmail, tmp_path: Path, capsys
+):
+    """hit-reply@ / inmail-hit-reply@ on Category/recruiter_job must never
+    run triage_message (that path stamps NEEDS_REVIEW + empty lead_keys and
+    poisons scan_communications)."""
+    db = tmp_path / "leads.db"
+    scanned: list[str] = []
+
+    def _fake_scan(conn, service, message_id, **kwargs):
+        scanned.append(message_id)
+        return {
+            "message_id": message_id,
+            "subject": "Senior Data Engineer @ Boomi",
+            "tier": "llm_new_lead",
+            "reason": "test",
+            "action": "new lead created",
+            "job_key": "boomi::senior data engineer",
+        }
+
+    def _triage_message_must_not_run(*a, **k):
+        raise AssertionError("triage_message must not run for LinkedIn personal-reply senders")
+
+    monkeypatch.setattr(triage_cli, "list_message_ids", lambda *a, **k: ["msg-li"])
+    monkeypatch.setattr(
+        triage_cli,
+        "fetch_message",
+        lambda *a, **k: _msg(
+            "msg-li",
+            from_address="inmail-hit-reply@linkedin.com",
+            body_plain="Boomi is hiring a Senior Data Engineer.",
+        ),
+    )
+    monkeypatch.setattr(triage_cli, "triage_message", _triage_message_must_not_run)
+    monkeypatch.setattr(triage_cli, "_scan_linkedin_message", _fake_scan)
+    monkeypatch.setattr(triage_cli.gmail_writer, "get_or_create_label", lambda service, label: f"id-{label}")
+    monkeypatch.setattr(triage_cli.gmail_writer, "find_label_id", lambda *a, **k: None)
+
+    rc = triage_main(["--db", str(db), "--llm-fallback"])
+    assert rc == 0
+    assert scanned == ["msg-li"]
+    err = capsys.readouterr().err
+    assert "routed 1 LinkedIn" in err
+
+
 def test_triage_links_reply_by_thread_id_instead_of_retriaging(monkeypatch, mock_gmail, tmp_path: Path, capsys):
     """A reply within an existing tracked lead's thread (e.g. a recruiter
     follow-up with no JD in it) must be recorded as a conversation against
