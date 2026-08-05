@@ -98,15 +98,25 @@ def test_list_providers_parse(monkeypatch):
                 {
                     "id": "a1",
                     "title": "ML",
-                    "location": "Remote",
+                    "location": "San Mateo, CA",
+                    "workplaceType": "Hybrid",
+                    "employmentType": "FullTime",
+                    "isRemote": True,  # Ashby often lies; prefer workplaceType
                     "jobUrl": "https://ashby/1",
                     "descriptionHtml": "<p>Ashby JD</p>",
+                    "compensation": {
+                        "compensationTierSummary": "$143K – $179K • Offers Equity"
+                    },
                 }
             ]
         },
     )
     ash = jd_resolver.list_ashby("acme")
     assert ash[0].title == "ML"
+    assert ash[0].location == "San Mateo, CA"
+    assert ash[0].workplace_type == "Hybrid"
+    assert ash[0].employment_type == "FullTime"
+    assert "$143K" in ash[0].compensation_summary
 
     monkeypatch.setattr(
         jd_resolver,
@@ -190,6 +200,39 @@ def test_with_location_header_idempotent():
     assert _with_location_header("Location: Remote\n\nBody", "SF") == "Location: Remote\n\nBody"
     assert _with_location_header("", "SF") == "Location: SF"
     assert _with_location_header("Body", "") == "Body"
+
+
+def test_with_location_header_ashby_sidebar():
+    """Notable-class: Hybrid + city + comp must reach dealbreaker text."""
+    from job_tracker.ats.jd_resolver import Posting, _with_location_header, fetch_full_description
+
+    text = _with_location_header(
+        "We also have remote employees.",
+        "San Mateo, CA",
+        workplace_type="Hybrid",
+        employment_type="FullTime",
+        compensation="$143K – $179K • Offers Equity",
+    )
+    assert text.startswith("Location: San Mateo, CA")
+    assert "Location Type: Hybrid" in text
+    assert "Employment Type: Full time" in text
+    assert "Compensation: $143K" in text
+    assert "remote employees" in text
+
+    p = Posting(
+        provider="ashby",
+        board_token="notable",
+        job_id="x",
+        title="SWE",
+        location="San Mateo, CA",
+        workplace_type="Hybrid",
+        employment_type="FullTime",
+        compensation_summary="$143K – $179K",
+        _raw_description_html="<p>Body mentions remote employees</p>",
+    )
+    fetched = fetch_full_description(p)
+    assert "Location Type: Hybrid" in fetched
+    assert fetched.startswith("Location: San Mateo, CA")
 
 
 def test_board_tokens_for_pinned():

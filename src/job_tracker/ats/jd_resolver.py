@@ -105,6 +105,12 @@ class Posting:
     url: str = ""
     description: str = ""          # plain text, filled in for the winner
     match_score: float = 0.0
+    # Ashby (and similar) sidebar fields that never appear in descriptionHtml —
+    # folded into jd_text via `_with_location_header` so dealbreakers see them
+    # (2026-08-04 Notable Hybrid / San Mateo miss).
+    workplace_type: str = ""       # e.g. Remote / Hybrid / OnSite
+    employment_type: str = ""      # e.g. FullTime
+    compensation_summary: str = ""  # e.g. "$143K – $179K • Offers Equity"
     _raw_description_html: str = field(default="", repr=False)  # cached if list already had it
 
 
@@ -238,6 +244,33 @@ def list_lever(token: str) -> list[Posting]:
     return out
 
 
+def _ashby_location(j: dict) -> str:
+    loc = j.get("location") or ""
+    if isinstance(loc, dict):
+        loc = loc.get("name") or ""
+    loc = str(loc or "").strip()
+    if loc:
+        return loc
+    addr = j.get("address") or {}
+    postal = addr.get("postalAddress") if isinstance(addr, dict) else None
+    if isinstance(postal, dict):
+        return ", ".join(
+            x for x in (postal.get("addressLocality"), postal.get("addressRegion")) if x
+        )
+    return ""
+
+
+def _ashby_compensation_summary(j: dict) -> str:
+    comp = j.get("compensation") or {}
+    if not isinstance(comp, dict):
+        return ""
+    return (
+        comp.get("compensationTierSummary")
+        or comp.get("scrapeableCompensationSalarySummary")
+        or ""
+    ).strip()
+
+
 def list_ashby(token: str) -> list[Posting]:
     data = _get_json(f"https://api.ashbyhq.com/posting-api/job-board/{token}?includeCompensation=true")
     if not isinstance(data, dict):
@@ -248,8 +281,11 @@ def list_ashby(token: str) -> list[Posting]:
         out.append(Posting(
             provider="ashby", board_token=token, job_id=str(j.get("id", "")),
             title=j.get("title", ""),
-            location=j.get("location", "") or (j.get("address") or {}).get("postalAddress", ""),
+            location=_ashby_location(j),
             url=j.get("jobUrl", "") or j.get("applyUrl", ""),
+            workplace_type=str(j.get("workplaceType") or "").strip(),
+            employment_type=str(j.get("employmentType") or "").strip(),
+            compensation_summary=_ashby_compensation_summary(j),
             _raw_description_html=j.get("descriptionHtml", "") or j.get("descriptionPlain", "") or "",
         ))
     return out
@@ -283,22 +319,48 @@ PROVIDERS = {
 # Full-JD fetchers for the winning posting
 # ----------------------------------------------------------------------------
 
-def _with_location_header(body: str, location: str) -> str:
-    """Prepend ATS location metadata into jd_text (2026-08-04).
+def _with_location_header(
+    body: str,
+    location: str = "",
+    *,
+    workplace_type: str = "",
+    employment_type: str = "",
+    compensation: str = "",
+) -> str:
+    """Prepend ATS sidebar/location metadata into jd_text (2026-08-04).
 
-    Greenhouse (and similar boards) put office cities in API `location.name`
-    / the careers-page header, not inside the HTML `content` body. Without
-    this prefix, dealbreaker evaluation only saw body text (e.g. a PT-overlap
-    ask) and wrongly treated multi-city onsite roles as remote — Lynx
-    Analytics Fullstack Developer (US) listed NJ/NY/SF.
+    Greenhouse puts office cities in API `location.name` (not HTML `content`) —
+    Lynx Analytics listed NJ/NY/SF only in that field. Ashby additionally
+    exposes `workplaceType` (Remote/Hybrid/OnSite) and compensation tiers in
+    the job-board JSON, never in `descriptionHtml` — Notable Senior SWE was
+    Hybrid / San Mateo while the body still talked about a remote track, and
+    Ashby's `isRemote: true` flag is *not* authoritative when workplaceType
+    is Hybrid. Prefer workplaceType over isRemote always.
     """
-    loc = (location or "").strip()
     body = (body or "").strip()
-    if not loc:
-        return body
     if body.lower().startswith("location:"):
         return body
-    return f"Location: {loc}\n\n{body}" if body else f"Location: {loc}"
+
+    lines: list[str] = []
+    loc = (location or "").strip()
+    wt = (workplace_type or "").strip()
+    emp = (employment_type or "").strip()
+    comp = (compensation or "").strip()
+    if loc:
+        lines.append(f"Location: {loc}")
+    if wt:
+        # Normalize Ashby enums for dealbreaker readability
+        pretty = {"OnSite": "Onsite", "Hybrid": "Hybrid", "Remote": "Remote"}.get(wt, wt)
+        lines.append(f"Location Type: {pretty}")
+    if emp:
+        pretty_emp = {"FullTime": "Full time", "PartTime": "Part time"}.get(emp, emp)
+        lines.append(f"Employment Type: {pretty_emp}")
+    if comp:
+        lines.append(f"Compensation: {comp}")
+    if not lines:
+        return body
+    header = "\n".join(lines)
+    return f"{header}\n\n{body}" if body else header
 
 
 def _greenhouse_location(data: dict, fallback: str = "") -> str:
@@ -314,16 +376,28 @@ def _greenhouse_location(data: dict, fallback: str = "") -> str:
     return (fallback or "").strip()
 
 
+def _posting_sidebar_kwargs(p: Posting) -> dict[str, str]:
+    return {
+        "workplace_type": p.workplace_type,
+        "employment_type": p.employment_type,
+        "compensation": p.compensation_summary,
+    }
+
+
 def fetch_full_description(p: Posting) -> str:
     # If the lister already grabbed the HTML (Lever, Ashby), just convert it.
     if p._raw_description_html:
-        return _with_location_header(html_to_text(p._raw_description_html), p.location)
+        return _with_location_header(
+            html_to_text(p._raw_description_html), p.location, **_posting_sidebar_kwargs(p)
+        )
 
     if p.provider == "greenhouse":
         data = _get_json(f"https://boards-api.greenhouse.io/v1/boards/{p.board_token}/jobs/{p.job_id}")
         if isinstance(data, dict):
             loc = _greenhouse_location(data, fallback=p.location)
-            return _with_location_header(html_to_text(data.get("content", "")), loc)
+            return _with_location_header(
+                html_to_text(data.get("content", "")), loc, **_posting_sidebar_kwargs(p)
+            )
 
     if p.provider == "smartrecruiters":
         data = _get_json(
@@ -338,9 +412,11 @@ def fetch_full_description(p: Posting) -> str:
                 text = html_to_text(sec.get("text", ""))
                 if text:
                     parts.append(f"{title}\n{text}" if title else text)
-            return _with_location_header("\n\n".join(parts), p.location)
+            return _with_location_header(
+                "\n\n".join(parts), p.location, **_posting_sidebar_kwargs(p)
+            )
 
-    return _with_location_header("", p.location)
+    return _with_location_header("", p.location, **_posting_sidebar_kwargs(p))
 
 
 # ----------------------------------------------------------------------------
