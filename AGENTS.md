@@ -37,6 +37,7 @@ CLAUDE.md dealbreaker / skills framework changes.
 - Finder folder open: `tools/reveal-folder/install.sh` → `revealfolder://reveal?path=...`
 - Regenerate pending-actions page: `tools/refresh-pending/install.sh` → `refreshpending://run`
 - Inline tri-state edit (direct_recruiter_outreach): `tools/set-direct-recruiter-outreach/install.sh` → `setdro://set?key=...&value=yes|no|undecided`
+- Dismiss LinkedIn reply card: `tools/dismiss-linkedin-reply/install.sh` → `dlr://dismiss?kind=lead|unmatched&key=...&message_id=...`
 
 Prefer `python-docx` via this repo’s `.venv` (+ `letter_style.apply_template_styles`)
 when generating packages from scratch.

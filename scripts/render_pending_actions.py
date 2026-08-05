@@ -1130,9 +1130,10 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <div class="card-body">
       <div class="hint">
         Qualifying follow-ups are pre-drafted (W2/1099 vs C2C, end client, remote, rate band).
-        <strong>Action: Copy reply → Open thread → paste in LinkedIn → send.</strong>
-        Nothing is sent automatically. Structured pitches with a clear Position + agency are
-        also auto-promoted into stub leads so they enter the funnel.
+        <strong>Action: Copy reply → Open thread → paste in LinkedIn → send → Dismiss / marked replied.</strong>
+        Dismiss updates the DB immediately (outbound conversation or unmatched dismissed_at) and
+        removes the card here — no regenerate needed. Requires the one-time
+        <code>tools/dismiss-linkedin-reply/install.sh</code> helper (same pattern as the ⭐ dropdown).
       </div>
       <div class="reply-queue" id="linkedin-reply-queue"></div>
     </div>
@@ -1724,7 +1725,7 @@ function renderLinkedinReplyQueue() {
       ? `<a class="open-thread" href="${escapeHtml(m.threadUrl)}" target="_blank" rel="noopener">Open thread</a>`
       : `<a class="open-thread disabled" href="#" tabindex="-1">No thread link</a>`;
     return `
-      <div class="reply-card">
+      <div class="reply-card" data-queue-idx="${idx}">
         <div class="reply-card-head">
           <span class="who">${escapeHtml(who)}</span>
           <span class="meta">${escapeHtml(roleBits)}</span>
@@ -1733,6 +1734,8 @@ function renderLinkedinReplyQueue() {
         <div class="reply-card-actions">
           <button class="copy-btn" data-reply-idx="${idx}">Copy reply</button>
           ${thread}
+          <button class="copy-btn dismiss-btn" data-dismiss-idx="${idx}"
+            title="Record that you replied (or are done) — updates leads.db and removes this card">Dismiss / marked replied</button>
         </div>
         <pre class="draft">${escapeHtml(m.draftReply || "")}</pre>
       </div>`;
@@ -1747,6 +1750,34 @@ function renderLinkedinReplyQueue() {
       });
     });
   });
+  el.querySelectorAll(".dismiss-btn[data-dismiss-idx]").forEach(btn => {
+    btn.addEventListener("click", () => dismissLinkedinReply(Number(btn.dataset.dismissIdx), btn));
+  });
+}
+
+// Optimistic UI + dlr:// helper (tools/dismiss-linkedin-reply/) — same
+// fire-and-forget pattern as setdro:// for the ⭐ dropdown. Records an
+// outbound conversation (lead) or unmatched dismissed_at so the card stays
+// gone after the next regenerate too.
+function dismissLinkedinReply(idx, btn) {
+  const item = LINKEDIN_REPLY_QUEUE[idx];
+  if (!item) return;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Dismissing…";
+  }
+  LINKEDIN_REPLY_QUEUE.splice(idx, 1);
+  if (item.messageId) {
+    const ui = UNMATCHED_COMMUNICATIONS.findIndex(m => m.messageId === item.messageId);
+    if (ui >= 0) UNMATCHED_COMMUNICATIONS.splice(ui, 1);
+  }
+  renderLinkedinReplyQueue();
+  renderUnmatchedCommunications();
+  renderFunnel();
+  let url = "dlr://dismiss?kind=" + encodeURIComponent(item.kind || "unmatched");
+  if (item.normalizedKey) url += "&key=" + encodeURIComponent(item.normalizedKey);
+  if (item.messageId) url += "&message_id=" + encodeURIComponent(item.messageId);
+  window.location.href = url;
 }
 
 function renderUnmatchedCommunications() {

@@ -163,7 +163,11 @@ CREATE TABLE IF NOT EXISTS unmatched_messages (
     body_text TEXT,
     detected_at TEXT,
     resolved_job_key TEXT,
-    resolved_at TEXT
+    resolved_at TEXT,
+    -- Set when Shawn dismisses a LinkedIn reply card from pending-actions
+    -- (2026-08-04) without resolving onto a job — keeps the audit row but
+    -- drops it from the unmatched / LinkedIn-replies queues.
+    dismissed_at TEXT
 );
 """
 
@@ -260,6 +264,8 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # pipeline/comms_match.py's Tier-1 thread-id matching.
     ("job_conversations", "thread_id", "ALTER TABLE job_conversations ADD COLUMN thread_id TEXT"),
     ("job_conversations", "body_text", "ALTER TABLE job_conversations ADD COLUMN body_text TEXT"),
+    # LinkedIn reply-card dismiss from pending-actions (2026-08-04).
+    ("unmatched_messages", "dismissed_at", "ALTER TABLE unmatched_messages ADD COLUMN dismissed_at TEXT"),
 ]
 
 # models.LEAD_STAGES -> the timestamp column stamped when a lead enters that
@@ -1757,11 +1763,104 @@ def get_unmatched_message(conn: sqlite3.Connection, message_id: str) -> sqlite3.
     ).fetchone()
 
 
-def list_unmatched_messages(conn: sqlite3.Connection, *, include_resolved: bool = False) -> list[sqlite3.Row]:
-    where = "" if include_resolved else "WHERE resolved_at IS NULL"
+def list_unmatched_messages(
+    conn: sqlite3.Connection,
+    *,
+    include_resolved: bool = False,
+    include_dismissed: bool = False,
+) -> list[sqlite3.Row]:
+    clauses: list[str] = []
+    if not include_resolved:
+        clauses.append("resolved_at IS NULL")
+    if not include_dismissed:
+        # Pre-migration DBs may lack the column briefly; _apply_migrations
+        # runs on connect(), so this is safe for callers using connect().
+        clauses.append("(dismissed_at IS NULL OR dismissed_at = '')")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     return list(
         conn.execute(f"SELECT * FROM unmatched_messages {where} ORDER BY detected_at DESC")
     )
+
+
+def dismiss_unmatched_message(
+    conn: sqlite3.Connection, message_id: str, *, when: str | None = None
+) -> None:
+    """Park an unmatched InMail as dismissed (LinkedIn reply card). Idempotent."""
+    conn.execute(
+        """
+        UPDATE unmatched_messages
+           SET dismissed_at = COALESCE(dismissed_at, ?)
+         WHERE message_id = ?
+        """,
+        (when or utc_now_iso(), message_id),
+    )
+    conn.commit()
+
+
+def dismiss_linkedin_reply(
+    conn: sqlite3.Connection,
+    *,
+    kind: str,
+    message_id: str = "",
+    normalized_key: str = "",
+    when: str | None = None,
+) -> str:
+    """Record that Shawn replied to (or dismissed) a LinkedIn pitch card.
+
+    - kind=lead: append an outbound `job_conversations` row so the LinkedIn
+      reply queue drops the card (it filters out leads with any outbound).
+    - kind=unmatched: stamp `dismissed_at` so the unmatched park + queue
+      both drop it.
+
+    When a lead dismiss also carries a message_id still sitting unmatched,
+    that unmatched row is dismissed too. Returns a short status string.
+    """
+    stamp = when or utc_now_iso()
+    kind = (kind or "").strip().lower()
+    if kind == "lead":
+        key = (normalized_key or "").strip()
+        if not key:
+            raise ValueError("normalized_key is required for kind=lead")
+        row = conn.execute(
+            "SELECT 1 FROM job_leads WHERE normalized_key = ? AND deleted_at IS NULL",
+            (key,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Lead not found: {key!r}")
+        synthetic_id = f"dismissed:{message_id or key}"
+        already = conn.execute(
+            "SELECT 1 FROM job_conversations WHERE message_id = ?",
+            (synthetic_id,),
+        ).fetchone()
+        if already is None:
+            add_job_conversation(
+                conn,
+                JobConversation(
+                    job_key=key,
+                    message_id=synthetic_id,
+                    channel="linkedin",
+                    direction="outbound",
+                    summary="Marked replied (pending-actions)",
+                    occurred_at=stamp,
+                    body_text=(
+                        "Shawn dismissed this LinkedIn reply card from pending-actions "
+                        "after sending the qualifying reply (or choosing not to chase)."
+                    ),
+                ),
+            )
+        if message_id:
+            dismiss_unmatched_message(conn, message_id, when=stamp)
+        return f"lead:{key}"
+    if kind == "unmatched":
+        mid = (message_id or "").strip()
+        if not mid:
+            raise ValueError("message_id is required for kind=unmatched")
+        row = get_unmatched_message(conn, mid)
+        if row is None:
+            raise ValueError(f"no unmatched_messages row for message_id={mid!r}")
+        dismiss_unmatched_message(conn, mid, when=stamp)
+        return f"unmatched:{mid}"
+    raise ValueError(f"kind must be 'lead' or 'unmatched', got {kind!r}")
 
 
 def resolve_unmatched_message(
