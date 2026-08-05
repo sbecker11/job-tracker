@@ -133,17 +133,32 @@ def test_fetch_full_description_paths(monkeypatch):
         board_token="t",
         job_id="1",
         title="SWE",
+        location="Remote",
         _raw_description_html="<p>Already here</p>",
     )
-    assert "Already here" in fetch_full_description(p)
+    lever_text = fetch_full_description(p)
+    assert "Already here" in lever_text
+    assert lever_text.startswith("Location: Remote")
 
     monkeypatch.setattr(
         jd_resolver,
         "_get_json",
-        lambda url: {"content": "<p>GH full</p>"} if "greenhouse" in url else None,
+        lambda url: (
+            {
+                "content": "<p>GH full</p>",
+                "location": {
+                    "name": "New Jersey, USA; New York, USA; San Francisco, California, United States"
+                },
+            }
+            if "greenhouse" in url
+            else None
+        ),
     )
     p2 = Posting(provider="greenhouse", board_token="t", job_id="9", title="SWE")
-    assert "GH full" in fetch_full_description(p2)
+    gh_text = fetch_full_description(p2)
+    assert "GH full" in gh_text
+    assert gh_text.startswith("Location: New Jersey, USA")
+    assert "San Francisco" in gh_text.split("\n\n", 1)[0]
 
     monkeypatch.setattr(
         jd_resolver,
@@ -157,12 +172,24 @@ def test_fetch_full_description_paths(monkeypatch):
             }
         },
     )
-    p3 = Posting(provider="smartrecruiters", board_token="t", job_id="9", title="SWE")
+    p3 = Posting(
+        provider="smartrecruiters", board_token="t", job_id="9", title="SWE", location="NY"
+    )
     text = fetch_full_description(p3)
     assert "Do things" in text and "Python" in text
+    assert text.startswith("Location: NY")
 
     p4 = Posting(provider="unknown", board_token="t", job_id="9", title="SWE")
     assert fetch_full_description(p4) == ""
+
+
+def test_with_location_header_idempotent():
+    from job_tracker.ats.jd_resolver import _with_location_header
+
+    assert _with_location_header("Body", "Remote") == "Location: Remote\n\nBody"
+    assert _with_location_header("Location: Remote\n\nBody", "SF") == "Location: Remote\n\nBody"
+    assert _with_location_header("", "SF") == "Location: SF"
+    assert _with_location_header("Body", "") == "Body"
 
 
 def test_board_tokens_for_pinned():

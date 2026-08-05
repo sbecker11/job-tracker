@@ -283,15 +283,47 @@ PROVIDERS = {
 # Full-JD fetchers for the winning posting
 # ----------------------------------------------------------------------------
 
+def _with_location_header(body: str, location: str) -> str:
+    """Prepend ATS location metadata into jd_text (2026-08-04).
+
+    Greenhouse (and similar boards) put office cities in API `location.name`
+    / the careers-page header, not inside the HTML `content` body. Without
+    this prefix, dealbreaker evaluation only saw body text (e.g. a PT-overlap
+    ask) and wrongly treated multi-city onsite roles as remote — Lynx
+    Analytics Fullstack Developer (US) listed NJ/NY/SF.
+    """
+    loc = (location or "").strip()
+    body = (body or "").strip()
+    if not loc:
+        return body
+    if body.lower().startswith("location:"):
+        return body
+    return f"Location: {loc}\n\n{body}" if body else f"Location: {loc}"
+
+
+def _greenhouse_location(data: dict, fallback: str = "") -> str:
+    """Prefer detail-payload location.name; fall back to offices[] names."""
+    loc = ((data.get("location") or {}).get("name") or "").strip()
+    if loc:
+        return loc
+    offices = data.get("offices") or []
+    names = [str(o.get("name") or "").strip() for o in offices if isinstance(o, dict)]
+    names = [n for n in names if n]
+    if names:
+        return "; ".join(names)
+    return (fallback or "").strip()
+
+
 def fetch_full_description(p: Posting) -> str:
     # If the lister already grabbed the HTML (Lever, Ashby), just convert it.
     if p._raw_description_html:
-        return html_to_text(p._raw_description_html)
+        return _with_location_header(html_to_text(p._raw_description_html), p.location)
 
     if p.provider == "greenhouse":
         data = _get_json(f"https://boards-api.greenhouse.io/v1/boards/{p.board_token}/jobs/{p.job_id}")
         if isinstance(data, dict):
-            return html_to_text(data.get("content", ""))
+            loc = _greenhouse_location(data, fallback=p.location)
+            return _with_location_header(html_to_text(data.get("content", "")), loc)
 
     if p.provider == "smartrecruiters":
         data = _get_json(
@@ -306,9 +338,9 @@ def fetch_full_description(p: Posting) -> str:
                 text = html_to_text(sec.get("text", ""))
                 if text:
                     parts.append(f"{title}\n{text}" if title else text)
-            return "\n\n".join(parts)
+            return _with_location_header("\n\n".join(parts), p.location)
 
-    return ""
+    return _with_location_header("", p.location)
 
 
 # ----------------------------------------------------------------------------
