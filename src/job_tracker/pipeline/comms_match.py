@@ -39,8 +39,9 @@ from job_tracker.email.models import EmailMessage, ExtractedRole
 from job_tracker.pipeline import store
 from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_EXTRACT_MODEL
 from job_tracker.pipeline.llm_extract import extract_roles_llm_cached
+from job_tracker.pipeline.qualifying_reply import extract_role_heuristic
 
-MatchTier = str  # "thread_id" | "contact_email" | "llm_company_title" | "llm_company_only" | "llm_new_lead" | "unmatched"
+MatchTier = str  # "thread_id" | "contact_email" | "llm_company_title" | "llm_company_only" | "llm_new_lead" | "heuristic_company_title" | "heuristic_new_lead" | "unmatched"
 
 
 @dataclass
@@ -61,10 +62,49 @@ class MatchOutcome:
 
     @property
     def is_new_lead_candidate(self) -> bool:
-        """True only for tier 4 above: a full (company, title) pair was
-        extracted with enough confidence to act on, but it's genuinely new
-        — not a case of "couldn't tell", which stays parked instead."""
-        return self.tier == "llm_new_lead" and self.extracted_role is not None
+        """True when a full (company, title) pair was extracted (LLM or free
+        heuristic) but it's genuinely new — not a "couldn't tell" park."""
+        return (
+            self.tier in ("llm_new_lead", "heuristic_new_lead")
+            and self.extracted_role is not None
+        )
+
+
+def _outcome_from_role(conn: sqlite3.Connection, role: ExtractedRole, *, source: str) -> MatchOutcome | None:
+    """Map a full/partial ExtractedRole onto match tiers. Returns None if the
+    role has neither company nor title worth acting on."""
+    if role.company and role.title:
+        match = store.find_matching_job(conn, role.company, role.title)
+        if match:
+            return MatchOutcome(
+                match.normalized_key,
+                f"{source}_company_title",
+                f"{source} extracted {role.title!r} @ {role.company!r}, matched an existing job",
+                extracted_role=role,
+            )
+        return MatchOutcome(
+            None,
+            f"{source}_new_lead",
+            f"{source} extracted {role.title!r} @ {role.company!r}; no existing job — eligible for a new stub lead",
+            extracted_role=role,
+        )
+    if role.company and source == "llm":
+        candidates = store.find_company_only_matches(conn, role.company)
+        if len(candidates) == 1:
+            return MatchOutcome(
+                candidates[0].normalized_key,
+                "llm_company_only",
+                f"LLM extracted company {role.company!r} (no usable title); exactly one existing job for it",
+                extracted_role=role,
+            )
+        if len(candidates) > 1:
+            return MatchOutcome(
+                None,
+                "unmatched",
+                f"LLM extracted company {role.company!r} but {len(candidates)} existing jobs match it — ambiguous",
+                extracted_role=role,
+            )
+    return None
 
 
 def match_message_to_job(
@@ -89,51 +129,25 @@ def match_message_to_job(
         if job_key:
             return MatchOutcome(job_key, "contact_email", f"{other_address!r} already on file as a contact")
 
+    # Free heuristic before paid LLM (2026-08-04): structured InMails with
+    # Position: + agency Inc line become stub leads without API spend.
+    heuristic = extract_role_heuristic(message.combined_text or "")
+    if heuristic is not None:
+        outcome = _outcome_from_role(conn, heuristic, source="heuristic")
+        if outcome is not None:
+            return outcome
+
     if not use_llm_fallback:
-        return MatchOutcome(None, "unmatched", "no thread/contact match; LLM fallback not requested")
+        return MatchOutcome(None, "unmatched", "no thread/contact/heuristic match; LLM fallback not requested")
 
     roles = extract_roles_llm_cached(conn, message, model=llm_model)
     if not roles:
         return MatchOutcome(None, "unmatched", "no thread/contact match; LLM found no company/title in body")
 
     role = max(roles, key=lambda r: r.confidence)
-
-    if role.company and role.title:
-        match = store.find_matching_job(conn, role.company, role.title)
-        if match:
-            return MatchOutcome(
-                match.normalized_key,
-                "llm_company_title",
-                f"LLM extracted {role.title!r} @ {role.company!r}, matched an existing job",
-                extracted_role=role,
-            )
-        # Both company and title came through clean, just not for anything
-        # already tracked — a real new lead, not a "couldn't tell" case. Not
-        # resolved here (this module never writes to job_leads); the caller
-        # decides whether to act on `is_new_lead_candidate`.
-        return MatchOutcome(
-            None,
-            "llm_new_lead",
-            f"LLM extracted {role.title!r} @ {role.company!r}; no existing job for it — eligible for a new stub lead",
-            extracted_role=role,
-        )
-
-    if role.company:
-        candidates = store.find_company_only_matches(conn, role.company)
-        if len(candidates) == 1:
-            return MatchOutcome(
-                candidates[0].normalized_key,
-                "llm_company_only",
-                f"LLM extracted company {role.company!r} (no usable title); exactly one existing job for it",
-                extracted_role=role,
-            )
-        if len(candidates) > 1:
-            return MatchOutcome(
-                None,
-                "unmatched",
-                f"LLM extracted company {role.company!r} but {len(candidates)} existing jobs match it — ambiguous",
-                extracted_role=role,
-            )
+    outcome = _outcome_from_role(conn, role, source="llm")
+    if outcome is not None:
+        return outcome
 
     return MatchOutcome(
         None,

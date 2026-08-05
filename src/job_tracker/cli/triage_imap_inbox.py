@@ -222,7 +222,11 @@ def _handle_linkedin_reply(
     if outcome.is_new_lead_candidate:
         job_key = _create_lead_from_extraction(conn, outcome.extracted_role, message, message.id)
         action = "new lead created"
-    elif outcome.matched and outcome.tier == "llm_company_title" and outcome.extracted_role is not None:
+    elif (
+        outcome.matched
+        and outcome.tier in ("llm_company_title", "heuristic_company_title")
+        and outcome.extracted_role is not None
+    ):
         if _update_lead_jd_text(conn, job_key, outcome.extracted_role, message):
             action = "linked (+ jd_text updated)"
 
@@ -276,7 +280,12 @@ def _handle_linkedin_reply(
             action = "linked"
         if post_app_action:
             action += f" ({post_app_action})"
-        if outcome.tier in ("llm_company_title", "llm_new_lead"):
+        if outcome.tier in (
+            "llm_company_title",
+            "llm_new_lead",
+            "heuristic_company_title",
+            "heuristic_new_lead",
+        ):
             job_row = conn.execute(
                 "SELECT company, title FROM job_leads WHERE normalized_key = ?", (job_key,)
             ).fetchone()

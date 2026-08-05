@@ -37,6 +37,10 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT, _safe_filename  # noqa: E402
+from job_tracker.pipeline.qualifying_reply import (  # noqa: E402
+    draft_qualifying_reply,
+    promote_heuristic_unmatched,
+)
 from job_tracker.pipeline.store import (  # noqa: E402
     DEFAULT_DB_PATH,
     apply_url_identity,
@@ -389,6 +393,9 @@ def render(conn, *, output_root: Path, now: datetime, automation_state_dir: Path
     # Heal applied_at / same-URL twin lags before bucketing so Ready to apply
     # does not keep resurfacing already-submitted postings (2026-08-04).
     heal_applied_crm(conn)
+    # Promote structured LinkedIn pitches (Position: + agency) out of the
+    # unmatched park into stub leads — free heuristic, no LLM (2026-08-04).
+    promote_heuristic_unmatched(conn)
     rows = [dict(r) for r in conn.execute(f"SELECT {_LEAD_COLUMNS} FROM job_leads")]
 
     # Per-company distinct titles across ALL rows/statuses (mirrors
@@ -519,25 +526,35 @@ def render(conn, *, output_root: Path, now: datetime, automation_state_dir: Path
     needs_decision_forced.sort(key=lambda l: (-l["ageDays"], -l["matchPct"]))
     ready_to_apply.sort(key=lambda l: (-l["ageDays"], -l["matchPct"]))
 
-    unmatched_communications = [
-        {
-            "messageId": r["message_id"],
-            "direction": r["direction"],
-            "fromAddress": r["from_address"] or "",
-            "toAddress": r["to_address"] or "",
-            "subject": r["subject"] or "(no subject)",
-            "preview": (r["body_text"] or "").strip().replace("\n", " ")[:180],
-            # Full text too (not just the 180-char preview) — this page is a
-            # static file with no live DB access, so the only way to read a
-            # message in full from the dashboard itself is to have it already
-            # embedded; the table row's "Preview" cell expands to show it
-            # (see renderUnmatchedCommunications()/`.preview-cell` below).
-            "body": r["body_text"] or "",
-            "ageDays": _age_days(r["detected_at"], now),
-        }
-        for r in list_unmatched_messages(conn)
-    ]
+    unmatched_communications = []
+    for r in list_unmatched_messages(conn):
+        body = r["body_text"] or ""
+        draft = draft_qualifying_reply(body, subject=r["subject"] or "")
+        unmatched_communications.append(
+            {
+                "messageId": r["message_id"],
+                "direction": r["direction"],
+                "fromAddress": r["from_address"] or "",
+                "toAddress": r["to_address"] or "",
+                "subject": r["subject"] or "(no subject)",
+                "preview": body.strip().replace("\n", " ")[:180],
+                # Full text too (not just the 180-char preview) — this page is a
+                # static file with no live DB access, so the only way to read a
+                # message in full from the dashboard itself is to have it already
+                # embedded; the table row's "Preview" cell expands to show it
+                # (see renderUnmatchedCommunications()/`.preview-cell` below).
+                "body": body,
+                "ageDays": _age_days(r["detected_at"], now),
+                "recruiterName": draft.recruiter_name,
+                "threadUrl": draft.thread_url,
+                "draftReply": draft.body,
+                "companyGuess": draft.company_guess,
+                "titleGuess": draft.title_guess,
+            }
+        )
     unmatched_communications.sort(key=lambda m: -m["ageDays"])
+
+    linkedin_reply_queue = _build_linkedin_reply_queue(conn, unmatched_communications, now=now)
 
     poisoned_linkedin = _list_poisoned_linkedin_messages(conn, now=now)
     schedule_health = _read_automation_schedule_health(
@@ -583,11 +600,122 @@ def render(conn, *, output_root: Path, now: datetime, automation_state_dir: Path
         # still surfaced prominently since it's real, actionable signal
         # sitting untracked otherwise. See resolve_communication.py.
         "unmatched_communications": unmatched_communications,
+        "linkedin_reply_queue": linkedin_reply_queue,
         "poisoned_linkedin": poisoned_linkedin,
         "schedule_health": schedule_health,
         "total_leads": len(rows),
         "generated_at": now,
     }
+
+
+# Only surface first-touch LinkedIn pitches recent enough to still answer.
+_LINKEDIN_REPLY_MAX_AGE_DAYS = 14
+
+
+def _is_first_touch_linkedin_subject(subject: str) -> bool:
+    s = (subject or "").strip().lower()
+    if not s:
+        return False
+    # Recruiter already replied in-thread — not a "send first qualifier" card.
+    if s.startswith("message replied:"):
+        return False
+    return True
+
+
+def _build_linkedin_reply_queue(
+    conn, unmatched_communications: list[dict], *, now: datetime
+) -> list[dict]:
+    """Copy-ready qualifying drafts: recent parked InMails + LinkedIn stub
+    leads with inbound mail and no outbound reply yet (2026-08-04)."""
+    queue: list[dict] = []
+    seen_threads: set[str] = set()
+    seen_names_subjects: set[tuple[str, str]] = set()
+
+    for m in unmatched_communications:
+        if (m.get("ageDays") or 0) > _LINKEDIN_REPLY_MAX_AGE_DAYS:
+            continue
+        if not _is_first_touch_linkedin_subject(m.get("subject") or ""):
+            continue
+        fr = (m.get("fromAddress") or "").strip().lower()
+        is_li = fr in _LINKEDIN_PERSONAL_REPLY_SENDERS or bool(m.get("threadUrl"))
+        if not is_li:
+            continue
+        key = m.get("threadUrl") or m.get("messageId") or ""
+        dedupe = ((m.get("recruiterName") or "").lower(), (m.get("subject") or "").lower())
+        if dedupe in seen_names_subjects:
+            continue
+        seen_names_subjects.add(dedupe)
+        if key:
+            seen_threads.add(key)
+        queue.append(
+            {
+                "kind": "unmatched",
+                "recruiterName": m.get("recruiterName") or "",
+                "subject": m.get("subject") or "",
+                "company": m.get("companyGuess") or "",
+                "title": m.get("titleGuess") or "",
+                "threadUrl": m.get("threadUrl") or "",
+                "draftReply": m.get("draftReply") or "",
+                "ageDays": m.get("ageDays") or 0,
+                "messageId": m.get("messageId") or "",
+            }
+        )
+
+    # Fresh LinkedIn stub leads awaiting Shawn's first outbound reply.
+    for r in conn.execute(
+        """
+        SELECT normalized_key, company, title, source_label, first_seen
+        FROM job_leads
+        WHERE deleted_at IS NULL
+          AND status = 'new'
+          AND lower(coalesce(source_label, '')) IN ('linkedin_message', 'linkedin-inmail', 'linkedin_inmail')
+        ORDER BY first_seen DESC
+        """
+    ):
+        age = _age_days(r["first_seen"], now)
+        if age > _LINKEDIN_REPLY_MAX_AGE_DAYS:
+            continue
+        convs = list_job_conversations(conn, r["normalized_key"])
+        if not convs:
+            continue
+        if any((c["direction"] or "") == "outbound" for c in convs):
+            continue
+        inbound = next((c for c in convs if (c["direction"] or "") == "inbound"), convs[0])
+        subj = inbound["summary"] or r["title"] or ""
+        if not _is_first_touch_linkedin_subject(subj):
+            continue
+        body = inbound["body_text"] or ""
+        draft = draft_qualifying_reply(body, subject=subj)
+        # Need a real thread link or a named recruiter — skip empty stubs.
+        if not draft.thread_url and not draft.recruiter_name:
+            continue
+        thread = draft.thread_url
+        if thread and thread in seen_threads:
+            continue
+        dedupe = (draft.recruiter_name.lower(), (r["title"] or "").lower())
+        if dedupe in seen_names_subjects:
+            continue
+        seen_names_subjects.add(dedupe)
+        if thread:
+            seen_threads.add(thread)
+        queue.append(
+            {
+                "kind": "lead",
+                "recruiterName": draft.recruiter_name,
+                "subject": subj,
+                "company": r["company"] or draft.company_guess,
+                "title": r["title"] or draft.title_guess,
+                "threadUrl": thread,
+                "draftReply": draft.body,
+                "ageDays": age,
+                "messageId": inbound["message_id"] or "",
+                "normalizedKey": r["normalized_key"],
+            }
+        )
+
+    # Newest first — these are the ones to answer tonight.
+    queue.sort(key=lambda x: x["ageDays"])
+    return queue
 
 
 _TEMPLATE = r"""<!DOCTYPE html>
@@ -920,6 +1048,35 @@ _TEMPLATE = r"""<!DOCTYPE html>
   @keyframes regen-spin {
     to { transform: rotate(360deg); }
   }
+  .reply-queue { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
+  .reply-card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    background: var(--bg-elevated, #fafafa);
+  }
+  .reply-card-head {
+    display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: baseline;
+    margin-bottom: 8px; font-size: 13px;
+  }
+  .reply-card-head .who { font-weight: 600; color: var(--text); }
+  .reply-card-head .meta { color: var(--text-secondary); }
+  .reply-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+  .reply-card pre.draft {
+    white-space: pre-wrap; word-break: break-word;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px; line-height: 1.45;
+    margin: 0; padding: 10px 12px;
+    background: #fff; border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text);
+  }
+  a.open-thread {
+    display: inline-block; padding: 6px 12px; border-radius: 6px;
+    border: 1px solid var(--border); text-decoration: none;
+    color: var(--info); font-size: 12px; font-family: inherit;
+  }
+  a.open-thread:hover { border-color: var(--accent); }
+  a.open-thread.disabled { color: var(--text-tertiary); pointer-events: none; }
 </style>
 </head>
 <body>
@@ -967,6 +1124,19 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <div class="funnel-note" id="funnel-note"></div>
 
   <hr class="divider" />
+
+  <details open id="section-linkedin-replies">
+    <summary>0. LinkedIn replies &mdash; copy draft, open thread, send <span class="header-count-pill" id="linkedin-reply-count"></span></summary>
+    <div class="card-body">
+      <div class="hint">
+        Qualifying follow-ups are pre-drafted (W2/1099 vs C2C, end client, remote, rate band).
+        <strong>Action: Copy reply → Open thread → paste in LinkedIn → send.</strong>
+        Nothing is sent automatically. Structured pitches with a clear Position + agency are
+        also auto-promoted into stub leads so they enter the funnel.
+      </div>
+      <div class="reply-queue" id="linkedin-reply-queue"></div>
+    </div>
+  </details>
 
   <details open id="section-ready-to-apply">
     <summary>1. Ready to apply &mdash; docs generated, nothing done with it yet <span class="header-count-pill" id="ready-to-apply-count"></span></summary>
@@ -1090,18 +1260,15 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
-          <thead><tr><th>Direction</th><th>Subject</th><th>From / To</th><th>Preview</th><th class="num">Age (days)</th></tr></thead>
+          <thead><tr><th>Direction</th><th>Subject</th><th>From / To</th><th>Preview</th><th>Reply</th><th class="num">Age (days)</th></tr></thead>
           <tbody id="unmatched-communications-body"></tbody>
         </table>
       </div>
       <div class="hint">
-        Found by <code>scripts/scan_communications.py</code> (LinkedIn message replies routed to
-        <code>Category/social</code> that <code>triage_recruiter_inbox.py</code> never sees, plus optionally
-        your own Sent-folder replies) but couldn't be matched to any job by thread id, known contact
-        address, or (if <code>--llm-fallback</code> was used) an LLM-extracted company/title.
-        <strong>Action:</strong> run <code>python3 scripts/resolve_communication.py --list</code> to see the
-        full text, then <code>resolve_communication.py --message-id &lt;id&gt; --company "&hellip;" --title
-        "&hellip;"</code> (add <code>--create</code> if it's a genuinely new lead with no JD yet).
+        Found by <code>scripts/scan_communications.py</code> / IMAP triage but couldn't be matched
+        to any job. Prefer section <strong>0. LinkedIn replies</strong> above for copy-ready drafts.
+        Structured Position+agency pitches are auto-promoted on regenerate. Manual fallback:
+        <code>resolve_communication.py --message-id &lt;id&gt; --company "&hellip;" --title "&hellip;" --create</code>.
       </div>
     </div>
   </details>
@@ -1152,6 +1319,7 @@ const JD_UNRESOLVED = ${JD_UNRESOLVED_JSON};
 const NOT_PRIORITIZED_COUNT = ${NOT_PRIORITIZED_COUNT_JSON};
 const MANUAL_HANDLED = ${MANUAL_HANDLED_JSON};
 const UNMATCHED_COMMUNICATIONS = ${UNMATCHED_COMMUNICATIONS_JSON};
+const LINKEDIN_REPLY_QUEUE = ${LINKEDIN_REPLY_QUEUE_JSON};
 const POISONED_LINKEDIN = ${POISONED_LINKEDIN_JSON};
 
 // PENDING_REVIEW kept as the name of the main filterable table's backing
@@ -1362,6 +1530,7 @@ const FUNNEL_STEPS = [
   { count: () => NEEDS_DECISION.length, label: "Needs your decision", cls: "blocker", sectionId: "section-needs-decision" },
   { count: () => AWAITING_LLM_REVIEW.length, label: "Awaiting full-LLM-review", cls: "blocker", sectionId: "section-awaiting-llm-review" },
   { count: () => JD_UNRESOLVED.length, label: "JD unresolved", cls: "blocker-far", sectionId: "section-jd-unresolved" },
+  { count: () => LINKEDIN_REPLY_QUEUE.length, label: "LinkedIn replies to send", cls: "blocker-near", sectionId: "section-linkedin-replies" },
   { count: () => UNMATCHED_COMMUNICATIONS.length, label: "Unmatched communications", cls: "blocker-far", sectionId: "section-unmatched-communications" },
   { count: () => POISONED_LINKEDIN.length, label: "LinkedIn NEEDS_REVIEW (empty)", cls: "blocker-far", sectionId: "section-poisoned-linkedin" },
 ];
@@ -1540,9 +1709,49 @@ function renderPoisonedLinkedin() {
     </tr>`).join("");
 }
 
+function renderLinkedinReplyQueue() {
+  const el = document.getElementById("linkedin-reply-queue");
+  const countEl = document.getElementById("linkedin-reply-count");
+  countEl.textContent = LINKEDIN_REPLY_QUEUE.length;
+  if (!LINKEDIN_REPLY_QUEUE.length) {
+    el.innerHTML = `<div class="hint" style="margin:0;">Nothing waiting — LinkedIn pitches with a clear ask already have drafts here when they land.</div>`;
+    return;
+  }
+  el.innerHTML = LINKEDIN_REPLY_QUEUE.map((m, idx) => {
+    const who = m.recruiterName || "(recruiter)";
+    const roleBits = [m.company, m.title].filter(Boolean).join(" / ") || m.subject || "(role TBD)";
+    const thread = m.threadUrl
+      ? `<a class="open-thread" href="${escapeHtml(m.threadUrl)}" target="_blank" rel="noopener">Open thread</a>`
+      : `<a class="open-thread disabled" href="#" tabindex="-1">No thread link</a>`;
+    return `
+      <div class="reply-card">
+        <div class="reply-card-head">
+          <span class="who">${escapeHtml(who)}</span>
+          <span class="meta">${escapeHtml(roleBits)}</span>
+          <span class="meta">${m.ageDays}d · ${escapeHtml(m.kind)}</span>
+        </div>
+        <div class="reply-card-actions">
+          <button class="copy-btn" data-reply-idx="${idx}">Copy reply</button>
+          ${thread}
+        </div>
+        <pre class="draft">${escapeHtml(m.draftReply || "")}</pre>
+      </div>`;
+  }).join("");
+  el.querySelectorAll(".copy-btn[data-reply-idx]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const item = LINKEDIN_REPLY_QUEUE[Number(btn.dataset.replyIdx)];
+      navigator.clipboard.writeText(item.draftReply || "").then(() => {
+        btn.textContent = "Copied";
+        btn.classList.add("copied");
+        setTimeout(() => { btn.textContent = "Copy reply"; btn.classList.remove("copied"); }, 1500);
+      });
+    });
+  });
+}
+
 function renderUnmatchedCommunications() {
   document.getElementById("unmatched-communications-count").textContent = UNMATCHED_COMMUNICATIONS.length;
-  document.getElementById("unmatched-communications-body").innerHTML = UNMATCHED_COMMUNICATIONS.map(m => {
+  document.getElementById("unmatched-communications-body").innerHTML = UNMATCHED_COMMUNICATIONS.map((m, idx) => {
     // The 180-char preview is all that fits in a table cell; click it to
     // expand the full stored body inline (no live DB access from this
     // static page, so the full text has to already be embedded — see
@@ -1561,19 +1770,33 @@ function renderUnmatchedCommunications() {
           <div class="preview-body">${escapeHtml(m.body)}</div>
         </div>`
       : "";
+    const replyBtn = m.draftReply
+      ? `<button class="copy-btn" data-unmatched-idx="${idx}">Copy reply</button>`
+      : "";
     return `
     <tr>
       <td>${escapeHtml(m.direction)}</td>
       <td class="title">${escapeHtml(m.subject)}</td>
-      <td class="title">${escapeHtml(m.fromAddress || m.toAddress)}</td>
+      <td class="title">${escapeHtml(m.recruiterName || m.fromAddress || m.toAddress)}</td>
       <td class="title preview-cell">
         ${hasMore
           ? `<details><summary>${escapeHtml(m.preview)}&hellip;</summary>${fullBlock}</details>`
           : escapeHtml(m.preview || "(empty)")}
       </td>
+      <td>${replyBtn}</td>
       ${ageCellHtml(m.ageDays)}
     </tr>`;
   }).join("");
+  document.querySelectorAll("#unmatched-communications-body .copy-btn[data-unmatched-idx]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const item = UNMATCHED_COMMUNICATIONS[Number(btn.dataset.unmatchedIdx)];
+      navigator.clipboard.writeText(item.draftReply || "").then(() => {
+        btn.textContent = "Copied";
+        btn.classList.add("copied");
+        setTimeout(() => { btn.textContent = "Copy reply"; btn.classList.remove("copied"); }, 1500);
+      });
+    });
+  });
 }
 
 function renderManualHandled() {
@@ -1702,6 +1925,7 @@ renderAutoRefreshStatus();
 renderFunnel();
 renderPills();
 renderTable();
+renderLinkedinReplyQueue();
 renderReadyToApply();
 renderNeedsDecisionForced();
 renderAwaitingLlmReview();
@@ -1740,7 +1964,8 @@ def _render_html(data: dict, *, output_root: Path) -> str:
             if data["manual_handled"]
             else "none"
         )
-        + f". {len(data['unmatched_communications'])} unmatched communication(s) awaiting manual resolution."
+        + f". {len(data['linkedin_reply_queue'])} LinkedIn reply draft(s) ready to copy."
+        + f" {len(data['unmatched_communications'])} unmatched communication(s) awaiting manual resolution."
         + f" {len(data['poisoned_linkedin'])} LinkedIn InMail(s) wrongly parked as NEEDS_REVIEW."
         + f' <span id="direct-recruiter-count">{data["direct_recruiter_count"]}</span> of the leads above '
         "(\u2B50) are confirmed direct recruiter outreach — this updates live as you use the \u2606/\u2B50/"
@@ -1761,6 +1986,7 @@ def _render_html(data: dict, *, output_root: Path) -> str:
     html = html.replace("${NOT_PRIORITIZED_COUNT_JSON}", json.dumps(data["not_prioritized_count"]))
     html = html.replace("${MANUAL_HANDLED_JSON}", json.dumps(data["manual_handled"]))
     html = html.replace("${UNMATCHED_COMMUNICATIONS_JSON}", json.dumps(data["unmatched_communications"]))
+    html = html.replace("${LINKEDIN_REPLY_QUEUE_JSON}", json.dumps(data["linkedin_reply_queue"]))
     html = html.replace("${POISONED_LINKEDIN_JSON}", json.dumps(data["poisoned_linkedin"]))
     health = data["schedule_health"]
     month_uptime = health.get("monthUptime") or {}

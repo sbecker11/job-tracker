@@ -298,7 +298,11 @@ def _scan_one(
         job_key = _create_lead_from_extraction(conn, outcome.extracted_role, message, message_id)
         result["job_key"] = job_key
         result["action"] = "new lead created"
-    elif outcome.matched and outcome.tier == "llm_company_title" and outcome.extracted_role is not None:
+    elif (
+        outcome.matched
+        and outcome.tier in ("llm_company_title", "heuristic_company_title")
+        and outcome.extracted_role is not None
+    ):
         if _update_lead_jd_text(conn, job_key, outcome.extracted_role, message):
             result["action"] = "linked (+ jd_text updated)"
 
@@ -374,7 +378,12 @@ def _scan_one(
         # applies once BOTH company and title were extracted — a bare
         # thread-id/contact-email match (no fresh extraction) has nothing
         # new to archive beyond what's already in job_conversations.body_text.
-        if outcome.tier in ("llm_company_title", "llm_new_lead"):
+        if outcome.tier in (
+            "llm_company_title",
+            "llm_new_lead",
+            "heuristic_company_title",
+            "heuristic_new_lead",
+        ):
             # Use the lead's own canonical company/title, not the LLM's raw
             # extracted text — for a fuzzy Tier-3a match those can differ
             # slightly (e.g. "Clevanoo" vs. "Clevanoo LLC"), and `_job_folder`
