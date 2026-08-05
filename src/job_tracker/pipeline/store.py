@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from job_tracker.pipeline.models import (
     JobContact,
@@ -278,6 +279,31 @@ _STAGE_DATE_COLUMNS: dict[str, str] = {
     "unavailable": "unavailable_at",
     "hired": "hired_at",
 }
+
+# Magic-path stages in forward order (excludes off-ramps). Used by
+# advance_status's regression guard (2026-08-04) so triage cannot bounce an
+# already-applied lead back to package_generated when an ATS "thanks for
+# applying" mail is re-scored as a pursue JD.
+_FORWARD_STATUS_ORDER: tuple[str, ...] = (
+    "new",
+    "pursued",
+    "package_generated",
+    "applied",
+    "following_up",
+    "interviewing",
+    "offered",
+    "accepted",
+    "started",
+)
+_OFF_RAMP_STATUSES: frozenset[str] = frozenset(
+    {"skipped", "rejected", "deleted", "unavailable", "hired"}
+)
+# Statuses that still mean "not yet submitted" for Ready-to-apply / heal logic.
+_PRE_APPLIED_STATUSES: frozenset[str] = frozenset({"new", "pursued", "package_generated"})
+# Sibling already past the apply gate → same posting should not stay Ready.
+_APPLIED_OR_BEYOND_STATUSES: frozenset[str] = frozenset(
+    {"applied", "following_up", "interviewing", "offered", "accepted", "started"}
+)
 
 
 def _migrate_pursued_skipped_rename(conn: sqlite3.Connection) -> None:
@@ -583,20 +609,73 @@ def list_leads_awaiting_full_llm_review(conn: sqlite3.Connection, min_match_pct:
     )
 
 
+def _forward_status_rank(stage: str | None) -> int | None:
+    """Index in `_FORWARD_STATUS_ORDER`, or None for off-ramps / unknown."""
+    if stage is None:
+        return None
+    try:
+        return _FORWARD_STATUS_ORDER.index(stage)
+    except ValueError:
+        return None
+
+
+def apply_url_identity(url: str | None) -> str:
+    """Stable identity for "same job posting" matching across title twins.
+
+    Prefers ATS job ids (`gh_jid`, common Ashby/Lever path UUIDs); falls back
+    to host+path with a trailing-dot strip. Empty/missing URLs → "".
+    """
+    raw = (url or "").strip().rstrip(".")
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    host = (parsed.netloc or "").lower()
+    if not host:
+        return raw.lower()
+    qs = parse_qs(parsed.query)
+    for key in ("gh_jid", "ghId", "jobId", "jid", "lever-origin"):
+        vals = qs.get(key) or []
+        if vals and vals[0]:
+            return f"{host}|{key}={vals[0]}"
+    path = (parsed.path or "").rstrip("/").lower()
+    return f"{host}{path}"
+
+
 def advance_status(
-    conn: sqlite3.Connection, normalized_key: str, stage: str, *, when: str | None = None
-) -> None:
+    conn: sqlite3.Connection,
+    normalized_key: str,
+    stage: str,
+    *,
+    when: str | None = None,
+    force: bool = False,
+) -> bool:
     """Move a lead to `stage` (one of models.LEAD_STAGES) and, unless it's
     "new", stamp the matching `<stage>_at` timestamp column with `when`
     (defaults to now). Never rewrites an already-set stage timestamp if
     called again for the same stage (e.g. re-running the triage CLI over an
     already-pursued lead), so the timeline records the *first* time a lead
     reached that stage.
+
+    Forward-only by default (2026-08-04): pipeline callers cannot regress a
+    lead along the magic path (e.g. applied → package_generated) or revive a
+    lead out of an off-ramp. Off-ramp stages (skipped/rejected/deleted/…)
+    always apply. Pass `force=True` for deliberate human edits
+    (`list_leads.py --set-status`). Returns True if status was written.
     """
     from job_tracker.pipeline.models import LEAD_STAGES
 
     if stage not in LEAD_STAGES:
         raise ValueError(f"unknown lead stage {stage!r}; must be one of {LEAD_STAGES}")
+
+    if not force:
+        current = get_lead_status(conn, normalized_key)
+        if current is not None and current != stage:
+            if stage not in _OFF_RAMP_STATUSES and current in _OFF_RAMP_STATUSES:
+                return False
+            cur_rank = _forward_status_rank(current)
+            tgt_rank = _forward_status_rank(stage)
+            if cur_rank is not None and tgt_rank is not None and tgt_rank < cur_rank:
+                return False
 
     date_column = _STAGE_DATE_COLUMNS.get(stage)
     if date_column is None:
@@ -611,6 +690,116 @@ def advance_status(
             (stage, when or utc_now_iso(), normalized_key),
         )
     conn.commit()
+    return True
+
+
+def heal_applied_status_lags(
+    conn: sqlite3.Connection, *, dry_run: bool = False
+) -> list[dict[str, str]]:
+    """Advance leads that have `applied_at` set but are still pre-applied.
+
+    Returns a list of `{normalized_key, reason, applied_at}` dicts for each
+    row healed (or that would be, when `dry_run`).
+    """
+    rows = conn.execute(
+        """
+        SELECT normalized_key, status, applied_at, company, title
+        FROM job_leads
+        WHERE applied_at IS NOT NULL AND applied_at != ''
+          AND status IN ('new', 'pursued', 'package_generated')
+        """
+    ).fetchall()
+    actions: list[dict[str, str]] = []
+    for row in rows:
+        actions.append(
+            {
+                "normalized_key": row["normalized_key"],
+                "company": row["company"],
+                "title": row["title"],
+                "reason": f"applied_at set ({row['applied_at']}) but status={row['status']!r}",
+                "applied_at": row["applied_at"],
+            }
+        )
+        if not dry_run:
+            advance_status(
+                conn, row["normalized_key"], "applied", when=row["applied_at"], force=True
+            )
+    return actions
+
+
+def heal_same_apply_url_twins(
+    conn: sqlite3.Connection, *, dry_run: bool = False
+) -> list[dict[str, str]]:
+    """Mark pre-applied leads applied when a sibling shares the same posting URL.
+
+    Title twins (Mainstay AI vs non-AI, Freenome SSE vs SSE II) that point at
+    the same Greenhouse/Ashby id must not sit in Ready to apply after one
+    sibling was submitted.
+    """
+    rows = conn.execute(
+        """
+        SELECT normalized_key, company, title, status, applied_at, apply_url
+        FROM job_leads
+        WHERE apply_url IS NOT NULL AND trim(apply_url) != ''
+        """
+    ).fetchall()
+    by_id: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        ident = apply_url_identity(row["apply_url"])
+        if not ident:
+            continue
+        by_id.setdefault(ident, []).append(row)
+
+    actions: list[dict[str, str]] = []
+    for ident, group in by_id.items():
+        donors = [r for r in group if r["status"] in _APPLIED_OR_BEYOND_STATUSES]
+        if not donors:
+            continue
+        donor = min(donors, key=lambda r: r["applied_at"] or r["normalized_key"])
+        when = donor["applied_at"] or utc_now_iso()
+        for row in group:
+            if row["status"] not in _PRE_APPLIED_STATUSES:
+                continue
+            actions.append(
+                {
+                    "normalized_key": row["normalized_key"],
+                    "company": row["company"],
+                    "title": row["title"],
+                    "reason": (
+                        f"same apply URL as {donor['normalized_key']} "
+                        f"(status={donor['status']!r}; id={ident})"
+                    ),
+                    "applied_at": when,
+                }
+            )
+            if not dry_run:
+                advance_status(conn, row["normalized_key"], "applied", when=when, force=True)
+                add_job_conversation(
+                    conn,
+                    JobConversation(
+                        job_key=row["normalized_key"],
+                        channel="other",
+                        direction="outbound",
+                        summary=(
+                            "CRM hygiene: marked applied — same posting URL as "
+                            f"{donor['company']} / {donor['title']}."
+                        ),
+                        occurred_at=utc_now_iso(),
+                        body_text=(
+                            f"Sibling key: {donor['normalized_key']}\n"
+                            f"Apply URL identity: {ident}\n"
+                            f"URL: {row['apply_url']}"
+                        ),
+                    ),
+                )
+    return actions
+
+
+def heal_applied_crm(conn: sqlite3.Connection, *, dry_run: bool = False) -> list[dict[str, str]]:
+    """Run applied_at-lag + same-URL-twin heals. Safe to re-run (idempotent)."""
+    return heal_applied_status_lags(conn, dry_run=dry_run) + heal_same_apply_url_twins(
+        conn, dry_run=dry_run
+    )
 
 
 def get_lead_status(conn: sqlite3.Connection, normalized_key: str) -> str | None:

@@ -189,7 +189,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.set_status:
         for r in rows:
-            advance_status(conn, r["normalized_key"], args.set_status, when=args.on)
+            # force=True: human CLI may deliberately move a lead anywhere
+            # (including regressions / off-ramp restores). Pipeline callers
+            # use the default forward-only advance_status.
+            advance_status(conn, r["normalized_key"], args.set_status, when=args.on, force=True)
         print(f"Updated {len(rows)} row(s) to status={args.set_status}")
         conn.close()
         return 0

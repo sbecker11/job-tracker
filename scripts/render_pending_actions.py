@@ -39,7 +39,9 @@ if str(_SRC) not in sys.path:
 from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT, _safe_filename  # noqa: E402
 from job_tracker.pipeline.store import (  # noqa: E402
     DEFAULT_DB_PATH,
+    apply_url_identity,
     connect,
+    heal_applied_crm,
     list_job_conversations,
     list_unmatched_messages,
 )
@@ -384,6 +386,9 @@ def render(conn, *, output_root: Path, now: datetime, automation_state_dir: Path
     interviewing/etc.) is a separate concern — tracking responses on leads
     you've *already* submitted — and lands in `manual_handled` instead,
     unchanged from before."""
+    # Heal applied_at / same-URL twin lags before bucketing so Ready to apply
+    # does not keep resurfacing already-submitted postings (2026-08-04).
+    heal_applied_crm(conn)
     rows = [dict(r) for r in conn.execute(f"SELECT {_LEAD_COLUMNS} FROM job_leads")]
 
     # Per-company distinct titles across ALL rows/statuses (mirrors
@@ -392,6 +397,14 @@ def render(conn, *, output_root: Path, now: datetime, automation_state_dir: Path
     company_titles: defaultdict[str, set[str]] = defaultdict(set)
     for r in rows:
         company_titles[r["company"]].add(r["title"])
+
+    applied_url_ids = {
+        apply_url_identity(r["apply_url"])
+        for r in rows
+        if r["status"]
+        in ("applied", "following_up", "interviewing", "offered", "accepted", "started")
+        and apply_url_identity(r["apply_url"])
+    }
 
     jd_unresolved: list[dict] = []
     awaiting_llm_review: list[dict] = []
@@ -445,6 +458,13 @@ def render(conn, *, output_root: Path, now: datetime, automation_state_dir: Path
         }
 
         if status == "package_generated":
+            # Belt-and-suspenders (2026-08-04): never list as Ready when we
+            # already know this posting was submitted — applied_at stamp, or
+            # a sibling lead on the same ATS URL already past applied.
+            url_id = apply_url_identity(r["apply_url"])
+            if r.get("applied_at") or (url_id and url_id in applied_url_ids):
+                manual_status["applied"][r["company"]] += 1
+                continue
             # "Ready to apply" needs proof, not just the DB's claim: both
             # docx files actually present on disk (_has_resume_and_cover).
             # Anything short of that — a non-pursue verdict that got a

@@ -24,11 +24,15 @@ from job_tracker.pipeline.store import (
     add_job_meeting,
     add_job_offer,
     advance_status,
+    apply_url_identity,
     canonicalize_company_casing,
     connect,
     find_matching_job,
     find_similar_jobs,
     get_job,
+    heal_applied_crm,
+    heal_applied_status_lags,
+    heal_same_apply_url_twins,
     merge_leads,
     rename_company,
     is_message_processed,
@@ -386,6 +390,98 @@ def test_advance_status_rejects_unknown_stage(tmp_path: Path):
     upsert_lead(conn, lead)
     with pytest.raises(ValueError):
         advance_status(conn, lead.normalized_key, "not-a-real-stage")
+    conn.close()
+
+
+def test_advance_status_does_not_regress_applied_to_package_generated(tmp_path: Path):
+    """2026-08-04: triage re-scoring an ATS thank-you must not bounce applied → package_generated."""
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(company="Acme", title="Engineer", source_message_id="m1", source_label="single-jd")
+    upsert_lead(conn, lead)
+    advance_status(conn, lead.normalized_key, "applied", when="2026-08-01T00:00:00+00:00")
+    changed = advance_status(conn, lead.normalized_key, "package_generated")
+    assert changed is False
+    row = conn.execute(
+        "SELECT status, applied_at, package_generated_at FROM job_leads WHERE normalized_key = ?",
+        (lead.normalized_key,),
+    ).fetchone()
+    assert row["status"] == "applied"
+    assert row["applied_at"] == "2026-08-01T00:00:00+00:00"
+    assert row["package_generated_at"] is None
+    # Human CLI can still force a regression when deliberate.
+    assert advance_status(conn, lead.normalized_key, "package_generated", force=True) is True
+    assert (
+        conn.execute("SELECT status FROM job_leads WHERE normalized_key = ?", (lead.normalized_key,)).fetchone()[
+            "status"
+        ]
+        == "package_generated"
+    )
+    conn.close()
+
+
+def test_apply_url_identity_normalizes_gh_jid_and_trailing_dot():
+    a = apply_url_identity("https://boards.greenhouse.io/acme/jobs/123?gh_jid=123")
+    b = apply_url_identity("https://boards.greenhouse.io/acme/jobs/999?gh_jid=123&foo=1")
+    c = apply_url_identity("https://jobs.ashbyhq.com/acme/uuid-here.")
+    d = apply_url_identity("https://jobs.ashbyhq.com/acme/uuid-here")
+    assert a == b == "boards.greenhouse.io|gh_jid=123"
+    assert c == d
+    assert apply_url_identity("") == ""
+    assert apply_url_identity(None) == ""
+
+
+def test_heal_applied_status_lags_promotes_package_generated(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(company="Acme", title="Engineer", source_message_id="m1", source_label="single-jd")
+    upsert_lead(conn, lead)
+    advance_status(conn, lead.normalized_key, "package_generated", when="2026-07-01T00:00:00+00:00")
+    # Simulate the lag: applied_at stamped without status advancing.
+    conn.execute(
+        "UPDATE job_leads SET applied_at = ? WHERE normalized_key = ?",
+        ("2026-07-30T00:00:00+00:00", lead.normalized_key),
+    )
+    conn.commit()
+    actions = heal_applied_status_lags(conn)
+    assert len(actions) == 1
+    row = conn.execute(
+        "SELECT status, applied_at FROM job_leads WHERE normalized_key = ?", (lead.normalized_key,)
+    ).fetchone()
+    assert row["status"] == "applied"
+    assert row["applied_at"] == "2026-07-30T00:00:00+00:00"
+    assert heal_applied_status_lags(conn) == []
+    conn.close()
+
+
+def test_heal_same_apply_url_twins_marks_sibling_applied(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    url = "https://job-boards.greenhouse.io/acme/jobs/8519753002?gh_jid=8519753002"
+    a = JobLead(
+        company="Acme",
+        title="Senior Software Engineer",
+        source_message_id="m1",
+        source_label="single-jd",
+        apply_url=url,
+    )
+    b = JobLead(
+        company="Acme",
+        title="Senior Software Engineer II",
+        source_message_id="m2",
+        source_label="single-jd",
+        apply_url=url,
+    )
+    upsert_lead(conn, a)
+    upsert_lead(conn, b)
+    advance_status(conn, a.normalized_key, "applied", when="2026-08-02T00:00:00+00:00")
+    advance_status(conn, b.normalized_key, "package_generated", when="2026-07-31T00:00:00+00:00")
+    actions = heal_same_apply_url_twins(conn)
+    assert len(actions) == 1
+    assert actions[0]["normalized_key"] == b.normalized_key
+    row = conn.execute(
+        "SELECT status, applied_at FROM job_leads WHERE normalized_key = ?", (b.normalized_key,)
+    ).fetchone()
+    assert row["status"] == "applied"
+    assert row["applied_at"] == "2026-08-02T00:00:00+00:00"
+    assert heal_applied_crm(conn) == []
     conn.close()
 
 
