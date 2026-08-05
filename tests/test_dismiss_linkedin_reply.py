@@ -87,3 +87,38 @@ def test_dismiss_lead_also_dismisses_matching_unmatched(tmp_path: Path):
     dismiss_linkedin_reply(conn, kind="lead", normalized_key=lead.normalized_key, message_id="msg-1")
     assert list_unmatched_messages(conn) == []
     conn.close()
+
+
+def test_dismiss_unmatched_missing_is_idempotent_noop(tmp_path: Path):
+    """HTML/URL corruption used to surface 'no unmatched_messages row for
+    message_id=…' alerts — dismiss must not hard-fail when the row is gone."""
+    conn = connect(tmp_path / "leads.db")
+    result = dismiss_linkedin_reply(conn, kind="unmatched", message_id="does-not-exist")
+    assert result.startswith("unmatched-missing:")
+    conn.close()
+
+
+def test_dismiss_unmatched_falls_back_to_lead_via_conversation(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(
+        company="KPG99,INC",
+        title="LLM Data Engineer",
+        source_message_id="imap:<123@host>",
+        source_label="linkedin_message",
+    )
+    upsert_lead(conn, lead)
+    add_job_conversation(
+        conn,
+        JobConversation(
+            job_key=lead.normalized_key,
+            message_id="imap:<123@host>",
+            channel="linkedin",
+            direction="inbound",
+            summary="Pitch",
+        ),
+    )
+    result = dismiss_linkedin_reply(conn, kind="unmatched", message_id="imap:<123@host>")
+    assert result.startswith("lead:")
+    convs = list_job_conversations(conn, lead.normalized_key)
+    assert any(c["direction"] == "outbound" for c in convs)
+    conn.close()

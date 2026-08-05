@@ -11,6 +11,7 @@ of a normal import.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -452,3 +453,14 @@ def test_unmatched_communications_carries_full_body_alongside_preview(tmp_path: 
     assert 'headerLine("To"' in text
     assert "section-linkedin-replies" in text
     assert "Copy reply" in text
+
+
+def test_json_for_script_escapes_angle_brackets():
+    """imap:<id@host> must not appear raw inside <script> JSON."""
+    raw = render_pending_actions._json_for_script(
+        {"messageId": "imap:<123@host.example>"}
+    )
+    assert "imap:<" not in raw
+    assert "\\u003c" in raw
+    assert "\\u003e" in raw
+    assert json.loads(raw)["messageId"] == "imap:<123@host.example>"

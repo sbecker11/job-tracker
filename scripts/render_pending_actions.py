@@ -622,6 +622,21 @@ def _is_first_touch_linkedin_subject(subject: str) -> bool:
     return True
 
 
+def _json_for_script(value) -> str:
+    """json.dumps that won't break when embedded in a <script> tag.
+
+    IMAP Message-Ids look like `imap:<digits@host>` — a raw `<…>` in the
+    page source is eaten by the HTML parser, which mangled LinkedIn dismiss
+    payloads (2026-08-04). Escape `<` / `>` / `&` as JSON unicode escapes.
+    """
+    return (
+        json.dumps(value, ensure_ascii=False)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+    )
+
+
 def _build_linkedin_reply_queue(
     conn, unmatched_communications: list[dict], *, now: datetime
 ) -> list[dict]:
@@ -1774,7 +1789,10 @@ function dismissLinkedinReply(idx, btn) {
   renderLinkedinReplyQueue();
   renderUnmatchedCommunications();
   renderFunnel();
-  let url = "dlr://dismiss?kind=" + encodeURIComponent(item.kind || "unmatched");
+  // Prefer lead dismiss whenever we have a normalizedKey — even if the card
+  // was labeled unmatched — so a mangled/missing unmatched row can't fail.
+  const kind = item.normalizedKey ? "lead" : (item.kind || "unmatched");
+  let url = "dlr://dismiss?kind=" + encodeURIComponent(kind);
   if (item.normalizedKey) url += "&key=" + encodeURIComponent(item.normalizedKey);
   if (item.messageId) url += "&message_id=" + encodeURIComponent(item.messageId);
   window.location.href = url;
@@ -2009,16 +2027,19 @@ def _render_html(data: dict, *, output_root: Path) -> str:
     html = _TEMPLATE
     html = html.replace("${GENERATED_AT}", data["generated_at"].strftime("%Y-%m-%d %H:%M %Z") or data["generated_at"].strftime("%Y-%m-%d %H:%M"))
     html = html.replace("${FOOTER_NOTE}", footer)
-    html = html.replace("${READY_TO_APPLY_JSON}", json.dumps(data["ready_to_apply"]))
-    html = html.replace("${NEEDS_DECISION_FORCED_JSON}", json.dumps(data["needs_decision_forced"]))
-    html = html.replace("${NEEDS_DECISION_JSON}", json.dumps(data["needs_decision"]))
-    html = html.replace("${AWAITING_LLM_REVIEW_JSON}", json.dumps(data["awaiting_llm_review"]))
-    html = html.replace("${JD_UNRESOLVED_JSON}", json.dumps(data["jd_unresolved"]))
-    html = html.replace("${NOT_PRIORITIZED_COUNT_JSON}", json.dumps(data["not_prioritized_count"]))
-    html = html.replace("${MANUAL_HANDLED_JSON}", json.dumps(data["manual_handled"]))
-    html = html.replace("${UNMATCHED_COMMUNICATIONS_JSON}", json.dumps(data["unmatched_communications"]))
-    html = html.replace("${LINKEDIN_REPLY_QUEUE_JSON}", json.dumps(data["linkedin_reply_queue"]))
-    html = html.replace("${POISONED_LINKEDIN_JSON}", json.dumps(data["poisoned_linkedin"]))
+    # Embed JSON safely inside <script>: raw imap:<message-id> values contain
+    # "<…>" which HTML parsers treat as tags and strip, corrupting messageId
+    # before dismiss-linkedin-reply ever runs (2026-08-04).
+    html = html.replace("${READY_TO_APPLY_JSON}", _json_for_script(data["ready_to_apply"]))
+    html = html.replace("${NEEDS_DECISION_FORCED_JSON}", _json_for_script(data["needs_decision_forced"]))
+    html = html.replace("${NEEDS_DECISION_JSON}", _json_for_script(data["needs_decision"]))
+    html = html.replace("${AWAITING_LLM_REVIEW_JSON}", _json_for_script(data["awaiting_llm_review"]))
+    html = html.replace("${JD_UNRESOLVED_JSON}", _json_for_script(data["jd_unresolved"]))
+    html = html.replace("${NOT_PRIORITIZED_COUNT_JSON}", _json_for_script(data["not_prioritized_count"]))
+    html = html.replace("${MANUAL_HANDLED_JSON}", _json_for_script(data["manual_handled"]))
+    html = html.replace("${UNMATCHED_COMMUNICATIONS_JSON}", _json_for_script(data["unmatched_communications"]))
+    html = html.replace("${LINKEDIN_REPLY_QUEUE_JSON}", _json_for_script(data["linkedin_reply_queue"]))
+    html = html.replace("${POISONED_LINKEDIN_JSON}", _json_for_script(data["poisoned_linkedin"]))
     health = data["schedule_health"]
     month_uptime = health.get("monthUptime") or {}
     meta_bits = []

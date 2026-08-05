@@ -1856,10 +1856,38 @@ def dismiss_linkedin_reply(
         if not mid:
             raise ValueError("message_id is required for kind=unmatched")
         row = get_unmatched_message(conn, mid)
-        if row is None:
-            raise ValueError(f"no unmatched_messages row for message_id={mid!r}")
-        dismiss_unmatched_message(conn, mid, when=stamp)
-        return f"unmatched:{mid}"
+        if row is not None:
+            dismiss_unmatched_message(conn, mid, when=stamp)
+            return f"unmatched:{mid}"
+        # Card may be a lead whose conversation message_id was never parked
+        # unmatched (common after heuristic promote), or the HTML/URL path
+        # mangled an imap:<…> id. Prefer lead dismiss over a hard failure.
+        lead_row = conn.execute(
+            """
+            SELECT job_key FROM job_conversations
+             WHERE message_id = ?
+             ORDER BY id DESC LIMIT 1
+            """,
+            (mid,),
+        ).fetchone()
+        if lead_row is not None:
+            return dismiss_linkedin_reply(
+                conn,
+                kind="lead",
+                message_id=mid,
+                normalized_key=lead_row["job_key"],
+                when=stamp,
+            )
+        if normalized_key:
+            return dismiss_linkedin_reply(
+                conn,
+                kind="lead",
+                message_id=mid,
+                normalized_key=normalized_key,
+                when=stamp,
+            )
+        # Idempotent no-op: already gone / never stored — don't alert the user.
+        return f"unmatched-missing:{mid}"
     raise ValueError(f"kind must be 'lead' or 'unmatched', got {kind!r}")
 
 
