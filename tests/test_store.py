@@ -126,6 +126,44 @@ def test_canonicalize_company_casing_reuses_existing_casing_exact_fold_only(tmp_
     conn.close()
 
 
+def test_canonicalize_ignores_company_that_does_not_fold_to_key_prefix(tmp_path: Path):
+    """2026-08-04: legacy row with company display spelling ≠ key prefix must
+    not rewrite an incoming company onto a different fold (Diverselynx HALT)."""
+    conn = connect(tmp_path / "leads.db")
+    # Inconsistent legacy row: key prefix "diverselynx", company "Diverse Lynx".
+    conn.execute(
+        """
+        INSERT INTO job_leads (normalized_key, company, title, status, first_seen, last_seen)
+        VALUES ('diverselynx::other role', 'Diverse Lynx', 'Other Role', 'skipped', ?, ?)
+        """,
+        ("2026-07-01T00:00:00+00:00", "2026-07-01T00:00:00+00:00"),
+    )
+    conn.commit()
+
+    assert canonicalize_company_casing(conn, "Diverselynx") == "Diverselynx"
+
+    # Sibling lead under the spaced spelling — still a separate key family.
+    upsert_lead(
+        conn,
+        JobLead(company="Diverse Lynx", title="ML Engineer", source_message_id="m1", source_label="single-jd"),
+    )
+    # Re-ingest the no-space spelling for the same title: must not UNIQUE-crash
+    # by rewriting company → "Diverse Lynx" after the existence check.
+    is_new = upsert_lead(
+        conn,
+        JobLead(company="Diverselynx", title="ML Engineer", source_message_id="m2", source_label="single-jd"),
+    )
+    assert is_new is True
+    keys = {
+        r["normalized_key"]
+        for r in conn.execute(
+            "SELECT normalized_key FROM job_leads WHERE title = 'ML Engineer'"
+        )
+    }
+    assert keys == {"diverse lynx::ml engineer", "diverselynx::ml engineer"}
+    conn.close()
+
+
 def test_jd_text_persists_on_insert(tmp_path: Path):
     conn = connect(tmp_path / "leads.db")
     upsert_lead(

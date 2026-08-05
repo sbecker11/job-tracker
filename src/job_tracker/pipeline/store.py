@@ -342,6 +342,14 @@ def canonicalize_company_casing(conn: sqlite3.Connection, company: str) -> str:
     which normalized_key a lead lands under, so it belongs to the
     human-reviewed `find_duplicate_companies.py` + `merge_leads.py` flow
     instead of silent auto-rewriting here.
+
+    Also refuses to reuse a stored `company` whose own fold does not match
+    the incoming fold (2026-08-04). Legacy rows can have
+    `company="Diverse Lynx"` under `normalized_key` prefix `diverselynx::`
+    (key computed from a different spelling than the display company); taking
+    that company string would rewrite "Diverselynx" → "Diverse Lynx" and
+    change the lead's normalized_key after the existence check, crashing
+    upsert with UNIQUE constraint failed.
     """
     folded = fold_for_key(company)
     if not folded:
@@ -351,52 +359,60 @@ def canonicalize_company_casing(conn: sqlite3.Connection, company: str) -> str:
         (folded,),
     ).fetchone()
     if row is not None and row["company"] != company:
-        return row["company"]
+        # Guard: stored company must fold to the same prefix we matched on.
+        if fold_for_key(row["company"]) == folded:
+            return row["company"]
     return company
 
 
 def upsert_lead(conn: sqlite3.Connection, lead: JobLead) -> bool:
     """Insert a new lead or refresh an existing one. Returns True if new."""
+    # Canonicalize *before* the existence check so the key we look up is the
+    # same key we would insert. (canonicalize is fold-preserving by contract,
+    # but doing it first also covers any future change to that contract.)
+    lead.company = canonicalize_company_casing(conn, lead.company)
     key = lead.normalized_key
     existing = conn.execute(
         "SELECT normalized_key, status FROM job_leads WHERE normalized_key = ?", (key,)
     ).fetchone()
 
     if existing is None:
-        lead.company = canonicalize_company_casing(conn, lead.company)
-        key = lead.normalized_key  # unchanged by construction, but stay honest
-        conn.execute(
-            """
-            INSERT INTO job_leads (
-                normalized_key, company, title, source_message_id, source_label,
-                apply_url, extraction_confidence, jd_resolved, jd_source, jd_text,
-                match_pct, matched_skills, verdict, rationale, status,
-                first_seen, last_seen, times_seen, direct_recruiter_outreach
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-            """,
-            (
-                key,
-                lead.company,
-                lead.title,
-                lead.source_message_id,
-                lead.source_label,
-                lead.apply_url,
-                lead.extraction_confidence,
-                int(lead.jd_resolved),
-                lead.jd_source,
-                lead.jd_text,
-                lead.match_pct,
-                json.dumps(lead.matched_skills),
-                lead.verdict,
-                json.dumps(lead.rationale),
-                lead.status,
-                lead.first_seen,
-                lead.last_seen,
-                None if lead.direct_recruiter_outreach is None else int(lead.direct_recruiter_outreach),
-            ),
-        )
-        conn.commit()
-        return True
+        try:
+            conn.execute(
+                """
+                INSERT INTO job_leads (
+                    normalized_key, company, title, source_message_id, source_label,
+                    apply_url, extraction_confidence, jd_resolved, jd_source, jd_text,
+                    match_pct, matched_skills, verdict, rationale, status,
+                    first_seen, last_seen, times_seen, direct_recruiter_outreach
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                """,
+                (
+                    key,
+                    lead.company,
+                    lead.title,
+                    lead.source_message_id,
+                    lead.source_label,
+                    lead.apply_url,
+                    lead.extraction_confidence,
+                    int(lead.jd_resolved),
+                    lead.jd_source,
+                    lead.jd_text,
+                    lead.match_pct,
+                    json.dumps(lead.matched_skills),
+                    lead.verdict,
+                    json.dumps(lead.rationale),
+                    lead.status,
+                    lead.first_seen,
+                    lead.last_seen,
+                    None if lead.direct_recruiter_outreach is None else int(lead.direct_recruiter_outreach),
+                ),
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            # Race or legacy key/company mismatch: fall through to UPDATE.
+            conn.rollback()
 
     # Preserve any manual status the user already set (e.g. "pursued"),
     # just bump last_seen/times_seen and refresh scoring (and the JD text it
