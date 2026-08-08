@@ -1,32 +1,36 @@
-# React + TypeScript + Vite
+# Pending actions UI (React)
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Stage-based workflow for recruiter leads:
 
-Currently, two official plugins are available:
+**Clarify → Send résumé → Wait / schedule → Decide / apply**
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Data comes from `scripts/render_pending_actions.py` (not a live API yet).
 
-## React Compiler
+## Setup
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+cd pending-actions-ui
+npm install
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## Regenerate data + run
+
+From the job-tracker repo root:
+
+```bash
+.venv/bin/python scripts/render_pending_actions.py --no-rescore
+cd pending-actions-ui && npm run dev
+```
+
+Open the Vite URL (usually http://localhost:5173).  
+Regenerate writes:
+
+- `var/pending-actions.json`
+- `pending-actions-ui/public/pending-actions.json`
+- `var/pending-actions.html` (legacy static page)
+
+## Notes
+
+- Channel (LinkedIn / Email) is a badge only; sort priority is contact attempts then age.
+- Dismiss / folder helpers still use the existing `dlr://` and `revealfolder://` Mac helpers.
+- Legacy HTML remains until this UI is the daily driver.

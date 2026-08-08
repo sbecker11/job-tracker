@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Generated from leads.db — regenerate via scripts/render_pending_actions.py
+public/pending-actions.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

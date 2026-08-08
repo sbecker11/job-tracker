@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "regen": "cd .. && .venv/bin/python scripts/render_pending_actions.py --no-rescore"
   },
   "dependencies": {
     "react": "^19.2.8",

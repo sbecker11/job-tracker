@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Regenerate `var/pending-actions.html` from the current state of `leads.db`.
-
-Replaces the ad-hoc "hand-rebuild the embedded JS data arrays in a one-off
-heredoc" process used in prior sessions with one reusable, re-runnable
-command:
+"""Regenerate pending-actions snapshots from `leads.db`.
 
     python scripts/render_pending_actions.py
+
+Writes:
+  - `var/pending-actions.html` — legacy static page (still maintained)
+  - `var/pending-actions.json` — stage workflow for the React UI
+  - `pending-actions-ui/public/pending-actions.json` — same JSON for Vite dev
 
 By default this also refreshes every `status='new'` lead's rule-based
 `match_pct`/`verdict`/`matched_skills` with the CURRENT scorer
@@ -15,9 +16,7 @@ still carry `match_pct` on the old "vs. whole career vocabulary" scale, not
 the current "vs. this JD's own recognizable tech vocabulary" one. Pass
 `--no-rescore` to render from whatever is already stored instead.
 
-The output is a fully static, bookmarkable HTML file (open with
-`file://.../var/pending-actions.html`) — no server, no live DB access from
-the page itself; re-run this script any time the backlog changes.
+Stage model (React): Clarify → Send résumé → Wait / schedule → Decide / apply.
 """
 
 from __future__ import annotations
@@ -37,6 +36,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT, _safe_filename  # noqa: E402
+from job_tracker.pipeline.pending_workflow import build_workflow_payload  # noqa: E402
 from job_tracker.pipeline.qualifying_reply import (  # noqa: E402
     draft_qualifying_reply,
     promote_heuristic_unmatched,
@@ -52,6 +52,8 @@ from job_tracker.pipeline.store import (  # noqa: E402
 from job_tracker.scoring.scorer import DEFAULT_FRAMEWORK_PATH, load_framework, score_jd  # noqa: E402
 
 DEFAULT_OUTPUT_HTML = _REPO_ROOT / "var" / "pending-actions.html"
+DEFAULT_OUTPUT_JSON = _REPO_ROOT / "var" / "pending-actions.json"
+DEFAULT_UI_PUBLIC_JSON = _REPO_ROOT / "pending-actions-ui" / "public" / "pending-actions.json"
 
 # Keep in sync with scan_communications.LINKEDIN_PERSONAL_REPLY_SENDERS —
 # duplicated here so this script doesn't import the whole Gmail CLI package.
@@ -2278,24 +2280,49 @@ def _render_html(data: dict, *, output_root: Path) -> str:
     return html
 
 
+def _write_workflow_json(data: dict, *, conn, now: datetime, paths: list[Path]) -> dict:
+    """Build + write the React workflow JSON to each path (best-effort mkdir)."""
+    payload = build_workflow_payload(data, conn=conn, age_days_fn=_age_days, now=now)
+    text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    return payload
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     ap.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_HTML)
+    ap.add_argument("--output-json", type=Path, default=DEFAULT_OUTPUT_JSON)
+    ap.add_argument(
+        "--ui-json",
+        type=Path,
+        default=DEFAULT_UI_PUBLIC_JSON,
+        help="Also write JSON into the Vite app public/ folder for npm run dev",
+    )
     ap.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT, help="Résumé/JD folder root (for file counts + folder links)")
     ap.add_argument("--no-rescore", action="store_true", help="Skip refreshing status='new' leads' rule-based scores before rendering")
+    ap.add_argument("--html-only", action="store_true", help="Skip writing pending-actions.json")
     args = ap.parse_args(argv)
 
     if not args.db.exists():
         print(f"No leads DB found at {args.db}", file=sys.stderr)
         return 1
 
+    now = datetime.now().astimezone()
     conn = connect(args.db)
     try:
         if not args.no_rescore:
             n = _rescore_new_leads(conn)
             print(f"Rescored {n} status='new' lead(s) with the current rule-based scorer.")
-        data = render(conn, output_root=args.output_root, now=datetime.now().astimezone())
+        data = render(conn, output_root=args.output_root, now=now)
+        workflow = None
+        if not args.html_only:
+            paths = [args.output_json]
+            if args.ui_json:
+                paths.append(args.ui_json)
+            workflow = _write_workflow_json(data, conn=conn, now=now, paths=paths)
     finally:
         conn.close()
 
@@ -2306,6 +2333,9 @@ def main(argv: list[str] | None = None) -> int:
         f"Wrote {args.output} ({data['total_leads']} leads, {len(data['ready_to_apply'])} ready to apply, "
         f"{len(data['needs_decision'])} needing a decision)."
     )
+    if workflow is not None:
+        pipe = ", ".join(f"{s['id']}={s['count']}" for s in workflow["pipeline"])
+        print(f"Wrote workflow JSON ({pipe}) → {args.output_json}")
     return 0
 
 
