@@ -30,7 +30,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Cold launch with no URL (e.g. first open after install): register
         // with Launch Services, then exit. Don't leave a dock icon hanging.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-            guard let self, !self.didHandleURL else { return }
+            // Explicit `self = self` for Swift < 5.8 (mini2 CommandLineTools = 5.3).
+            guard let self = self, !self.didHandleURL else { return }
             NSApp.terminate(nil)
         }
     }

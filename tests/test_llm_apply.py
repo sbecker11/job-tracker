@@ -116,7 +116,7 @@ _CLEAN_CONTENT = {
         "experience": [
             {"employer": "HomePortfolio", "dates": "1997-2002", "role_note": "CTO", "bullets": ["Did things."], "subsections": []},
             {"employer": "Spexture (Independent Consulting)", "dates": "2019-present", "role_note": None, "bullets": ["Built things."], "subsections": [
-                {"heading": "Portfolio Projects", "bullets": ["Built linkage-engine."]},
+                {"heading": "Spexture Portfolio Projects", "bullets": ["Built linkage-engine."]},
             ]},
         ],
         "education": ["PhD, Computer Vision — MIT Media Lab"],
@@ -526,6 +526,32 @@ def test_render_cover_letter_includes_phone_and_salutation(tmp_path):
     assert llm_apply.CANDIDATE_PHONE in full_text
     assert "Dear Hiring Team," in full_text
     assert "Body paragraph." in full_text
+
+
+def test_render_resume_includes_phone_and_renames_spexture_subsections(tmp_path):
+    resume = {
+        "positioning_line": "Senior Software Engineer",
+        "experience": [
+            {
+                "employer": "Spexture (Independent Consulting)",
+                "dates": "2019-present",
+                "role_note": "Independent Consultant — Senior Software Engineer / Data Engineer",
+                "bullets": [],
+                "subsections": [
+                    {"heading": "Portfolio Projects", "bullets": ["Built linkage-engine."]},
+                    {"heading": "Client Engagements", "bullets": ["Cigna Kafka pipelines."]},
+                ],
+            }
+        ],
+    }
+    path = llm_apply.render_resume(resume, company="Acme", title="Engineer", out_dir=tmp_path)
+    doc = Document(path)
+    full_text = "\n".join(p.text for p in doc.paragraphs)
+    assert llm_apply.CANDIDATE_PHONE in full_text
+    assert "Spexture Portfolio Projects" in full_text
+    assert "Spexture Client Engagements" in full_text
+    assert "\nPortfolio Projects\n" not in f"\n{full_text}\n"
+    assert "\nClient Engagements\n" not in f"\n{full_text}\n"
 
 
 def test_render_resume_and_cover_letter_share_the_same_job_folder(tmp_path):

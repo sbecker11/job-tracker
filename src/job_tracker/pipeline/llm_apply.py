@@ -63,6 +63,15 @@ CANDIDATE_PHONE = "+1 857-891-0896"
 CANDIDATE_LINKEDIN = "linkedin.com/in/shawnbecker"
 CANDIDATE_GITHUB = "github.com/sbecker11"
 
+# Canonical Spexture subsection headings (CLAUDE.md §5). Older model output
+# may still emit the short forms — normalize at render time.
+_SPEXTURE_SUBSECTION_HEADINGS = {
+    "portfolio projects": "Spexture Portfolio Projects",
+    "spexture portfolio projects": "Spexture Portfolio Projects",
+    "client engagements": "Spexture Client Engagements",
+    "spexture client engagements": "Spexture Client Engagements",
+}
+
 # CLAUDE.md §4 "Banned terms" — checked mechanically post-generation as a
 # safety net; the prompt already instructs the model to avoid these, but a
 # hardcoded name-collision (e.g. "Cambria" vs "Cambia Health Solutions") is
@@ -468,6 +477,8 @@ because the JD doesn't emphasize titles. Use the candidate profile's canonical t
 "Independent Consultant — Senior Software Engineer / Data Engineer" for Spexture, "Senior Data Engineer" or \
 "Senior Software Engineer" for SeniorLink depending on which the JD skews toward, "Co-founder and Technical \
 Lead" for Sierra Vista Group, "Co-founder & CTO" for HomePortfolio).
+- Under Spexture (Independent Consulting), subsection headings must be exactly "Spexture Portfolio Projects" \
+and "Spexture Client Engagements" (not the shorter "Portfolio Projects" / "Client Engagements").
 - The cover letter body should tie 2-3 concrete real engagements/projects to this JD's stated needs.
 - Do not write a salutation naming a specific person unless one is explicitly given in the job description \
 below; otherwise use "Dear Hiring Team,".
@@ -1150,8 +1161,8 @@ def render_resume(
     apply_template_styles(doc)
     doc.add_heading(CANDIDATE_NAME, level=1)
     doc.add_paragraph(resume.get("positioning_line") or "Senior Software Engineer & Independent Consultant")
-    # Résumé header omits phone per CLAUDE.md §1 — email/LinkedIn/GitHub only.
-    add_muted_contact_line(doc, [CANDIDATE_EMAIL, CANDIDATE_LINKEDIN, CANDIDATE_GITHUB])
+    # Résumé header includes phone per CLAUDE.md §1 (same contact line as cover letter).
+    add_muted_contact_line(doc, [CANDIDATE_EMAIL, CANDIDATE_PHONE, CANDIDATE_LINKEDIN, CANDIDATE_GITHUB])
 
     if resume.get("summary"):
         doc.add_heading("Summary", level=2)
@@ -1179,8 +1190,10 @@ def render_resume(
         for bullet in entry.get("bullets") or []:
             doc.add_paragraph(str(bullet), style="List Bullet")
         for sub in entry.get("subsections") or []:
+            raw_heading = str(sub.get("heading", "")).strip()
+            heading = _SPEXTURE_SUBSECTION_HEADINGS.get(raw_heading.lower(), raw_heading)
             sub_p = doc.add_paragraph()
-            sub_p.add_run(str(sub.get("heading", ""))).bold = True
+            sub_p.add_run(heading).bold = True
             for bullet in sub.get("bullets") or []:
                 doc.add_paragraph(str(bullet), style="List Bullet")
 

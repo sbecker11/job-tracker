@@ -453,6 +453,110 @@ def test_unmatched_communications_carries_full_body_alongside_preview(tmp_path: 
     assert 'headerLine("To"' in text
     assert "section-linkedin-replies" in text
     assert "Copy reply" in text
+    # Section 0 uses an explicit dark palette (not the old light #fafafa/#fff cards).
+    assert "#section-linkedin-replies" in text
+    assert "background: #0a0b0e" in text
+    assert "background: var(--bg-elevated, #fafafa)" not in text
+    assert ".reply-card pre.draft" in text and "background: #0a0b0e" in text
+    # Show/Hide LinkedIn reply wiring (2026-08-06).
+    assert "li-reply-toggle" in text
+    assert "toggleLinkedinReply" in text
+    assert "linkedinReplyId" in text or "linkedinReplyToggleCellHtml" in text
+
+
+def test_linkedin_reply_ids_stamp_matching_leads_and_unmatched(tmp_path: Path):
+    """Section 0 reply cards share a stable replyId with matching funnel /
+    unmatched rows so Show/Hide can cross-link them."""
+    db_path = tmp_path / "leads.db"
+    conn = connect(db_path)
+    lead = _make_lead(
+        conn,
+        company="Acme",
+        title="Senior Engineer",
+        match_pct=80.0,
+        verdict="review",
+        first_seen=NOW.isoformat(),
+    )
+    conn.execute(
+        "UPDATE job_leads SET source_label = ? WHERE normalized_key = ?",
+        ("linkedin_message", lead.normalized_key),
+    )
+    conn.commit()
+    _set_llm_review(conn, lead, llm_verdict="review", llm_match_pct=80.0)
+    add_job_conversation(
+        conn,
+        JobConversation(
+            job_key=lead.normalized_key,
+            message_id="imap:<lead-thread@linkedin.com>",
+            channel="linkedin",
+            direction="inbound",
+            summary="Exciting opportunity for your skills",
+            occurred_at=NOW.isoformat(),
+            body_text=(
+                "Hi Shawn,\n\nI'm Jane Doe at Acme recruiting for a Senior Engineer role.\n"
+                "https://www.linkedin.com/messaging/thread/abc123/\n\nBest,\nJane"
+            ),
+        ),
+    )
+    record_unmatched_message(
+        conn,
+        UnmatchedMessage(
+            message_id="imap:<unmatched-thread@linkedin.com>",
+            direction="inbound",
+            from_address="inmail-hit-reply@linkedin.com",
+            to_address="me@example.com",
+            subject="Remote opportunity — Full Stack",
+            body_text=(
+                "Hi Shawn,\n\nI'm Sam Recruiter.\n"
+                "https://www.linkedin.com/messaging/thread/xyz789/\n\nBest,\nSam"
+            ),
+            detected_at=NOW.isoformat(),
+        ),
+    )
+
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    conn.close()
+
+    assert data["linkedin_reply_queue"]
+    assert all(item.get("replyId") for item in data["linkedin_reply_queue"])
+
+    lead_ids = {
+        item["replyId"]
+        for item in data["linkedin_reply_queue"]
+        if item.get("normalizedKey") == lead.normalized_key
+    }
+    assert lead_ids, "expected a section-0 card for the LinkedIn stub lead"
+    stamped = [
+        row
+        for bucket in (
+            data["needs_decision"],
+            data["needs_decision_forced"],
+            data["ready_to_apply"],
+            data["awaiting_llm_review"],
+            data["jd_unresolved"],
+        )
+        for row in bucket
+        if row["normalizedKey"] == lead.normalized_key
+    ]
+    assert stamped, "lead should appear in a funnel section"
+    assert stamped[0]["linkedinReplyId"] in lead_ids
+
+    unmatched_ids = {
+        item["replyId"]
+        for item in data["linkedin_reply_queue"]
+        if item.get("messageId") == "imap:<unmatched-thread@linkedin.com>"
+    }
+    assert unmatched_ids
+    unmatched_row = next(
+        m for m in data["unmatched_communications"]
+        if m["messageId"] == "imap:<unmatched-thread@linkedin.com>"
+    )
+    assert unmatched_row["linkedinReplyId"] in unmatched_ids
+
+    text = render_pending_actions._render_html(data, output_root=tmp_path)
+    assert "LinkedIn reply" in text
+    assert "Show reply" in text
+    assert "li-reply-toggle" in text
 
 
 def test_json_for_script_escapes_angle_brackets():

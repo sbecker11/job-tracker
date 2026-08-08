@@ -562,6 +562,11 @@ def render(conn, *, output_root: Path, now: datetime, automation_state_dir: Path
     )
 
     _funnel_buckets = (jd_unresolved, awaiting_llm_review, needs_decision, needs_decision_forced, ready_to_apply)
+    _attach_linkedin_reply_ids(
+        linkedin_reply_queue,
+        funnel_buckets=_funnel_buckets,
+        unmatched_communications=unmatched_communications,
+    )
     direct_recruiter_count = sum(1 for bucket in _funnel_buckets for lead in bucket if lead["directRecruiter"])
     # Whole-DB, not just the funnel buckets above — the review queue
     # (review_direct_recruiter_outreach.py) walks every lead regardless of
@@ -730,7 +735,48 @@ def _build_linkedin_reply_queue(
 
     # Newest first — these are the ones to answer tonight.
     queue.sort(key=lambda x: x["ageDays"])
+    for item in queue:
+        item["replyId"] = _stable_linkedin_reply_id(item)
     return queue
+
+
+def _stable_linkedin_reply_id(item: dict) -> str:
+    """Stable cross-section id for a section-0 card (lead key or message id)."""
+    if item.get("normalizedKey"):
+        return f"key:{item['normalizedKey']}"
+    if item.get("messageId"):
+        return f"mid:{item['messageId']}"
+    who = (item.get("recruiterName") or "").strip().lower()
+    subj = (item.get("subject") or "").strip().lower()
+    return f"fallback:{who}|{subj}"
+
+
+def _attach_linkedin_reply_ids(
+    linkedin_reply_queue: list[dict],
+    *,
+    funnel_buckets: tuple[list[dict], ...],
+    unmatched_communications: list[dict],
+) -> None:
+    """Stamp funnel leads + unmatched rows with the matching section-0 replyId.
+
+    Used by the Show/Hide LinkedIn reply toggle in sections 1–6 so a lead
+    row can reveal its section-0 draft card without hunting by subject.
+    """
+    by_key = {
+        item["normalizedKey"]: item["replyId"]
+        for item in linkedin_reply_queue
+        if item.get("normalizedKey") and item.get("replyId")
+    }
+    by_mid = {
+        item["messageId"]: item["replyId"]
+        for item in linkedin_reply_queue
+        if item.get("messageId") and item.get("replyId")
+    }
+    for bucket in funnel_buckets:
+        for lead in bucket:
+            lead["linkedinReplyId"] = by_key.get(lead.get("normalizedKey") or "", "")
+    for msg in unmatched_communications:
+        msg["linkedinReplyId"] = by_mid.get(msg.get("messageId") or "", "")
 
 
 _TEMPLATE = r"""<!DOCTYPE html>
@@ -1063,35 +1109,71 @@ _TEMPLATE = r"""<!DOCTYPE html>
   @keyframes regen-spin {
     to { transform: rotate(360deg); }
   }
+  /* Section 0 (LinkedIn replies): dark cards with white/grey text — the
+     previous light #fafafa/#fff card surfaces fought the page's dark theme
+     and made draft text hard to read (2026-08-06). */
+  #section-linkedin-replies {
+    background: #0a0b0e;
+    border-color: #2a2e37;
+    color: #e6e8ec;
+  }
+  #section-linkedin-replies > summary { color: #f3f4f6; }
+  #section-linkedin-replies .hint { color: #9aa0ac; }
+  #section-linkedin-replies .hint strong { color: #e6e8ec; }
+  #section-linkedin-replies .hint code {
+    color: #d1d5db;
+    background: #171a21;
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
   .reply-queue { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
   .reply-card {
-    border: 1px solid var(--border);
+    border: 1px solid #2a2e37;
     border-radius: 8px;
     padding: 12px 14px;
-    background: var(--bg-elevated, #fafafa);
+    background: #12141a;
+    color: #e6e8ec;
   }
   .reply-card-head {
     display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: baseline;
     margin-bottom: 8px; font-size: 13px;
   }
-  .reply-card-head .who { font-weight: 600; color: var(--text); }
-  .reply-card-head .meta { color: var(--text-secondary); }
+  .reply-card-head .who { font-weight: 600; color: #f3f4f6; }
+  .reply-card-head .meta { color: #9aa0ac; }
   .reply-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+  #section-linkedin-replies .copy-btn {
+    border-color: #3a3f4b;
+    background: #171a21;
+    color: #e6e8ec;
+  }
+  #section-linkedin-replies .copy-btn:hover { border-color: #6c7ee1; color: #f3f4f6; }
+  #section-linkedin-replies .copy-btn.copied { color: #4caf7d; border-color: #4caf7d; }
   .reply-card pre.draft {
     white-space: pre-wrap; word-break: break-word;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 12.5px; line-height: 1.45;
     margin: 0; padding: 10px 12px;
-    background: #fff; border: 1px solid var(--border); border-radius: 6px;
-    color: var(--text);
+    background: #0a0b0e; border: 1px solid #2a2e37; border-radius: 6px;
+    color: #d1d5db;
   }
   a.open-thread {
     display: inline-block; padding: 6px 12px; border-radius: 6px;
-    border: 1px solid var(--border); text-decoration: none;
-    color: var(--info); font-size: 12px; font-family: inherit;
+    border: 1px solid #3a3f4b; text-decoration: none;
+    color: #9ec1ea; font-size: 12px; font-family: inherit;
+    background: #171a21;
   }
-  a.open-thread:hover { border-color: var(--accent); }
-  a.open-thread.disabled { color: var(--text-tertiary); pointer-events: none; }
+  a.open-thread:hover { border-color: #6c7ee1; color: #f3f4f6; }
+  a.open-thread.disabled { color: #6b7280; pointer-events: none; }
+  .reply-card.reply-hidden { display: none; }
+  .reply-card.reply-highlight {
+    border-color: #6c7ee1;
+    box-shadow: 0 0 0 2px rgba(108, 126, 225, 0.35);
+  }
+  .li-reply-toggle.active {
+    border-color: #6c7ee1;
+    color: #f3f4f6;
+    background: rgba(108, 126, 225, 0.18);
+  }
 </style>
 </head>
 <body>
@@ -1146,6 +1228,8 @@ _TEMPLATE = r"""<!DOCTYPE html>
       <div class="hint">
         Qualifying follow-ups are pre-drafted (W2/1099 vs C2C, end client, remote, rate band).
         <strong>Action: Copy reply → Open thread → paste in LinkedIn → send → Dismiss / marked replied.</strong>
+        When a draft also matches a lead in sections 1–6, that row gets a
+        <strong>Show/Hide reply</strong> button that jumps to (or hides) this card.
         Dismiss updates the DB immediately (outbound conversation or unmatched dismissed_at) and
         removes the card here — no regenerate needed. Requires the one-time
         <code>tools/dismiss-linkedin-reply/install.sh</code> helper (same pattern as the ⭐ dropdown).
@@ -1159,7 +1243,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
-          <thead><tr><th>Company</th><th>Title</th><th class="num">Match %</th><th class="num">Age (days)</th><th class="icon-header" data-tooltip="direct_recruiter_outreach">⭐</th><th>Apply</th></tr></thead>
+          <thead><tr><th>Company</th><th>Title</th><th class="num">Match %</th><th class="num">Age (days)</th><th class="icon-header" data-tooltip="direct_recruiter_outreach">⭐</th><th>Apply</th><th>LinkedIn reply</th></tr></thead>
           <tbody id="ready-to-apply-body"></tbody>
         </table>
       </div>
@@ -1179,7 +1263,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
-          <thead><tr><th>Company</th><th>Title</th><th>Verdict</th><th class="num">Match %</th><th class="num">Age (days)</th><th class="icon-header" data-tooltip="direct_recruiter_outreach">⭐</th></tr></thead>
+          <thead><tr><th>Company</th><th>Title</th><th>Verdict</th><th class="num">Match %</th><th class="num">Age (days)</th><th class="icon-header" data-tooltip="direct_recruiter_outreach">⭐</th><th>LinkedIn reply</th></tr></thead>
           <tbody id="needs-decision-forced-body"></tbody>
         </table>
       </div>
@@ -1211,6 +1295,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
               <th class="icon-header" data-tooltip="direct_recruiter_outreach">⭐</th>
               <th>Priority</th>
               <th>Action</th>
+              <th>LinkedIn reply</th>
             </tr>
           </thead>
           <tbody id="table-body"></tbody>
@@ -1236,7 +1321,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
-          <thead><tr><th>Company</th><th>Title</th><th class="num">Match %</th><th class="num">Age (days)</th><th class="icon-header" data-tooltip="direct_recruiter_outreach">⭐</th></tr></thead>
+          <thead><tr><th>Company</th><th>Title</th><th class="num">Match %</th><th class="num">Age (days)</th><th class="icon-header" data-tooltip="direct_recruiter_outreach">⭐</th><th>LinkedIn reply</th></tr></thead>
           <tbody id="awaiting-llm-review-body"></tbody>
         </table>
       </div>
@@ -1255,7 +1340,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
-          <thead><tr><th>Company</th><th>Title</th><th class="num">Age (days)</th><th class="icon-header" data-tooltip="direct_recruiter_outreach">⭐</th></tr></thead>
+          <thead><tr><th>Company</th><th>Title</th><th class="num">Age (days)</th><th class="icon-header" data-tooltip="direct_recruiter_outreach">⭐</th><th>LinkedIn reply</th></tr></thead>
           <tbody id="jd-unresolved-body"></tbody>
         </table>
       </div>
@@ -1276,7 +1361,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <div class="card-body">
       <div class="table-scroll short">
         <table>
-          <thead><tr><th>Direction</th><th>Subject</th><th>From / To</th><th>Preview</th><th>Reply</th><th class="num">Age (days)</th></tr></thead>
+          <thead><tr><th>Direction</th><th>Subject</th><th>From / To</th><th>Preview</th><th>Reply</th><th>LinkedIn reply</th><th class="num">Age (days)</th></tr></thead>
           <tbody id="unmatched-communications-body"></tbody>
         </table>
       </div>
@@ -1531,6 +1616,79 @@ function applyButtonHtml(applyUrl) {
     `title="Opens the application page in a new browser tab/window">Apply \u2197</a>`;
 }
 
+// Show/Hide toggle for a matching section-0 LinkedIn reply card (2026-08-06).
+// Only rendered when this lead/unmatched row has a stamped linkedinReplyId.
+function linkedinReplyToggleCellHtml(replyId) {
+  if (!replyId) {
+    return `<td class="li-reply-cell"></td>`;
+  }
+  const shown = !hiddenLinkedinReplyIds.has(replyId) && highlightedLinkedinReplyId === replyId;
+  const label = shown ? "Hide reply" : "Show reply";
+  const active = shown ? " active" : "";
+  return `<td class="li-reply-cell">
+    <button type="button" class="copy-btn li-reply-toggle${active}"
+      data-reply-id="${escapeHtml(replyId)}"
+      title="Show or hide the matching LinkedIn reply draft in section 0">${label}</button>
+  </td>`;
+}
+
+function wireLinkedinReplyToggles(root) {
+  (root || document).querySelectorAll(".li-reply-toggle[data-reply-id]").forEach(btn => {
+    btn.addEventListener("click", () => toggleLinkedinReply(btn.dataset.replyId, btn));
+  });
+}
+
+const hiddenLinkedinReplyIds = new Set();
+let highlightedLinkedinReplyId = "";
+
+function findLinkedinReplyCard(replyId) {
+  if (!replyId) return null;
+  return document.querySelector(`.reply-card[data-reply-id="${CSS.escape(replyId)}"]`);
+}
+
+function syncLinkedinReplyToggleButtons(replyId) {
+  document.querySelectorAll(`.li-reply-toggle[data-reply-id="${CSS.escape(replyId)}"]`).forEach(btn => {
+    const shown = !hiddenLinkedinReplyIds.has(replyId) && highlightedLinkedinReplyId === replyId;
+    btn.textContent = shown ? "Hide reply" : "Show reply";
+    btn.classList.toggle("active", shown);
+  });
+}
+
+function toggleLinkedinReply(replyId, btn) {
+  if (!replyId) return;
+  const section = document.getElementById("section-linkedin-replies");
+  if (section) section.open = true;
+  const card = findLinkedinReplyCard(replyId);
+  if (!card) {
+    if (btn) {
+      btn.textContent = "No card";
+      btn.disabled = true;
+    }
+    return;
+  }
+  const currentlyShown = !hiddenLinkedinReplyIds.has(replyId) && highlightedLinkedinReplyId === replyId;
+  if (currentlyShown) {
+    // Hide this card and clear highlight.
+    hiddenLinkedinReplyIds.add(replyId);
+    card.classList.add("reply-hidden");
+    card.classList.remove("reply-highlight");
+    if (highlightedLinkedinReplyId === replyId) highlightedLinkedinReplyId = "";
+  } else {
+    // Reveal + highlight + scroll. Clear any prior highlight.
+    if (highlightedLinkedinReplyId && highlightedLinkedinReplyId !== replyId) {
+      const prev = findLinkedinReplyCard(highlightedLinkedinReplyId);
+      if (prev) prev.classList.remove("reply-highlight");
+      syncLinkedinReplyToggleButtons(highlightedLinkedinReplyId);
+    }
+    hiddenLinkedinReplyIds.delete(replyId);
+    card.classList.remove("reply-hidden");
+    card.classList.add("reply-highlight");
+    highlightedLinkedinReplyId = replyId;
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+  syncLinkedinReplyToggleButtons(replyId);
+}
+
 // Left-to-right = target-to-farthest-blocker, matching the funnel-caption
 // copy above and the numbered section headings below (1-5 are all now
 // <details>/<summary> cards — #3 joined the other four on 2026-07-21 so
@@ -1637,9 +1795,10 @@ function renderTable() {
       ${directRecruiterCellHtml(lead.directRecruiter, lead.normalizedKey)}
       <td><span class="count-pill">${PRIORITY_LABEL[priorityOf(lead.matchPct)]}</span></td>
       <td><button class="copy-btn" data-idx="${idx}">Copy prompt</button></td>
+      ${linkedinReplyToggleCellHtml(lead.linkedinReplyId)}
     </tr>`).join("");
 
-  body.querySelectorAll(".copy-btn").forEach(btn => {
+  body.querySelectorAll(".copy-btn[data-idx]").forEach(btn => {
     btn.addEventListener("click", () => {
       const lead = filtered[Number(btn.dataset.idx)];
       const text = reviewPrompt(lead);
@@ -1650,6 +1809,7 @@ function renderTable() {
       });
     });
   });
+  wireLinkedinReplyToggles(body);
 }
 
 document.querySelectorAll("#table-header-row th[data-sort]").forEach(th => {
@@ -1667,30 +1827,37 @@ document.querySelectorAll("#table-header-row th[data-sort]").forEach(th => {
 
 function renderJdUnresolved() {
   document.getElementById("jd-unresolved-count").textContent = JD_UNRESOLVED.length;
-  document.getElementById("jd-unresolved-body").innerHTML = JD_UNRESOLVED.map(l => `
+  const body = document.getElementById("jd-unresolved-body");
+  body.innerHTML = JD_UNRESOLVED.map(l => `
     <tr>
       <td class="company">${companyCellHtml(l.company, l.companyFolderPath)}</td>
       <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount, l.commCount, l.company)}</td>
       ${ageCellHtml(l.ageDays)}
       ${directRecruiterCellHtml(l.directRecruiter, l.normalizedKey)}
+      ${linkedinReplyToggleCellHtml(l.linkedinReplyId)}
     </tr>`).join("");
+  wireLinkedinReplyToggles(body);
 }
 
 function renderAwaitingLlmReview() {
   document.getElementById("awaiting-llm-review-count").textContent = AWAITING_LLM_REVIEW.length;
-  document.getElementById("awaiting-llm-review-body").innerHTML = AWAITING_LLM_REVIEW.map(l => `
+  const body = document.getElementById("awaiting-llm-review-body");
+  body.innerHTML = AWAITING_LLM_REVIEW.map(l => `
     <tr>
       <td class="company">${companyCellHtml(l.company, l.companyFolderPath)}</td>
       <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount, l.commCount, l.company)}</td>
       <td class="num">${l.matchPct}%</td>
       ${ageCellHtml(l.ageDays)}
       ${directRecruiterCellHtml(l.directRecruiter, l.normalizedKey)}
+      ${linkedinReplyToggleCellHtml(l.linkedinReplyId)}
     </tr>`).join("");
+  wireLinkedinReplyToggles(body);
 }
 
 function renderNeedsDecisionForced() {
   document.getElementById("needs-decision-forced-count").textContent = NEEDS_DECISION_FORCED.length;
-  document.getElementById("needs-decision-forced-body").innerHTML = NEEDS_DECISION_FORCED.map(l => `
+  const body = document.getElementById("needs-decision-forced-body");
+  body.innerHTML = NEEDS_DECISION_FORCED.map(l => `
     <tr>
       <td class="company">${companyCellHtml(l.company, l.companyFolderPath)}</td>
       <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount, l.commCount, l.company)}</td>
@@ -1698,12 +1865,15 @@ function renderNeedsDecisionForced() {
       <td class="num">${l.matchPct}%</td>
       ${ageCellHtml(l.ageDays)}
       ${directRecruiterCellHtml(l.directRecruiter, l.normalizedKey)}
+      ${linkedinReplyToggleCellHtml(l.linkedinReplyId)}
     </tr>`).join("");
+  wireLinkedinReplyToggles(body);
 }
 
 function renderReadyToApply() {
   document.getElementById("ready-to-apply-count").textContent = READY_TO_APPLY.length;
-  document.getElementById("ready-to-apply-body").innerHTML = READY_TO_APPLY.map(l => `
+  const body = document.getElementById("ready-to-apply-body");
+  body.innerHTML = READY_TO_APPLY.map(l => `
     <tr>
       <td class="company">${companyCellHtml(l.company, l.companyFolderPath)}</td>
       <td class="title">${titleCellHtml(l.title, l.folderPath, l.fileCount, l.commCount, l.company)}</td>
@@ -1711,7 +1881,9 @@ function renderReadyToApply() {
       ${ageCellHtml(l.ageDays)}
       ${directRecruiterCellHtml(l.directRecruiter, l.normalizedKey)}
       <td>${applyButtonHtml(l.applyUrl)}</td>
+      ${linkedinReplyToggleCellHtml(l.linkedinReplyId)}
     </tr>`).join("");
+  wireLinkedinReplyToggles(body);
 }
 
 function renderPoisonedLinkedin() {
@@ -1739,8 +1911,14 @@ function renderLinkedinReplyQueue() {
     const thread = m.threadUrl
       ? `<a class="open-thread" href="${escapeHtml(m.threadUrl)}" target="_blank" rel="noopener">Open thread</a>`
       : `<a class="open-thread disabled" href="#" tabindex="-1">No thread link</a>`;
+    const replyId = m.replyId || "";
+    const hidden = replyId && hiddenLinkedinReplyIds.has(replyId);
+    const highlighted = replyId && highlightedLinkedinReplyId === replyId;
+    const classes = ["reply-card"];
+    if (hidden) classes.push("reply-hidden");
+    if (highlighted) classes.push("reply-highlight");
     return `
-      <div class="reply-card" data-queue-idx="${idx}">
+      <div class="${classes.join(" ")}" data-reply-id="${escapeHtml(replyId)}" data-queue-idx="${idx}">
         <div class="reply-card-head">
           <span class="who">${escapeHtml(who)}</span>
           <span class="meta">${escapeHtml(roleBits)}</span>
@@ -1781,13 +1959,32 @@ function dismissLinkedinReply(idx, btn) {
     btn.disabled = true;
     btn.textContent = "Dismissing…";
   }
+  const replyId = item.replyId || "";
   LINKEDIN_REPLY_QUEUE.splice(idx, 1);
   if (item.messageId) {
     const ui = UNMATCHED_COMMUNICATIONS.findIndex(m => m.messageId === item.messageId);
     if (ui >= 0) UNMATCHED_COMMUNICATIONS.splice(ui, 1);
   }
+  // Clear stamped ids on funnel leads so Show/Hide buttons disappear.
+  if (replyId) {
+    hiddenLinkedinReplyIds.delete(replyId);
+    if (highlightedLinkedinReplyId === replyId) highlightedLinkedinReplyId = "";
+    for (const bucket of [READY_TO_APPLY, NEEDS_DECISION_FORCED, NEEDS_DECISION, AWAITING_LLM_REVIEW, JD_UNRESOLVED]) {
+      for (const lead of bucket) {
+        if (lead.linkedinReplyId === replyId) lead.linkedinReplyId = "";
+      }
+    }
+    for (const m of UNMATCHED_COMMUNICATIONS) {
+      if (m.linkedinReplyId === replyId) m.linkedinReplyId = "";
+    }
+  }
   renderLinkedinReplyQueue();
   renderUnmatchedCommunications();
+  renderReadyToApply();
+  renderNeedsDecisionForced();
+  renderTable();
+  renderAwaitingLlmReview();
+  renderJdUnresolved();
   renderFunnel();
   // Prefer lead dismiss whenever we have a normalizedKey — even if the card
   // was labeled unmatched — so a mangled/missing unmatched row can't fail.
@@ -1833,10 +2030,12 @@ function renderUnmatchedCommunications() {
           : escapeHtml(m.preview || "(empty)")}
       </td>
       <td>${replyBtn}</td>
+      ${linkedinReplyToggleCellHtml(m.linkedinReplyId)}
       ${ageCellHtml(m.ageDays)}
     </tr>`;
   }).join("");
-  document.querySelectorAll("#unmatched-communications-body .copy-btn[data-unmatched-idx]").forEach(btn => {
+  const unmatchedBody = document.getElementById("unmatched-communications-body");
+  unmatchedBody.querySelectorAll(".copy-btn[data-unmatched-idx]").forEach(btn => {
     btn.addEventListener("click", () => {
       const item = UNMATCHED_COMMUNICATIONS[Number(btn.dataset.unmatchedIdx)];
       navigator.clipboard.writeText(item.draftReply || "").then(() => {
@@ -1846,6 +2045,7 @@ function renderUnmatchedCommunications() {
       });
     });
   });
+  wireLinkedinReplyToggles(unmatchedBody);
 }
 
 function renderManualHandled() {

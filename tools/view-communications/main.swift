@@ -30,7 +30,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-            guard let self, !self.didHandleURL else { return }
+            // Explicit `self = self` for Swift < 5.8 (mini2 CommandLineTools = 5.3).
+            guard let self = self, !self.didHandleURL else { return }
             NSApp.terminate(nil)
         }
     }
