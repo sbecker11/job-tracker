@@ -13,6 +13,7 @@ if str(_SCRIPTS) not in sys.path:
 
 from unemployment_claim_report import (  # noqa: E402
     build_week_rows,
+    contact_for_claim,
     default_week_start,
     floor_to_sunday,
     is_malformed_email,
@@ -120,10 +121,30 @@ class TestBuildWeekRows:
 
         assert len(rows) == 1
         assert rows[0]["company"] == "Acme"
+        assert rows[0]["date"] == "2026-07-08"
         assert rows[0]["date_of_communication"] == "2026-07-08"
+        assert rows[0]["role"] == "Software Engineer"
         assert rows[0]["recruiter_email"] == "recruiter@acme.example"
+        assert rows[0]["application_url_or_email"] == "recruiter@acme.example"
         assert rows[0]["job_status"] == "applied"
         assert rows[0]["notes"] == ""
+
+    def test_prefers_apply_url_over_email_for_claim_contact(self, tmp_path: Path):
+        conn = connect(tmp_path / "leads.db")
+        key = _seed_lead(
+            conn,
+            "Acme",
+            "Software Engineer",
+            apply_url="https://boards.example.com/jobs/123",
+        )
+        advance_status(conn, key, "applied", when="2026-07-08T10:00:00Z")
+        add_job_contact(conn, JobContact(job_key=key, email="recruiter@acme.example", role="recruiter"))
+
+        rows = build_week_rows(conn, "2026-07-05", "2026-07-11")
+        conn.close()
+
+        assert rows[0]["application_url_or_email"] == "https://boards.example.com/jobs/123"
+        assert contact_for_claim(apply_url="", email="a@b.com") == "a@b.com"
 
     def test_excludes_lead_outside_window(self, tmp_path: Path):
         conn = connect(tmp_path / "leads.db")
@@ -199,7 +220,7 @@ class TestBuildWeekRows:
 
         assert rows == []
 
-    def test_no_contact_on_file_yields_empty_email_and_no_note(self, tmp_path: Path):
+    def test_no_contact_on_file_yields_empty_email_and_missing_note(self, tmp_path: Path):
         conn = connect(tmp_path / "leads.db")
         key = _seed_lead(conn, "Acme", "Software Engineer")
         advance_status(conn, key, "applied", when="2026-07-08T10:00:00Z")
@@ -208,7 +229,8 @@ class TestBuildWeekRows:
         conn.close()
 
         assert rows[0]["recruiter_email"] == ""
-        assert rows[0]["notes"] == ""
+        assert rows[0]["application_url_or_email"] == ""
+        assert "no apply URL or email" in rows[0]["notes"]
 
     def test_system_sender_email_is_flagged_in_notes(self, tmp_path: Path):
         conn = connect(tmp_path / "leads.db")
@@ -251,6 +273,7 @@ class TestMainCli:
         conn = connect(db_path)
         key = _seed_lead(conn, "Acme", "Software Engineer")
         advance_status(conn, key, "applied", when="2026-07-08T10:00:00Z")
+        add_job_contact(conn, JobContact(job_key=key, email="recruiter@acme.example", role="recruiter"))
         conn.close()
 
         output_dir = tmp_path / "out"
@@ -269,8 +292,10 @@ class TestMainCli:
         csv_path = output_dir / "Weekly_Claim_ContactAttempts_2026-07-05.csv"
         assert csv_path.exists()
         contents = csv_path.read_text()
+        assert contents.splitlines()[0] == "date,company,role,application_url_or_email,job_status,notes"
         assert "Acme" in contents
         assert "Software Engineer" in contents
+        assert "recruiter@acme.example" in contents
 
         registry = load_registry(output_dir / ".reported_job_keys.json")
         assert key in registry

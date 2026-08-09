@@ -1,27 +1,22 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ClarifyQueue } from './components/ClarifyQueue'
+import { ContactFilterBar, decideApplyCount } from './components/ContactFilterBar'
+import { ContactPriorityQueue } from './components/ContactPriorityQueue'
 import { DecideApplyStage } from './components/DecideApplyStage'
-import { SendResumeQueue } from './components/SendResumeQueue'
-import { StagePipeline } from './components/StagePipeline'
-import { WaitQueue } from './components/WaitQueue'
-import type { PipelineStageId, WorkflowPayload } from './types'
-import { STAGE_ORDER } from './types'
+import {
+  buildContactPriorityQueue,
+  contactQueueCounts,
+  filterContactQueue,
+  type ContactFilter,
+} from './priorityQueue'
+import type { WorkflowPayload } from './types'
 import './App.css'
 
 const DATA_URL = '/pending-actions.json'
 
-function pickDefaultStage(data: WorkflowPayload): PipelineStageId {
-  for (const id of STAGE_ORDER) {
-    const stage = data.pipeline.find((s) => s.id === id)
-    if (stage && stage.count > 0) return id
-  }
-  return 'clarify'
-}
-
 export default function App() {
   const [data, setData] = useState<WorkflowPayload | null>(null)
   const [error, setError] = useState('')
-  const [active, setActive] = useState<PipelineStageId>('clarify')
+  const [filter, setFilter] = useState<ContactFilter>('all')
 
   useEffect(() => {
     let cancelled = false
@@ -37,7 +32,6 @@ export default function App() {
       .then((payload) => {
         if (cancelled) return
         setData(payload)
-        setActive(pickDefaultStage(payload))
       })
       .catch((err: Error) => {
         if (!cancelled) setError(err.message || String(err))
@@ -47,21 +41,54 @@ export default function App() {
     }
   }, [])
 
-  const stageBody = useMemo(() => {
-    if (!data) return null
-    switch (active) {
-      case 'clarify':
-        return <ClarifyQueue items={data.stages.clarify} />
-      case 'send_resume':
-        return <SendResumeQueue items={data.stages.sendResume} />
-      case 'wait_schedule':
-        return <WaitQueue items={data.stages.waitSchedule} />
-      case 'decide_apply':
-        return <DecideApplyStage data={data.stages.decideApply} />
-      default:
-        return null
-    }
-  }, [active, data])
+  const priorityAll = useMemo(
+    () => (data ? buildContactPriorityQueue(data) : []),
+    [data],
+  )
+  const counts = useMemo(() => contactQueueCounts(priorityAll), [priorityAll])
+  const filtered = useMemo(
+    () => filterContactQueue(priorityAll, filter),
+    [priorityAll, filter],
+  )
+
+  const filterOptions = useMemo(() => {
+    if (!data) return []
+    return [
+      {
+        id: 'all' as const,
+        label: 'All contact',
+        count: counts.all,
+        hint: 'Every lead needing outbound contact, ranked by attempts then age',
+      },
+      {
+        id: 'clarify' as const,
+        label: 'Clarify',
+        count: counts.clarify || 0,
+        hint: 'Reply with clarifiers — draft attached to each lead',
+      },
+      {
+        id: 'send_resume' as const,
+        label: 'Send résumé',
+        count: counts.send_resume || 0,
+        hint: 'Send package to the recruiter',
+      },
+      {
+        id: 'wait_schedule' as const,
+        label: 'Wait / schedule',
+        count: counts.wait_schedule || 0,
+        hint: 'Ball in their court',
+      },
+      {
+        id: 'decide_apply' as const,
+        label: 'Decide / apply',
+        count: decideApplyCount(data.stages.decideApply),
+        hint: 'Package/review funnel — not contact prioritization',
+      },
+    ]
+  }, [counts, data])
+
+  const filterLabel =
+    filterOptions.find((o) => o.id === filter)?.label || 'All contact'
 
   return (
     <div className="app">
@@ -69,8 +96,9 @@ export default function App() {
         <div>
           <h1>Pending actions</h1>
           <p className="subtitle">
-            One path for every lead: Clarify → Send résumé → Wait / schedule → Decide / apply.
-            Source is a badge, not a separate queue.
+            Contact priority ranks outbound work (attempts, then age). Each row starts with{" "}
+            <strong>YOUR ACTION</strong> — the exact next steps for that lead. Stage chips only
+            filter the list.
           </p>
         </div>
         <div className="top-meta">
@@ -99,14 +127,34 @@ export default function App() {
       )}
 
       {data && (
-        <>
-          <StagePipeline stages={data.pipeline} active={active} onSelect={setActive} />
-          <main className="stage-panel">
-            <h2>{data.pipeline.find((s) => s.id === active)?.label}</h2>
-            <p className="panel-action">{data.pipeline.find((s) => s.id === active)?.action}</p>
-            {stageBody}
-          </main>
-        </>
+        <section className="contact-priority" aria-label="Contact priority">
+          <div className="contact-priority-head">
+            <div>
+              <h2>Contact priority</h2>
+              <p className="panel-action">
+                Ranked by recruiter contact attempts, then age. Read YOUR ACTION on each row before
+                using the buttons. Digests / ATS alerts are excluded — use Decide/apply for those.
+              </p>
+            </div>
+            <span className="priority-total">
+              {filter === 'decide_apply' ? decideApplyCount(data.stages.decideApply) : filtered.length}{' '}
+              shown
+            </span>
+          </div>
+
+          <ContactFilterBar options={filterOptions} active={filter} onSelect={setFilter} />
+
+          {filter === 'decide_apply' ? (
+            <div className="decide-under-priority">
+              <p className="hint-line">
+                Decide / apply is package and review work — not part of the contact ranking above.
+              </p>
+              <DecideApplyStage data={data.stages.decideApply} folderRoot={data.folderRoot} />
+            </div>
+          ) : (
+            <ContactPriorityQueue items={filtered} filterLabel={filterLabel} />
+          )}
+        </section>
       )}
 
       {!data && !error && <p className="loading">Loading workflow…</p>}

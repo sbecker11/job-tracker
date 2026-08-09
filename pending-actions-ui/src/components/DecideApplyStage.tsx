@@ -1,5 +1,17 @@
 import type { DecideLead, WorkflowPayload } from '../types'
 
+function revealFolderUrl(folderPath: string): string | null {
+  if (!folderPath) return null
+  // Decide leads often carry relative paths; reveal helper needs absolute.
+  // Absolute paths already work; relative ones are opened via Regenerate HTML root elsewhere.
+  if (folderPath.startsWith('/')) {
+    return `revealfolder://reveal?path=${encodeURIComponent(folderPath)}`
+  }
+  return `revealfolder://reveal?path=${encodeURIComponent(
+    `${'/Users/sbecker11/Desktop/Resumes/2026'}/${folderPath}`.replace(/\/+/g, '/'),
+  )}`
+}
+
 function LeadTable({
   title,
   rows,
@@ -23,16 +35,31 @@ function LeadTable({
               <th>Title</th>
               <th className="num">Match %</th>
               <th className="num">Age</th>
+              <th>YOUR ACTION</th>
               {showApply && <th>Apply</th>}
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => (
               <tr key={r.normalizedKey}>
-                <td>{r.company}</td>
-                <td>{r.title}</td>
+                <td>
+                  {r.company}
+                  {r.resumeRequested && (
+                    <div className="resume-ask-flag">Recruiter asked for résumé</div>
+                  )}
+                </td>
+                <td>
+                  {r.folderPath ? (
+                    <a href={revealFolderUrl(r.folderPath) || '#'}>{r.title}</a>
+                  ) : (
+                    r.title
+                  )}
+                </td>
                 <td className="num">{r.matchPct ?? '—'}</td>
                 <td className="num">{r.ageDays}d</td>
+                <td className="action-cell">
+                  {r.nextAction || r.actionHint || 'Review reviews → pursue or skip'}
+                </td>
                 {showApply && (
                   <td>
                     {r.applyUrl ? (
@@ -71,6 +98,10 @@ export function DecideApplyStage({
 
   return (
     <div className="decide-stack">
+      <p className="hint-line">
+        Decide/apply is where you read the reviews and choose pursue (generate package) or skip.
+        Contact priority Send résumé only appears after the package exists on disk.
+      </p>
       <LeadTable title="Ready to apply" rows={data.readyToApply} showApply />
       <LeadTable title="Needs your decision" rows={data.needsDecision} />
       <LeadTable title="Needs decision (forced package)" rows={data.needsDecisionForced} />

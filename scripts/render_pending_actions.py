@@ -2280,9 +2280,11 @@ def _render_html(data: dict, *, output_root: Path) -> str:
     return html
 
 
-def _write_workflow_json(data: dict, *, conn, now: datetime, paths: list[Path]) -> dict:
+def _write_workflow_json(data: dict, *, conn, now: datetime, paths: list[Path], output_root: Path) -> dict:
     """Build + write the React workflow JSON to each path (best-effort mkdir)."""
-    payload = build_workflow_payload(data, conn=conn, age_days_fn=_age_days, now=now)
+    payload = build_workflow_payload(
+        data, conn=conn, age_days_fn=_age_days, now=now, output_root=output_root
+    )
     text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
     for path in paths:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2322,7 +2324,9 @@ def main(argv: list[str] | None = None) -> int:
             paths = [args.output_json]
             if args.ui_json:
                 paths.append(args.ui_json)
-            workflow = _write_workflow_json(data, conn=conn, now=now, paths=paths)
+            workflow = _write_workflow_json(
+                data, conn=conn, now=now, paths=paths, output_root=args.output_root
+            )
     finally:
         conn.close()
 

@@ -1891,6 +1891,60 @@ def dismiss_linkedin_reply(
     raise ValueError(f"kind must be 'lead' or 'unmatched', got {kind!r}")
 
 
+def mark_package_sent(
+    conn: sqlite3.Connection,
+    normalized_key: str,
+    *,
+    when: str | None = None,
+    channel: str = "email",
+) -> str:
+    """Record that Shawn sent the résumé package — moves lead into Wait.
+
+    Logs an outbound `job_conversations` row (idempotent via synthetic
+    message_id). That sets `awaiting_response_since`, which is what the
+    Contact priority Wait stage reads. Prefer this for LinkedIn sends;
+    Gmail Sent-folder scans with `--include-sent` often cover email
+    automatically on the next cycle.
+    """
+    key = (normalized_key or "").strip()
+    if not key:
+        raise ValueError("normalized_key is required")
+    row = conn.execute(
+        "SELECT 1 FROM job_leads WHERE normalized_key = ? AND deleted_at IS NULL",
+        (key,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Lead not found: {key!r}")
+    stamp = when or utc_now_iso()
+    synthetic_id = f"package-sent:{key}"
+    already = conn.execute(
+        "SELECT 1 FROM job_conversations WHERE message_id = ?",
+        (synthetic_id,),
+    ).fetchone()
+    if already is None:
+        ch = (channel or "email").strip().lower()
+        if ch not in ("email", "linkedin", "other", "call"):
+            ch = "email"
+        add_job_conversation(
+            conn,
+            JobConversation(
+                job_key=key,
+                message_id=synthetic_id,
+                channel=ch,
+                direction="outbound",
+                summary="Sent résumé package (pending-actions Mark sent)",
+                occurred_at=stamp,
+                body_text=(
+                    "Shawn marked the résumé/cover package as sent from pending-actions. "
+                    "Awaiting recruiter reply."
+                ),
+            ),
+        )
+    else:
+        set_awaiting_response(conn, key, True, when=stamp)
+    return f"package-sent:{key}"
+
+
 def resolve_unmatched_message(
     conn: sqlite3.Connection,
     message_id: str,

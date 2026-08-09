@@ -25,6 +25,7 @@ export interface ClarifyItem {
   replyId?: string
   contactAttempts: number
   actionHint?: string
+  nextAction?: string
 }
 
 export interface SendResumeItem {
@@ -34,14 +35,20 @@ export interface SendResumeItem {
   company: string
   title: string
   normalizedKey: string
+  recruiterName?: string
+  recruiterEmail?: string
   ageDays: number
   matchPct?: number
   folderPath?: string
   applyUrl?: string
+  threadUrl?: string
   contactAttempts: number
   resumeRequested?: boolean
   packageReady?: boolean
+  draftReply?: string
+  markSentUrl?: string
   actionHint?: string
+  nextAction?: string
 }
 
 export interface WaitItem {
@@ -57,6 +64,7 @@ export interface WaitItem {
   status?: string
   contactAttempts: number
   actionHint?: string
+  nextAction?: string
 }
 
 export interface DecideLead {
@@ -69,10 +77,14 @@ export interface DecideLead {
   applyUrl?: string
   folderPath?: string
   stage?: string
+  resumeRequested?: boolean
+  nextAction?: string
+  actionHint?: string
 }
 
 export interface WorkflowPayload {
   generatedAt: string
+  folderRoot?: string
   pipeline: PipelineStage[]
   stages: {
     clarify: ClarifyItem[]

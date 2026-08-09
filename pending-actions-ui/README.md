@@ -1,10 +1,12 @@
 # Pending actions UI (React)
 
-Stage-based workflow for recruiter leads:
+**Contact priority** (sticky at top) is the single source of truth for outbound
+manual work. Every lead that needs a reply, résumé send, or wait sits in one
+ranked list (attempts → age). Generated drafts expand on that same row.
 
-**Clarify → Send résumé → Wait / schedule → Decide / apply**
-
-Data comes from `scripts/render_pending_actions.py` (not a live API yet).
+Filter chips (All contact / Clarify / Send résumé / Wait / Decide·apply) narrow
+the list — they do not create a second priority model. Decide/apply is package
+funnel work, shown when that chip is selected.
 
 ## Setup
 
@@ -23,14 +25,4 @@ cd pending-actions-ui && npm run dev
 ```
 
 Open the Vite URL (usually http://localhost:5173).  
-Regenerate writes:
-
-- `var/pending-actions.json`
-- `pending-actions-ui/public/pending-actions.json`
-- `var/pending-actions.html` (legacy static page)
-
-## Notes
-
-- Channel (LinkedIn / Email) is a badge only; sort priority is contact attempts then age.
-- Dismiss / folder helpers still use the existing `dlr://` and `revealfolder://` Mac helpers.
-- Legacy HTML remains until this UI is the daily driver.
+Legacy `var/pending-actions.html` is still written but left alone as the old UI.

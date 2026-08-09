@@ -1111,6 +1111,27 @@ def test_set_awaiting_response_sets_and_clears_directly(tmp_path: Path):
     conn.close()
 
 
+def test_mark_package_sent_sets_awaiting_response(tmp_path: Path):
+    from job_tracker.pipeline.store import mark_package_sent
+
+    conn = connect(tmp_path / "leads.db")
+    key = _seed_lead(conn)
+    result = mark_package_sent(conn, key, when="2026-08-09T18:00:00+00:00", channel="email")
+    assert result == f"package-sent:{key}"
+    row = conn.execute(
+        "SELECT awaiting_response_since FROM job_leads WHERE normalized_key = ?", (key,)
+    ).fetchone()
+    assert row["awaiting_response_since"] == "2026-08-09T18:00:00+00:00"
+    # Idempotent
+    mark_package_sent(conn, key, when="2026-08-09T19:00:00+00:00")
+    n = conn.execute(
+        "SELECT COUNT(*) AS n FROM job_conversations WHERE message_id = ?",
+        (f"package-sent:{key}",),
+    ).fetchone()["n"]
+    assert n == 1
+    conn.close()
+
+
 def test_connect_migrates_a_pre_existing_db_missing_awaiting_response_since_and_phone_columns(tmp_path: Path):
     """Regression test mirroring the existing jd_text migration test: a
     pre-2026-07-14 DB (schema minus awaiting_response_since/job_contacts.phone)

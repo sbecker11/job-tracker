@@ -10,6 +10,10 @@ or acceptance stamped on the lead, OR anything you personally sent/logged
 passive inbound job-alert digest. One row per job lead, using its earliest
 qualifying date within the week.
 
+CSV columns for Utah filing: date, company, role, application_url_or_email
+(prefer apply URL; fall back to recruiter email). job_status + notes are
+kept as review helpers.
+
 Two things the ad-hoc version didn't have, both requested afterward:
 
 1. A persistent cross-week registry (--state-file, default
@@ -170,6 +174,18 @@ def earliest_qualifying_date(conn, lead_row, job_key: str, start: str, end: str)
     return min(candidates) if candidates else None
 
 
+def contact_for_claim(*, apply_url: str, email: str) -> str:
+    """Utah weekly claim field: application URL if we have one, else email contact.
+
+    Prefer a real apply URL over a system/no-reply email. If the only email is a
+    bulk sender, still return it (flagged in notes) so the row isn't blank.
+    """
+    url = (apply_url or "").strip()
+    if url:
+        return url
+    return (email or "").strip()
+
+
 def build_week_rows(conn, start: str, end: str, *, excluded_job_keys: set[str] | None = None) -> list[dict]:
     """One row per job lead with >=1 genuine contact-attempt date inside
     [start, end] (inclusive, both YYYY-MM-DD), skipping any job_key already
@@ -187,7 +203,7 @@ def build_week_rows(conn, start: str, end: str, *, excluded_job_keys: set[str] |
 
     rows = conn.execute(
         f"""
-        SELECT normalized_key, company, title, status, {", ".join(STAGE_DATE_COLUMNS)}
+        SELECT normalized_key, company, title, status, apply_url, {", ".join(STAGE_DATE_COLUMNS)}
         FROM job_leads
         WHERE ({per_column_clause})
            OR normalized_key IN (
@@ -208,18 +224,29 @@ def build_week_rows(conn, start: str, end: str, *, excluded_job_keys: set[str] |
         if d is None:
             continue
         email = best_contact_email(conn, job_key)
+        apply_url = (r["apply_url"] or "").strip()
+        contact = contact_for_claim(apply_url=apply_url, email=email)
+        notes = note_for(email)
+        if not contact:
+            notes = (notes + "; " if notes else "") + "no apply URL or email on file"
         out.append(
             {
                 "job_key": job_key,
+                # Filing columns (Utah weekly claim work-search log)
+                "date": d,
                 "company": r["company"],
+                "role": r["title"],
+                "application_url_or_email": contact,
+                # Internals / review helpers
+                "date_of_communication": d,  # alias kept for older tests/callers
                 "title": r["title"],
-                "date_of_communication": d,
+                "apply_url": apply_url,
                 "recruiter_email": email,
                 "job_status": r["status"],
-                "notes": note_for(email),
+                "notes": notes,
             }
         )
-    out.sort(key=lambda row: row["date_of_communication"])
+    out.sort(key=lambda row: row["date"])
     return out
 
 
@@ -235,17 +262,20 @@ def save_registry(path: Path, registry: dict) -> None:
 
 
 def write_csv(path: Path, rows: list[dict]) -> None:
+    """Write the Utah claim columns first; keep status/notes for your review."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["company", "title", "date_of_communication", "recruiter_email", "job_status", "notes"])
+        writer.writerow(
+            ["date", "company", "role", "application_url_or_email", "job_status", "notes"]
+        )
         for row in rows:
             writer.writerow(
                 [
+                    row["date"],
                     row["company"],
-                    row["title"],
-                    row["date_of_communication"],
-                    row["recruiter_email"],
+                    row["role"],
+                    row["application_url_or_email"],
                     row["job_status"],
                     row["notes"],
                 ]
@@ -258,9 +288,10 @@ def print_table(week_start: str, week_end: str, rows: list[dict], *, min_contact
         print("  (none)")
     for row in rows:
         flag = f"  \u26a0\ufe0f {row['notes']}" if row["notes"] else ""
+        contact = row["application_url_or_email"] or "(no URL/email)"
         print(
-            f"  {row['date_of_communication']} | {row['company']} | {row['title']} | "
-            f"{row['recruiter_email'] or '(no contact on file)'} | {row['job_status']}{flag}"
+            f"  {row['date']} | {row['company']} | {row['role']} | "
+            f"{contact} | {row['job_status']}{flag}"
         )
     if len(rows) < min_contacts:
         print(
@@ -300,6 +331,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Allow this job_key to be reported again even if already in the state file. Repeatable.",
     )
     ap.add_argument("--dry-run", action="store_true", help="Print only; don't write CSVs or update the state file.")
+    ap.add_argument(
+        "--no-state",
+        action="store_true",
+        help="Ignore the cross-week registry (re-export a week already filed). Does not update the registry.",
+    )
     args = ap.parse_args(argv)
 
     output_dir: Path = args.output_dir
@@ -316,8 +352,11 @@ def main(argv: list[str] | None = None) -> int:
             week_start_date = start_date + timedelta(weeks=i)
             start, end = week_bounds(week_start_date)
 
-            registry = load_registry(state_path)
-            excluded = set(registry.keys()) - set(args.force_include)
+            if args.no_state:
+                excluded: set[str] = set()
+            else:
+                registry = load_registry(state_path)
+                excluded = set(registry.keys()) - set(args.force_include)
 
             rows = build_week_rows(conn, start, end, excluded_job_keys=excluded)
             print_table(start, end, rows, min_contacts=args.min_contacts)
@@ -329,12 +368,18 @@ def main(argv: list[str] | None = None) -> int:
             write_csv(csv_path, rows)
             print(f"  Wrote {csv_path}")
 
+            if args.no_state:
+                print("  Skipped registry update (--no-state)")
+                print()
+                continue
+
+            registry = load_registry(state_path)
             for row in rows:
                 registry[row["job_key"]] = {
                     "company": row["company"],
-                    "title": row["title"],
+                    "title": row["role"],
                     "week_start": start,
-                    "date_used": row["date_of_communication"],
+                    "date_used": row["date"],
                 }
             save_registry(state_path, registry)
             print(f"  Updated {state_path} ({len(rows)} newly registered)")

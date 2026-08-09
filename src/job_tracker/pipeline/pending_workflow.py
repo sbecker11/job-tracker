@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import quote
 
 from job_tracker.pipeline.qualifying_reply import detect_pitch_gaps, draft_qualifying_reply
 from job_tracker.pipeline.store import list_job_conversations
@@ -26,8 +28,139 @@ _RESUME_ASK_RE = re.compile(
 )
 
 _NO_REPLY_RE = re.compile(
-    r"(?i)(no[\-]?reply|donotreply|do[\-]?not[\-]?reply|notifications?@|jobalerts?@|jobs\-noreply@)"
+    r"(?i)(no[\-]?reply|donotreply|do[\-]?not[\-]?reply|notifications?@|"
+    r"jobalerts?@|jobs\-noreply@|alerts@|noreply@)"
 )
+
+_DIGEST_TEXT_RE = re.compile(
+    r"(?i)("
+    r"jobs you don.?t want to miss|"
+    r"more jobs like|"
+    r"job alert|"
+    r"jobs? digest|"
+    r"new jobs for you|"
+    r"jobs matching your|"
+    r"recommended jobs|"
+    r"talent\.com"
+    r")"
+)
+
+_SYSTEM_CONTACT_DOMAIN_RE = re.compile(
+    r"(?i)@(alerts\.)?talent\.com$|@linkedin\.com$|@greenhouse-mail\.io$|"
+    r"@ashbyhq\.com$|@mail\.greenhouse\.io$"
+)
+
+
+def _is_system_email(email: str) -> bool:
+    e = (email or "").strip().lower()
+    if not e or "@" not in e:
+        return False
+    if _NO_REPLY_RE.search(e):
+        return True
+    return bool(_SYSTEM_CONTACT_DOMAIN_RE.search(e))
+
+
+def _is_digest_conversation(conv) -> bool:
+    """Job-alert digests are not recruiter contact attempts."""
+    blob = f"{conv['summary'] or ''}\n{(conv['body_text'] or '')[:800]}"
+    return bool(_DIGEST_TEXT_RE.search(blob))
+
+
+def _human_inbound_conversations(convs: list) -> list:
+    return [
+        c
+        for c in convs
+        if (c["direction"] or "") == "inbound" and not _is_digest_conversation(c)
+    ]
+
+
+def _has_human_recruiter_on_file(conn, job_key: str) -> bool:
+    """True when a named person or non-system email/phone exists for this lead."""
+    rows = conn.execute(
+        """
+        SELECT name, email, phone FROM job_contacts
+        WHERE job_key = ?
+        """,
+        (job_key,),
+    ).fetchall()
+    for row in rows:
+        name = (row["name"] or "").strip()
+        email = (row["email"] or "").strip()
+        phone = (row["phone"] or "").strip()
+        if name and not _is_system_email(email):
+            return True
+        if email and not _is_system_email(email):
+            return True
+        if phone and not email:
+            return True
+    return False
+
+
+def _next_action_clarify(*, channel: str, recruiter_name: str = "") -> str:
+    who = recruiter_name.strip() or "the recruiter"
+    if channel == "linkedin":
+        return (
+            f"YOUR ACTION: (1) Copy reply (2) Open LinkedIn thread (3) Paste & send to {who} "
+            f"(4) Dismiss / marked replied"
+        )
+    return (
+        f"YOUR ACTION: (1) Copy reply (2) Reply in Gmail to {who} "
+        f"(3) Dismiss / marked replied"
+    )
+
+
+def _next_action_send_resume(
+    *,
+    recruiter_name: str = "",
+    apply_url: str = "",
+    package_ready: bool = False,
+    channel: str = "email",
+    recruiter_email: str = "",
+) -> str:
+    who = recruiter_name.strip()
+    if apply_url and not who:
+        return (
+            "YOUR ACTION: This is ATS apply work, not a recruiter email — "
+            "use Decide/apply (or open Apply URL). Do not treat alert digests as contacts."
+        )
+    target = who or "the recruiter"
+    via = (
+        f"email to {recruiter_email}"
+        if recruiter_email
+        else ("LinkedIn thread" if channel == "linkedin" else "email/LinkedIn")
+    )
+    if not package_ready:
+        return (
+            f"YOUR ACTION: (1) Generate the résumé package first "
+            f"(2) Open package folder (3) Copy message & send to {target} via {via} "
+            f"(4) Mark sent — email Sent-scan usually auto-moves to Wait; LinkedIn needs Mark sent"
+        )
+    return (
+        f"YOUR ACTION: (1) Open package folder (2) Copy message & attach résumé/cover to {target} "
+        f"via {via} (3) Mark sent — email Sent-scan usually auto-moves to Wait; LinkedIn needs Mark sent"
+    )
+
+
+def draft_resume_send_message(
+    *,
+    recruiter_name: str = "",
+    company: str = "",
+    title: str = "",
+) -> str:
+    """Short attach-and-send note for Send résumé (CLAUDE.md §12 short-form)."""
+    who = (recruiter_name or "").strip() or "there"
+    role_bits = " — ".join(p for p in (title.strip(), company.strip()) if p)
+    role_clause = f" for the {role_bits} role" if role_bits else ""
+    return (
+        f"Hi {who},\n\n"
+        f"Please find attached my résumé and cover letter{role_clause}.\n\n"
+        f"Happy to walk through fit whenever useful.\n\n"
+        f"Best,\nShawn"
+    )
+
+
+def _next_action_wait() -> str:
+    return "YOUR ACTION: None right now — wait for their reply (schedule a call only if already agreed)."
 
 PIPELINE_STAGES = (
     {
@@ -111,20 +244,25 @@ def build_clarify_queue(
     for item in linkedin_reply_queue:
         key = item.get("normalizedKey") or ""
         attempts = int(item.get("contactAttempts") or 0)
-        if key and attempts < 1:
+        if key:
             convs = list(list_job_conversations(conn, key))
-            attempts = sum(1 for c in convs if (c["direction"] or "") == "inbound")
+            attempts = len(_human_inbound_conversations(convs)) or max(1, attempts)
+        channel = _channel_from_addresses(
+            thread_url=item.get("threadUrl") or "",
+            source_label="linkedin_message" if item.get("kind") == "lead" else "",
+            from_address="",
+        )
+        next_action = _next_action_clarify(
+            channel=channel, recruiter_name=item.get("recruiterName") or ""
+        )
         _add(
             {
                 **item,
                 "stage": "clarify",
-                "channel": _channel_from_addresses(
-                    thread_url=item.get("threadUrl") or "",
-                    source_label="linkedin_message" if item.get("kind") == "lead" else "",
-                    from_address="",
-                ),
+                "channel": channel,
                 "contactAttempts": max(1, attempts),
-                "actionHint": "Copy reply → open thread → send → dismiss",
+                "actionHint": next_action,
+                "nextAction": next_action,
             }
         )
 
@@ -155,11 +293,13 @@ def build_clarify_queue(
         ):
             continue
         reply_id = f"mid:{mid}" if mid else f"fallback:{(name or '').lower()}|{(m.get('subject') or '').lower()}"
+        channel = _channel_from_addresses(from_address=fr, thread_url=thread)
+        next_action = _next_action_clarify(channel=channel, recruiter_name=name)
         _add(
             {
                 "kind": "unmatched",
                 "stage": "clarify",
-                "channel": _channel_from_addresses(from_address=fr, thread_url=thread),
+                "channel": channel,
                 "recruiterName": name,
                 "subject": m.get("subject") or "",
                 "company": m.get("companyGuess") or "",
@@ -170,7 +310,8 @@ def build_clarify_queue(
                 "messageId": mid,
                 "replyId": reply_id,
                 "contactAttempts": 1,
-                "actionHint": "Copy reply → reply in Gmail → dismiss when sent",
+                "actionHint": next_action,
+                "nextAction": next_action,
             }
         )
 
@@ -195,17 +336,15 @@ def build_clarify_queue(
             continue
         if any((c["direction"] or "") == "outbound" for c in convs):
             continue
-        inbound = [c for c in convs if (c["direction"] or "") == "inbound"]
+        inbound = _human_inbound_conversations(convs)
         if not inbound:
             continue
         latest = inbound[-1]
         body = latest["body_text"] or ""
         subj = latest["summary"] or r["title"] or ""
         draft = draft_qualifying_reply(body, subject=subj)
-        if not draft.thread_url and not draft.recruiter_name:
-            # Still allow email leads when the from/summary implies a person.
-            if not body.strip():
-                continue
+        if not draft.thread_url and not draft.recruiter_name and not _has_human_recruiter_on_file(conn, key):
+            continue
         gaps = draft.gaps
         if not any(
             (gaps.needs_jd, gaps.needs_end_client, gaps.needs_engagement, gaps.needs_remote, gaps.needs_rate_band)
@@ -216,6 +355,7 @@ def build_clarify_queue(
             source_label=r["source_label"] or "",
         )
         reply_id = f"key:{key}"
+        next_action = _next_action_clarify(channel=channel, recruiter_name=draft.recruiter_name)
         _add(
             {
                 "kind": "lead",
@@ -232,16 +372,69 @@ def build_clarify_queue(
                 "normalizedKey": key,
                 "replyId": reply_id,
                 "contactAttempts": len(inbound),
-                "actionHint": (
-                    "Copy reply → open LinkedIn thread → send → dismiss"
-                    if channel == "linkedin"
-                    else "Copy reply → reply in Gmail → dismiss when sent"
-                ),
+                "actionHint": next_action,
+                "nextAction": next_action,
             }
         )
 
     queue.sort(key=_priority_sort_key)
     return queue
+
+
+def _recruiter_contact(conn, job_key: str) -> tuple[str, str]:
+    """Return (display_name, email) for the primary non-system contact."""
+    row = conn.execute(
+        """
+        SELECT name, email FROM job_contacts
+        WHERE job_key = ?
+        ORDER BY CASE WHEN role = 'recruiter' THEN 0 ELSE 1 END, first_contacted_at ASC
+        """,
+        (job_key,),
+    ).fetchall()
+    for r in row:
+        name = (r["name"] or "").strip()
+        email = (r["email"] or "").strip()
+        if email and _is_system_email(email):
+            continue
+        if name or email:
+            return name or email, email
+    return "", ""
+
+
+def _package_folder_abs(conn, *, company: str, title: str, output_root: Path) -> tuple[str, bool]:
+    """Absolute package folder path + whether résumé+cover exist on disk."""
+    from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT, _safe_filename
+
+    root = Path(output_root) if output_root else DEFAULT_OUTPUT_ROOT
+    n = conn.execute(
+        """
+        SELECT COUNT(*) AS n FROM job_leads
+        WHERE deleted_at IS NULL AND company = ?
+        """,
+        (company,),
+    ).fetchone()["n"]
+    company_safe = _safe_filename(company)
+    package_rel = (
+        f"{company_safe}/{_safe_filename(f'{company}_{title}')}" if n > 1 else company_safe
+    )
+    lead_dir = root / package_rel
+    # Prefer an existing on-disk folder even if multi_lead naming differs.
+    if not lead_dir.is_dir():
+        flat = root / company_safe
+        if flat.is_dir():
+            lead_dir = flat
+    names = [p.name.lower() for p in lead_dir.glob("*.docx")] if lead_dir.is_dir() else []
+    ready = any("resume" in n for n in names) and any("cover" in n for n in names)
+    return (str(lead_dir) if lead_dir.is_dir() else str(root / package_rel), ready)
+
+
+def _thread_url_for_lead(convs: list) -> str:
+    for c in convs:
+        blob = f"{c['body_text'] or ''}\n{c['summary'] or ''}"
+        m = re.search(r"(https://www\.linkedin\.com/messaging/thread/\S+)", blob, re.I)
+        if m:
+            return m.group(1).rstrip(").,]")
+    return ""
 
 
 def build_send_resume_queue(
@@ -252,12 +445,85 @@ def build_send_resume_queue(
     conn,
     age_days_fn: Callable[[str | None, datetime], int],
     now: datetime,
+    output_root: Path | None = None,
 ) -> list[dict]:
-    """Priority-A′: recruiter asked for a résumé / package ready to send to a person."""
+    """Priority-A′: recruiter asked for a résumé *and* the package is on disk.
+
+    A résumé ask alone is not enough — Shawn must still review no-LLM / full-LLM
+    reviews and choose pursue (generate package) or skip. Until résumé+cover
+    exist, the lead stays in Decide/apply.
+    """
+    from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT
+
+    root = Path(output_root) if output_root else DEFAULT_OUTPUT_ROOT
     queue: list[dict] = []
     seen: set[str] = set()
 
-    # Packages on disk for leads with real recruiter conversation history.
+    def _append_item(
+        *,
+        key: str,
+        company: str,
+        title: str,
+        source_label: str,
+        age_days: int,
+        contact_attempts: int,
+        asked: bool,
+        apply_url: str = "",
+        package_kind: str = "",
+        folder_hint: str = "",
+    ) -> bool:
+        recruiter, email = _recruiter_contact(conn, key)
+        folder_abs, disk_ready = _package_folder_abs(conn, company=company, title=title, output_root=root)
+        if folder_hint and not Path(folder_abs).is_dir():
+            hinted = root / folder_hint
+            if hinted.is_dir():
+                folder_abs = str(hinted)
+                names = [p.name.lower() for p in hinted.glob("*.docx")]
+                disk_ready = any("resume" in n for n in names) and any("cover" in n for n in names)
+        # Gate: never ask Shawn to send before he has reviewed → pursued → package.
+        if not disk_ready:
+            return False
+        channel = _channel_from_addresses(source_label=source_label or "")
+        if email and not _is_system_email(email):
+            channel = "email"
+        convs = list(list_job_conversations(conn, key))
+        draft = draft_resume_send_message(
+            recruiter_name=recruiter, company=company, title=title
+        )
+        next_action = _next_action_send_resume(
+            recruiter_name=recruiter,
+            apply_url=apply_url,
+            package_ready=True,
+            channel=channel,
+            recruiter_email=email,
+        )
+        seen.add(key)
+        queue.append(
+            {
+                "kind": "lead",
+                "stage": "send_resume",
+                "channel": channel,
+                "company": company,
+                "title": title,
+                "normalizedKey": key,
+                "recruiterName": recruiter,
+                "recruiterEmail": email,
+                "ageDays": age_days,
+                "folderPath": folder_abs,
+                "applyUrl": apply_url,
+                "threadUrl": _thread_url_for_lead(convs),
+                "contactAttempts": max(1, contact_attempts),
+                "resumeRequested": asked,
+                "packageReady": True,
+                "packageKind": package_kind,
+                "draftReply": draft,
+                "actionHint": next_action,
+                "nextAction": next_action,
+                "markSentUrl": f"mps://mark?key={quote(key, safe='')}&channel={channel}",
+            }
+        )
+        return True
+
     for bucket, label in (
         (ready_to_apply, "ready"),
         (needs_decision_forced, "forced"),
@@ -267,48 +533,35 @@ def build_send_resume_queue(
             if not key or key in clarify_keys or key in seen:
                 continue
             convs = list(list_job_conversations(conn, key))
-            inbound = [c for c in convs if (c["direction"] or "") == "inbound"]
-            if not inbound and not lead.get("directRecruiter"):
+            human_inbound = _human_inbound_conversations(convs)
+            has_person = bool(lead.get("directRecruiter")) or _has_human_recruiter_on_file(conn, key)
+            asked = any(
+                _RESUME_ASK_RE.search((c["body_text"] or "") + " " + (c["summary"] or ""))
+                for c in human_inbound
+            )
+            if not has_person:
                 continue
-            asked = any(_RESUME_ASK_RE.search((c["body_text"] or "") + " " + (c["summary"] or "")) for c in inbound)
-            # Direct recruiter + package ready counts even without explicit "send resume"
-            # phrasing — they already asked you into a thread.
-            if not asked and not lead.get("directRecruiter") and len(inbound) < 1:
+            if not asked and not lead.get("directRecruiter"):
                 continue
-            # If we're still waiting on them after an outbound, prefer wait stage.
             row = conn.execute(
                 "SELECT awaiting_response_since, source_label FROM job_leads WHERE normalized_key = ?",
                 (key,),
             ).fetchone()
-            if row and row["awaiting_response_since"]:
-                # Outbound already logged — only keep here if latest inbound asked for résumé
-                # after our last outbound (they replied asking for the doc).
-                if not asked:
-                    continue
-            seen.add(key)
-            queue.append(
-                {
-                    "kind": "lead",
-                    "stage": "send_resume",
-                    "channel": _channel_from_addresses(source_label=(row["source_label"] if row else "") or ""),
-                    "company": lead.get("company") or "",
-                    "title": lead.get("title") or "",
-                    "normalizedKey": key,
-                    "ageDays": lead.get("ageDays") or 0,
-                    "matchPct": lead.get("matchPct"),
-                    "folderPath": lead.get("folderPath") or "",
-                    "companyFolderPath": lead.get("companyFolderPath") or "",
-                    "applyUrl": lead.get("applyUrl") or "",
-                    "directRecruiter": lead.get("directRecruiter"),
-                    "contactAttempts": len(inbound),
-                    "resumeRequested": asked,
-                    "packageReady": True,
-                    "packageKind": label,
-                    "actionHint": "Open package folder → send résumé to recruiter → mark sent / await schedule",
-                }
+            if row and row["awaiting_response_since"] and not asked:
+                continue
+            _append_item(
+                key=key,
+                company=lead.get("company") or "",
+                title=lead.get("title") or "",
+                source_label=(row["source_label"] if row else "") or "",
+                age_days=int(lead.get("ageDays") or 0),
+                contact_attempts=len(human_inbound),
+                asked=asked,
+                apply_url=lead.get("applyUrl") or "",
+                package_kind=label,
+                folder_hint=lead.get("folderPath") or "",
             )
 
-    # Inbound "please send resume" on new leads that already have an outbound clarify.
     for r in conn.execute(
         """
         SELECT normalized_key, company, title, source_label, first_seen, awaiting_response_since
@@ -320,29 +573,27 @@ def build_send_resume_queue(
         key = r["normalized_key"]
         if key in seen or key in clarify_keys:
             continue
-        convs = list(list_job_conversations(conn, key))
-        inbound = [c for c in convs if (c["direction"] or "") == "inbound"]
-        outbound = [c for c in convs if (c["direction"] or "") == "outbound"]
-        if not inbound or not outbound:
+        if not _has_human_recruiter_on_file(conn, key):
             continue
-        asked = any(_RESUME_ASK_RE.search((c["body_text"] or "") + " " + (c["summary"] or "")) for c in inbound)
+        convs = list(list_job_conversations(conn, key))
+        human_inbound = _human_inbound_conversations(convs)
+        outbound = [c for c in convs if (c["direction"] or "") == "outbound"]
+        if not human_inbound or not outbound:
+            continue
+        asked = any(
+            _RESUME_ASK_RE.search((c["body_text"] or "") + " " + (c["summary"] or ""))
+            for c in human_inbound
+        )
         if not asked:
             continue
-        seen.add(key)
-        queue.append(
-            {
-                "kind": "lead",
-                "stage": "send_resume",
-                "channel": _channel_from_addresses(source_label=r["source_label"] or ""),
-                "company": r["company"] or "",
-                "title": r["title"] or "",
-                "normalizedKey": key,
-                "ageDays": age_days_fn(r["first_seen"], now),
-                "contactAttempts": len(inbound),
-                "resumeRequested": True,
-                "packageReady": False,
-                "actionHint": "Generate or open package → send résumé → mark sent",
-            }
+        _append_item(
+            key=key,
+            company=r["company"] or "",
+            title=r["title"] or "",
+            source_label=r["source_label"] or "",
+            age_days=age_days_fn(r["first_seen"], now),
+            contact_attempts=len(human_inbound),
+            asked=True,
         )
 
     queue.sort(key=_priority_sort_key)
@@ -359,6 +610,7 @@ def build_wait_schedule_queue(
 ) -> list[dict]:
     """After outbound clarify/résumé — awaiting recruiter reply or call scheduling."""
     queue: list[dict] = []
+    next_action = _next_action_wait()
     for r in conn.execute(
         """
         SELECT normalized_key, company, title, source_label, first_seen,
@@ -374,7 +626,7 @@ def build_wait_schedule_queue(
         if key in clarify_keys or key in send_keys:
             continue
         convs = list(list_job_conversations(conn, key))
-        inbound = [c for c in convs if (c["direction"] or "") == "inbound"]
+        human_inbound = _human_inbound_conversations(convs)
         waiting_days = age_days_fn(r["awaiting_response_since"], now)
         queue.append(
             {
@@ -388,8 +640,9 @@ def build_wait_schedule_queue(
                 "waitingDays": waiting_days,
                 "awaitingSince": r["awaiting_response_since"],
                 "status": r["status"],
-                "contactAttempts": len(inbound),
-                "actionHint": "No action unless scheduling a call — waiting on recruiter",
+                "contactAttempts": max(1, len(human_inbound)),
+                "actionHint": next_action,
+                "nextAction": next_action,
             }
         )
     queue.sort(key=lambda x: (-int(x.get("contactAttempts") or 0), -int(x.get("waitingDays") or 0)))
@@ -404,28 +657,69 @@ def build_decide_apply_stage(
     awaiting_llm_review: list[dict],
     jd_unresolved: list[dict],
     send_keys: set[str],
+    conn=None,
 ) -> dict[str, list[dict]]:
     """Priority-B funnel buckets (exclude leads already in send-résumé)."""
 
-    def _filter(rows: list[dict]) -> list[dict]:
+    def _resume_requested(key: str) -> bool:
+        if not conn or not key:
+            return False
+        convs = list(list_job_conversations(conn, key))
+        return any(
+            _RESUME_ASK_RE.search((c["body_text"] or "") + " " + (c["summary"] or ""))
+            for c in _human_inbound_conversations(convs)
+        )
+
+    def _filter(rows: list[dict], *, bucket: str) -> list[dict]:
         out = []
         for lead in rows:
             key = lead.get("normalizedKey") or ""
             if key and key in send_keys:
                 continue
-            out.append({**lead, "stage": "decide_apply"})
+            asked = _resume_requested(key)
+            if bucket == "needsDecision" or bucket == "needsDecisionForced":
+                next_action = (
+                    "YOUR ACTION: Review no-LLM + full-LLM reviews → pursue (generate package) "
+                    "or skip. Recruiter already asked for a résumé — decide before sending."
+                    if asked
+                    else "YOUR ACTION: Review no-LLM + full-LLM reviews → pursue (generate package) or skip."
+                )
+            elif bucket == "readyToApply":
+                next_action = (
+                    "YOUR ACTION: Package is ready — submit via Apply URL (or send to recruiter if Contact priority lists it)."
+                )
+            elif bucket == "awaitingLlmReview":
+                next_action = "YOUR ACTION: Wait for full-LLM-review (or run the pipeline) — no decision yet."
+            else:
+                next_action = "YOUR ACTION: Recover the full JD before scoring/deciding."
+            out.append(
+                {
+                    **lead,
+                    "stage": "decide_apply",
+                    "resumeRequested": asked,
+                    "nextAction": next_action,
+                    "actionHint": next_action,
+                }
+            )
         return out
 
     return {
-        "readyToApply": _filter(ready_to_apply),
-        "needsDecision": _filter(needs_decision),
-        "needsDecisionForced": _filter(needs_decision_forced),
-        "awaitingLlmReview": _filter(awaiting_llm_review),
-        "jdUnresolved": _filter(jd_unresolved),
+        "readyToApply": _filter(ready_to_apply, bucket="readyToApply"),
+        "needsDecision": _filter(needs_decision, bucket="needsDecision"),
+        "needsDecisionForced": _filter(needs_decision_forced, bucket="needsDecisionForced"),
+        "awaitingLlmReview": _filter(awaiting_llm_review, bucket="awaitingLlmReview"),
+        "jdUnresolved": _filter(jd_unresolved, bucket="jdUnresolved"),
     }
 
 
-def build_workflow_payload(data: dict, *, conn, age_days_fn: Callable[[str | None, datetime], int], now: datetime) -> dict[str, Any]:
+def build_workflow_payload(
+    data: dict,
+    *,
+    conn,
+    age_days_fn: Callable[[str | None, datetime], int],
+    now: datetime,
+    output_root: Path | None = None,
+) -> dict[str, Any]:
     """Assemble the React-facing workflow snapshot from a `render()` data dict."""
     clarify = build_clarify_queue(
         linkedin_reply_queue=data.get("linkedin_reply_queue") or [],
@@ -443,6 +737,7 @@ def build_workflow_payload(data: dict, *, conn, age_days_fn: Callable[[str | Non
         conn=conn,
         age_days_fn=age_days_fn,
         now=now,
+        output_root=output_root,
     )
     send_keys = {i["normalizedKey"] for i in send_resume if i.get("normalizedKey")}
 
@@ -461,6 +756,7 @@ def build_workflow_payload(data: dict, *, conn, age_days_fn: Callable[[str | Non
         awaiting_llm_review=data.get("awaiting_llm_review") or [],
         jd_unresolved=data.get("jd_unresolved") or [],
         send_keys=send_keys,
+        conn=conn,
     )
 
     decide_count = sum(len(v) for v in decide_apply.values())
@@ -477,6 +773,9 @@ def build_workflow_payload(data: dict, *, conn, age_days_fn: Callable[[str | Non
 
     return {
         "generatedAt": generated_iso,
+        "folderRoot": str(output_root) if output_root else str(
+            __import__("job_tracker.pipeline.llm_apply", fromlist=["DEFAULT_OUTPUT_ROOT"]).DEFAULT_OUTPUT_ROOT
+        ),
         "pipeline": pipeline,
         "stages": {
             "clarify": clarify,
