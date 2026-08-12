@@ -44,6 +44,9 @@ class EmailMessage:
     thread_id: str = ""
     date: str = ""
     to_address: str = ""
+    # LinkedIn hit-reply notifications put the per-thread email bridge in
+    # Reply-To (uuid@reply.linkedin.com). Empty when the header is absent.
+    reply_to: str = ""
     label_ids: list[str] = field(default_factory=list)
 
     @property

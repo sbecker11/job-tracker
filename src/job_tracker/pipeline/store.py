@@ -260,6 +260,14 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # human via scripts/review_direct_recruiter_outreach.py.
     ("job_leads", "direct_recruiter_outreach", "ALTER TABLE job_leads ADD COLUMN direct_recruiter_outreach INTEGER"),
     ("job_contacts", "phone", "ALTER TABLE job_contacts ADD COLUMN phone TEXT"),
+    # LinkedIn per-thread email bridge (2026-08-11) — Reply-To on hit-reply
+    # notifications (uuid@reply.linkedin.com). Mailto + outbound Sent match
+    # when the recruiter never left a real signature email.
+    (
+        "job_contacts",
+        "linkedin_reply_to",
+        "ALTER TABLE job_contacts ADD COLUMN linkedin_reply_to TEXT",
+    ),
     # Communications archival (2026-07-17) — see models.JobConversation and
     # pipeline/comms_match.py's Tier-1 thread-id matching.
     ("job_conversations", "thread_id", "ALTER TABLE job_conversations ADD COLUMN thread_id TEXT"),
@@ -1179,28 +1187,54 @@ def add_job_contact(conn: sqlite3.Connection, contact: JobContact) -> int:
     email-less contacts when it doesn't — added 2026-07-17 after
     `pipeline/signature.py` backfilling from several messages for the same
     job (each with a name but no email) started piling up duplicate
-    name-only rows that the email-only key never caught."""
+    name-only rows that the email-only key never caught.
+
+    `linkedin_reply_to` (2026-08-11) is never stored in `email` — if a caller
+    passes a reply.linkedin.com address as `email`, it is moved to
+    `linkedin_reply_to` so Tier-2 identity matching stays clean.
+    """
     email = (contact.email or "").strip().lower()
+    li_reply = (contact.linkedin_reply_to or "").strip().lower()
+    if is_linkedin_thread_reply_address(email):
+        li_reply = li_reply or email
+        email = ""
+        contact.email = ""
+        contact.linkedin_reply_to = li_reply
+    elif li_reply and not is_linkedin_thread_reply_address(li_reply):
+        li_reply = ""
+        contact.linkedin_reply_to = ""
     name = (contact.name or "").strip().lower()
     existing = None
     if email:
         existing = conn.execute(
-            "SELECT id, name, phone FROM job_contacts WHERE job_key = ? AND lower(email) = ?",
+            "SELECT id, name, phone, email, linkedin_reply_to FROM job_contacts "
+            "WHERE job_key = ? AND lower(email) = ?",
             (contact.job_key, email),
+        ).fetchone()
+    if existing is None and not email and li_reply:
+        existing = conn.execute(
+            "SELECT id, name, phone, email, linkedin_reply_to FROM job_contacts "
+            "WHERE job_key = ? AND lower(linkedin_reply_to) = ?",
+            (contact.job_key, li_reply),
         ).fetchone()
     if existing is None and not email and name:
         existing = conn.execute(
-            "SELECT id, name, phone FROM job_contacts WHERE job_key = ? AND lower(name) = ? "
+            "SELECT id, name, phone, email, linkedin_reply_to FROM job_contacts "
+            "WHERE job_key = ? AND lower(name) = ? "
             "AND (email IS NULL OR email = '')",
             (contact.job_key, name),
         ).fetchone()
     if existing is not None:
+        new_li = li_reply or (existing["linkedin_reply_to"] or "")
         conn.execute(
-            "UPDATE job_contacts SET last_contacted_at = ?, name = ?, phone = ? WHERE id = ?",
+            "UPDATE job_contacts SET last_contacted_at = ?, name = ?, phone = ?, "
+            "email = ?, linkedin_reply_to = ? WHERE id = ?",
             (
                 utc_now_iso(),
                 contact.name or existing["name"],
                 contact.phone or existing["phone"],
+                email or (existing["email"] or ""),
+                new_li,
                 existing["id"],
             ),
         )
@@ -1210,16 +1244,17 @@ def add_job_contact(conn: sqlite3.Connection, contact: JobContact) -> int:
     cursor = conn.execute(
         """
         INSERT INTO job_contacts (
-            job_key, contact_ref, name, email, phone, role, source_message_id,
-            first_contacted_at, last_contacted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            job_key, contact_ref, name, email, phone, linkedin_reply_to, role,
+            source_message_id, first_contacted_at, last_contacted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             contact.job_key,
             contact.contact_ref,
             contact.name,
-            contact.email,
+            email,
             contact.phone,
+            li_reply,
             contact.role,
             contact.source_message_id,
             contact.first_contacted_at,
@@ -1629,6 +1664,56 @@ GENERIC_RELAY_ADDRESSES = frozenset(
 )
 
 
+def is_linkedin_thread_reply_address(email: str) -> bool:
+    """True for LinkedIn's per-thread email bridge (uuid@reply.linkedin.com).
+
+    Distinct from GENERIC_RELAY_ADDRESSES (shared From: relays). Safe to use
+    as a mailto / outbound To: match key; never store as job_contacts.email.
+    """
+    return (email or "").strip().lower().endswith("@reply.linkedin.com")
+
+
+def linkedin_reply_to_from_header(raw: str) -> str:
+    """Normalize a Reply-To header value to a bare uuid@reply.linkedin.com, or ''."""
+    from email.utils import parseaddr
+
+    _, addr = parseaddr(raw or "")
+    addr = (addr or "").strip().lower()
+    if is_linkedin_thread_reply_address(addr):
+        return addr
+    # Bare address without angle brackets / display name
+    bare = (raw or "").strip().lower()
+    return bare if is_linkedin_thread_reply_address(bare) else ""
+
+
+def contact_addresses_from_inbound(
+    *,
+    from_address: str,
+    reply_to: str = "",
+    signature_email: str = "",
+) -> tuple[str, str]:
+    """Pick (real_email, linkedin_reply_to) for an inbound recruiting message.
+
+    Prefer a signature / non-relay From for `email`. Capture Reply-To
+    uuid@reply.linkedin.com separately so mailto can fall back without
+    poisoning Tier-2 identity matching.
+    """
+    li_reply = linkedin_reply_to_from_header(reply_to)
+    email = (signature_email or "").strip()
+    if email and is_linkedin_thread_reply_address(email):
+        li_reply = li_reply or email.lower()
+        email = ""
+    if not email:
+        other = (from_address or "").strip()
+        other_l = other.lower()
+        if other and other_l not in GENERIC_RELAY_ADDRESSES:
+            if is_linkedin_thread_reply_address(other_l):
+                li_reply = li_reply or other_l
+            else:
+                email = other
+    return email, li_reply
+
+
 def find_job_by_thread_id(conn: sqlite3.Connection, thread_id: str) -> str | None:
     """The job_key of the most recent job_conversations row already using
     this thread_id, if any. Empty/blank thread_id never matches (some
@@ -1702,6 +1787,14 @@ def find_job_by_contact_email(conn: sqlite3.Connection, email: str) -> str | Non
     email = (email or "").strip().lower()
     if not email or _is_generic_relay_domain(email):
         return None
+    if is_linkedin_thread_reply_address(email):
+        # Per-thread bridge — unique, match via linkedin_reply_to only.
+        row = conn.execute(
+            "SELECT job_key FROM job_contacts WHERE lower(linkedin_reply_to) = ? "
+            "ORDER BY last_contacted_at DESC LIMIT 1",
+            (email,),
+        ).fetchone()
+        return row["job_key"] if row else None
     distinct_jobs = conn.execute(
         "SELECT COUNT(DISTINCT job_key) AS n FROM job_contacts WHERE lower(email) = ?", (email,)
     ).fetchone()["n"]

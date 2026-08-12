@@ -84,6 +84,7 @@ from job_tracker.pipeline.store import (
     add_job_conversation,
     advance_status,
     connect as db_connect,
+    contact_addresses_from_inbound,
     find_matching_job,
     is_communication_seen,
     record_message_processed,
@@ -141,14 +142,14 @@ def _link_existing_conversation(
         return
 
     detected = parse_signature(message.combined_text)
-    contact_email = ""
-    if detected and detected.email:
-        contact_email = detected.email
-    elif message.from_address.strip().lower() not in GENERIC_RELAY_ADDRESSES:
-        contact_email = message.from_address
+    contact_email, linkedin_reply_to = contact_addresses_from_inbound(
+        from_address=message.from_address,
+        reply_to=getattr(message, "reply_to", "") or "",
+        signature_email=(detected.email if detected else ""),
+    )
 
     contact_id = None
-    if contact_email or (detected and (detected.name or detected.phone)):
+    if contact_email or linkedin_reply_to or (detected and (detected.name or detected.phone)):
         contact_id = add_job_contact(
             conn,
             JobContact(
@@ -156,6 +157,7 @@ def _link_existing_conversation(
                 name=detected.name if detected else "",
                 email=contact_email,
                 phone=detected.phone if detected else "",
+                linkedin_reply_to=linkedin_reply_to,
                 role="recruiter",
                 source_message_id=message.id,
             ),
@@ -232,13 +234,13 @@ def _handle_linkedin_reply(
 
     if job_key is not None:
         detected = parse_signature(message.combined_text)
-        contact_email = ""
-        if detected and detected.email:
-            contact_email = detected.email
-        elif message.from_address.strip().lower() not in GENERIC_RELAY_ADDRESSES:
-            contact_email = message.from_address
+        contact_email, linkedin_reply_to = contact_addresses_from_inbound(
+            from_address=message.from_address,
+            reply_to=getattr(message, "reply_to", "") or "",
+            signature_email=(detected.email if detected else ""),
+        )
         contact_id = None
-        if contact_email or (detected and (detected.name or detected.phone)):
+        if contact_email or linkedin_reply_to or (detected and (detected.name or detected.phone)):
             contact_id = add_job_contact(
                 conn,
                 JobContact(
@@ -246,6 +248,7 @@ def _handle_linkedin_reply(
                     name=detected.name if detected else "",
                     email=contact_email,
                     phone=detected.phone if detected else "",
+                    linkedin_reply_to=linkedin_reply_to,
                     role="recruiter",
                     source_message_id=message.id,
                 ),

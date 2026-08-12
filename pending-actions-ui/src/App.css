@@ -211,6 +211,16 @@ body {
   padding: 3px 8px;
   border-radius: 999px;
   border: 1px solid var(--border);
+  text-decoration: none;
+}
+
+a.channel-badge {
+  cursor: pointer;
+}
+
+a.channel-badge:hover {
+  filter: brightness(1.08);
+  text-decoration: underline;
 }
 
 .channel-linkedin {
@@ -223,6 +233,14 @@ body {
   color: var(--email);
   border-color: rgba(139, 195, 74, 0.4);
   background: rgba(139, 195, 74, 0.1);
+}
+
+a.channel-linkedin {
+  color: var(--linkedin);
+}
+
+a.channel-email {
+  color: var(--email);
 }
 
 .hint-line {
@@ -259,6 +277,31 @@ body {
 
 .btn.link {
   color: #9ec1ea;
+}
+
+.btn:disabled {
+  opacity: 0.75;
+  cursor: wait;
+}
+
+.regen-btn {
+  gap: 8px;
+}
+
+.regen-spinner {
+  width: 0.85rem;
+  height: 0.85rem;
+  border: 2px solid rgba(158, 193, 234, 0.25);
+  border-top-color: #9ec1ea;
+  border-radius: 50%;
+  animation: regen-spin 0.7s linear infinite;
+  flex: 0 0 auto;
+}
+
+@keyframes regen-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .btn.muted {
@@ -532,6 +575,12 @@ th.num {
   background: #2a1c0c;
 }
 
+.pkg-chip.reply-due {
+  color: #ffd0d0;
+  border-color: #a04040;
+  background: #2a1212;
+}
+
 .step-list {
   margin: 0;
   padding-left: 1.25rem;
@@ -552,6 +601,14 @@ th.num {
   font-size: 0.82rem;
   line-height: 1.35;
   max-width: 28rem;
+}
+
+.priority-row.reply-due {
+  border-color: #a04040;
+}
+
+.priority-row.follow-up-due {
+  border-color: #8a5a20;
 }
 
 .resume-ask-flag {

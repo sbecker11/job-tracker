@@ -116,6 +116,7 @@ from job_tracker.pipeline.store import (
     add_job_conversation,
     add_job_document,
     connect,
+    contact_addresses_from_inbound,
     get_sibling_titles,
     is_communication_seen,
     record_message_processed,
@@ -318,15 +319,16 @@ def _scan_one(
         # the recruiter's.
         detected = parse_signature(message.combined_text) if direction == "inbound" else None
         contact_email = ""
-        if detected and detected.email:
-            contact_email = detected.email
+        linkedin_reply_to = ""
+        if direction == "inbound":
+            contact_email, linkedin_reply_to = contact_addresses_from_inbound(
+                from_address=message.from_address,
+                reply_to=getattr(message, "reply_to", "") or "",
+                signature_email=(detected.email if detected else ""),
+            )
         elif other_address and other_address.strip().lower() not in GENERIC_RELAY_ADDRESSES:
-            # Never record a LinkedIn relay address as *the* contact — see
-            # comms_match._GENERIC_RELAY_ADDRESSES; it identifies the
-            # platform, not the recruiter, and would otherwise poison Tier 2
-            # for every future message from ANY recruiter landing on this job.
             contact_email = other_address
-        if contact_email or (detected and (detected.name or detected.phone)):
+        if contact_email or linkedin_reply_to or (detected and (detected.name or detected.phone)):
             contact_id = add_job_contact(
                 conn,
                 JobContact(
@@ -334,6 +336,7 @@ def _scan_one(
                     name=detected.name if detected else "",
                     email=contact_email,
                     phone=detected.phone if detected else "",
+                    linkedin_reply_to=linkedin_reply_to,
                     role="recruiter",
                     source_message_id=message_id,
                 ),

@@ -183,6 +183,39 @@ score with the current scorer before rendering (pass `--no-rescore` to skip
 that and just render whatever's already stored). Re-run any time after the
 backlog changes — it's free and local, no API calls.
 
+### React pending-actions UI (login/reboot LaunchAgent)
+
+The static HTML above is still the `file://` snapshot. The live React UI in
+`pending-actions-ui/` (Contact priority / Clarify → Send résumé → Wait →
+Decide/apply) reads the same regenerated JSON and is meant to stay up across
+reboots via a LaunchAgent:
+
+```bash
+# Install once (starts now + on every login/reboot; KeepAlive restarts if it dies)
+./tools/pending-actions-ui-server/install.sh
+
+# Unload until you re-install
+./tools/pending-actions-ui-server/stop.sh
+
+# Manual alternative (no LaunchAgent)
+cd pending-actions-ui && npm run dev
+```
+
+- URL: http://127.0.0.1:3174/ (pinned in `pending-actions-ui/vite.config.ts`)
+- Label: `com.sbecker11.job-tracker.pending-actions-ui`
+- Logs: `pending-actions-ui/logs/launchd.{out,err}.log`
+- Details: `tools/pending-actions-ui-server/README.md`
+- After an `nvm` Node upgrade, re-run `install.sh` so the plist picks up the
+  new `node` path.
+- `run.sh` kills any listener on port 3174 before starting Vite.
+
+Regenerate data the UI reads with
+`python scripts/render_pending_actions.py --no-rescore` (or the
+`refreshpending://` helper / **Regenerate** button). After you BCC yourself
+on a LinkedIn reply, click **Reply sent** (requires
+`tools/reply-sent/install.sh` → `replysent://run`) to run the same fast
+mailbox tick immediately instead of waiting for the 3-minute LaunchAgent.
+
 Every table also shows an **Age (days)** column (days since `first_seen`)
 and defaults to oldest-first sort — a lead's value decays the longer it
 sits unreviewed (the posting may fill, the JD may go stale), so the

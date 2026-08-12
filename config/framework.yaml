@@ -383,3 +383,6 @@ thresholds:
   # CLAUDE.md / apply_package.py): only spend an LLM call once the free
   # rule-based pass already looks like a strong stack match.
   llm_review_min_pct: 70
+  # Days since awaiting_response_since before Contact priority prompts a
+  # re-initiate / status-check-in (Wait stage → follow-up due).
+  wait_followup_days: 7

@@ -24,11 +24,17 @@ export interface ContactPriorityItem {
   title: string
   recruiterName: string
   recruiterEmail?: string
+  emailIsLinkedInRelay?: boolean
   ageDays: number
   contactAttempts: number
   waitingDays?: number
+  followUpDue?: boolean
+  followUpThresholdDays?: number
+  replyDue?: boolean
+  unansweredDays?: number
   draftReply?: string
   threadUrl?: string
+  gmailUrl?: string
   messageId?: string
   normalizedKey?: string
   replyId?: string
@@ -48,11 +54,19 @@ const STAGE_RANK: Record<string, number> = {
   wait_schedule: 2,
 }
 
-function sortKey(item: ContactPriorityItem): [number, number, number, string] {
-  // Attempts ↓, age ↓, then stage urgency (clarify before wait), then name.
+function sortKey(item: ContactPriorityItem): [number, number, number, number, string] {
+  // Recruiter waiting on Shawn (replyDue) beats overdue Wait follow-ups.
+  const urgency = item.replyDue ? 0 : item.followUpDue ? 1 : 2
+  const recency =
+    item.unansweredDays != null
+      ? item.unansweredDays
+      : item.waitingDays != null
+        ? item.waitingDays
+        : item.ageDays
   return [
+    urgency,
     -item.contactAttempts,
-    -item.ageDays,
+    -recency,
     STAGE_RANK[item.stage] ?? 9,
     (item.company || item.recruiterName || '').toLowerCase(),
   ]
@@ -108,13 +122,18 @@ function fromClarify(c: ClarifyItem): ContactPriorityItem {
     company: c.company || '',
     title: c.title || c.subject || '',
     recruiterName: c.recruiterName || '',
+    recruiterEmail: c.recruiterEmail || '',
+    emailIsLinkedInRelay: c.emailIsLinkedInRelay,
     ageDays: c.ageDays || 0,
     contactAttempts: c.contactAttempts || 1,
     draftReply: c.draftReply,
     threadUrl: c.threadUrl,
+    gmailUrl: c.gmailUrl,
     messageId: c.messageId,
     normalizedKey: c.normalizedKey,
     replyId: c.replyId,
+    replyDue: c.replyDue,
+    unansweredDays: c.unansweredDays,
     actionHint: c.actionHint,
     nextAction: c.nextAction || c.actionHint,
     kind: c.kind,
@@ -130,12 +149,14 @@ function fromSendResume(s: SendResumeItem): ContactPriorityItem {
     title: s.title || '',
     recruiterName: s.recruiterName || '',
     recruiterEmail: s.recruiterEmail || '',
+    emailIsLinkedInRelay: s.emailIsLinkedInRelay,
     ageDays: s.ageDays || 0,
     contactAttempts: s.contactAttempts || 1,
     normalizedKey: s.normalizedKey,
     folderPath: s.folderPath,
     applyUrl: s.applyUrl,
     threadUrl: s.threadUrl,
+    gmailUrl: s.gmailUrl,
     packageReady: s.packageReady,
     resumeRequested: s.resumeRequested,
     draftReply: s.draftReply,
@@ -153,10 +174,18 @@ function fromWait(w: WaitItem): ContactPriorityItem {
     channel: w.channel,
     company: w.company || '',
     title: w.title || '',
-    recruiterName: '',
+    recruiterName: w.recruiterName || '',
+    recruiterEmail: w.recruiterEmail || '',
+    emailIsLinkedInRelay: w.emailIsLinkedInRelay,
     ageDays: w.ageDays || 0,
     contactAttempts: w.contactAttempts || 1,
     waitingDays: w.waitingDays,
+    followUpDue: w.followUpDue,
+    followUpThresholdDays: w.followUpThresholdDays,
+    draftReply: w.draftReply,
+    threadUrl: w.threadUrl,
+    gmailUrl: w.gmailUrl,
+    markSentUrl: w.markSentUrl,
     normalizedKey: w.normalizedKey,
     actionHint: w.actionHint,
     nextAction: w.nextAction || w.actionHint,

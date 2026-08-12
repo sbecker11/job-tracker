@@ -27,7 +27,7 @@ export function SendResumeQueue({ items }: { items: SendResumeItem[] }) {
               </div>
             </div>
             <div className="badges">
-              <ChannelBadge channel={item.channel} />
+              <ChannelBadge channel={item.channel} href={item.gmailUrl} />
               <span className="meta">
                 {item.contactAttempts}× · {item.ageDays}d
               </span>

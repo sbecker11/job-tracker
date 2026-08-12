@@ -304,4 +304,127 @@ def test_workflow_wait_uses_awaiting_response_since(tmp_path: Path):
     assert any(i.get("normalizedKey") == lead.normalized_key for i in wait)
     hit = next(i for i in wait if i.get("normalizedKey") == lead.normalized_key)
     assert hit["nextAction"].startswith("YOUR ACTION:")
+    assert hit["followUpDue"] is False
     assert "wait" in hit["nextAction"].lower()
+
+
+def test_wait_followup_due_after_threshold(tmp_path: Path):
+    """Waiting past wait_followup_days prompts a re-initiate draft."""
+    from job_tracker.pipeline.store import set_awaiting_response
+
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(
+        company="Gamma",
+        title="Engineer",
+        source_message_id="m3",
+        source_label="single-jd",
+        jd_text="python aws",
+        match_pct=80.0,
+        verdict="pursue",
+    )
+    upsert_lead(conn, lead)
+    add_job_conversation(
+        conn,
+        JobConversation(
+            job_key=lead.normalized_key,
+            direction="outbound",
+            summary="Sent résumé",
+            occurred_at=(NOW - timedelta(days=10)).isoformat(),
+            body_text="Please find attached...",
+        ),
+    )
+    set_awaiting_response(conn, lead.normalized_key, True, when=(NOW - timedelta(days=10)).isoformat())
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    workflow = build_workflow_payload(
+        data, conn=conn, age_days_fn=render_pending_actions._age_days, now=NOW, output_root=tmp_path
+    )
+    conn.close()
+
+    wait = workflow["stages"]["waitSchedule"]
+    hit = next(i for i in wait if i.get("normalizedKey") == lead.normalized_key)
+    assert hit["followUpDue"] is True
+    assert hit["waitingDays"] >= 7
+    assert hit["draftReply"]
+    assert "Re-initiate" in hit["nextAction"] or "follow-up" in hit["nextAction"].lower()
+    assert workflow["waitFollowupDays"] == 7
+
+
+def test_recruiter_followup_after_outbound_is_clarify_reply_due(tmp_path: Path):
+    """Recruiter followed up after our reply — must surface as replyDue Clarify."""
+    from job_tracker.pipeline.models import JobContact
+    from job_tracker.pipeline.store import add_job_contact
+
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(
+        company="NeoTekTest",
+        title="AWS AI Engineer",
+        source_message_id="m-follow",
+        source_label="linkedin_message",
+        jd_text="python aws sagemaker",
+        match_pct=88.0,
+        verdict="pursue",
+    )
+    upsert_lead(conn, lead)
+    add_job_contact(
+        conn,
+        JobContact(
+            job_key=lead.normalized_key,
+            name="Deven Mehta",
+            email="deven@example.com",
+            role="recruiter",
+        ),
+    )
+    add_job_conversation(
+        conn,
+        JobConversation(
+            job_key=lead.normalized_key,
+            direction="inbound",
+            summary="Initial pitch",
+            occurred_at=(NOW - timedelta(days=10)).isoformat(),
+            body_text="Hi Shawn, opportunity details...",
+        ),
+    )
+    add_job_conversation(
+        conn,
+        JobConversation(
+            job_key=lead.normalized_key,
+            direction="outbound",
+            summary="Clarifiers sent",
+            occurred_at=(NOW - timedelta(days=8)).isoformat(),
+            body_text="Quick clarifiers on W2 / end client...",
+        ),
+    )
+    add_job_conversation(
+        conn,
+        JobConversation(
+            job_key=lead.normalized_key,
+            direction="inbound",
+            summary="Follow-up with more detail",
+            occurred_at=(NOW - timedelta(days=2)).isoformat(),
+            body_text="Thanks — here is more detail on the HIPAA scrubbing vision. Let me know.",
+        ),
+    )
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    workflow = build_workflow_payload(
+        data, conn=conn, age_days_fn=render_pending_actions._age_days, now=NOW, output_root=tmp_path
+    )
+    conn.close()
+
+    clarify = workflow["stages"]["clarify"]
+    hit = next(i for i in clarify if i.get("normalizedKey") == lead.normalized_key)
+    assert hit["replyDue"] is True
+    assert hit["unansweredDays"] >= 2
+    assert "Recruiter followed up" in hit["nextAction"]
+    assert hit["draftReply"]
+
+
+def test_recruiting_gmail_message_url_pins_authuser():
+    from job_tracker.pipeline.pending_workflow import recruiting_gmail_message_url
+
+    url = recruiting_gmail_message_url("19fafc5dddc2baa5")
+    assert "accounts.google.com/AccountChooser" in url
+    assert "shawnbecker.recruiting" in url
+    assert "19fafc5dddc2baa5" in url
+    assert "#all/19fafc5dddc2baa5" in url or "%23all%2F19fafc5dddc2baa5" in url
+    assert recruiting_gmail_message_url("imap:<foo@bar>") == ""
+    assert recruiting_gmail_message_url("") == ""

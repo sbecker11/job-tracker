@@ -12,26 +12,51 @@ import type { WorkflowPayload } from './types'
 import './App.css'
 
 const DATA_URL = '/pending-actions.json'
+/** Custom URL helper re-runs render_pending_actions.py (see tools/refresh-pending). */
+const REGEN_HREF = 'refreshpending://run?no_open=1'
+/** Custom URL helper runs comms_fast_cycle.py (see tools/reply-sent). */
+const REPLY_SENT_HREF = 'replysent://run'
+/** Max time to keep the spinner if the helper never finishes / isn't installed. */
+const REGEN_TIMEOUT_MS = 120_000
+/** Full mailbox tick is slower than render-only; allow ~3 minutes. */
+const REPLY_SENT_TIMEOUT_MS = 180_000
+const REGEN_POLL_MS = 1500
+
+async function fetchWorkflow(): Promise<WorkflowPayload> {
+  const res = await fetch(`${DATA_URL}?_=${Date.now()}`, { cache: 'no-store' })
+  if (!res.ok) {
+    throw new Error(
+      `${res.status} loading ${DATA_URL}. Run: python scripts/render_pending_actions.py --no-rescore`,
+    )
+  }
+  return res.json() as Promise<WorkflowPayload>
+}
+
+function fireCustomUrl(href: string) {
+  // Prefer a hidden iframe so the Vite tab is not navigated away by the
+  // custom URL scheme (window.location.href can unload the SPA).
+  const iframe = document.createElement('iframe')
+  iframe.style.display = 'none'
+  iframe.src = href
+  document.body.appendChild(iframe)
+  window.setTimeout(() => iframe.remove(), 5_000)
+}
 
 export default function App() {
   const [data, setData] = useState<WorkflowPayload | null>(null)
   const [error, setError] = useState('')
   const [filter, setFilter] = useState<ContactFilter>('all')
+  const [regenerating, setRegenerating] = useState(false)
+  const [replyScanning, setReplyScanning] = useState(false)
 
   useEffect(() => {
     let cancelled = false
-    fetch(DATA_URL)
-      .then(async (res) => {
-        if (!res.ok) {
-          throw new Error(
-            `${res.status} loading ${DATA_URL}. Run: python scripts/render_pending_actions.py --no-rescore`,
-          )
-        }
-        return res.json() as Promise<WorkflowPayload>
-      })
+    fetchWorkflow()
       .then((payload) => {
-        if (cancelled) return
-        setData(payload)
+        if (!cancelled) {
+          setData(payload)
+          setError('')
+        }
       })
       .catch((err: Error) => {
         if (!cancelled) setError(err.message || String(err))
@@ -40,6 +65,66 @@ export default function App() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    if (!regenerating && !replyScanning) return
+    const startedAt = data?.generatedAt || ''
+    const timeoutMs = replyScanning ? REPLY_SENT_TIMEOUT_MS : REGEN_TIMEOUT_MS
+    let cancelled = false
+    const deadline = Date.now() + timeoutMs
+
+    const tick = async () => {
+      if (cancelled) return
+      try {
+        const payload = await fetchWorkflow()
+        if (cancelled) return
+        if (payload.generatedAt && payload.generatedAt !== startedAt) {
+          setData(payload)
+          setError('')
+          setRegenerating(false)
+          setReplyScanning(false)
+          return
+        }
+      } catch {
+        /* keep spinning until timeout — mid-write 404s are possible */
+      }
+      if (Date.now() >= deadline) {
+        if (!cancelled) {
+          setRegenerating(false)
+          setReplyScanning(false)
+          setError(
+            replyScanning
+              ? 'Reply sent timed out — is tools/reply-sent installed? Or run: recruiting-automation/run_comms_fast.sh'
+              : 'Regenerate timed out — is tools/refresh-pending installed? Or run: python scripts/render_pending_actions.py --no-rescore',
+          )
+        }
+        return
+      }
+      window.setTimeout(tick, REGEN_POLL_MS)
+    }
+
+    const id = window.setTimeout(tick, REGEN_POLL_MS)
+    return () => {
+      cancelled = true
+      window.clearTimeout(id)
+    }
+  }, [regenerating, replyScanning, data?.generatedAt])
+
+  const busy = regenerating || replyScanning
+
+  const onRegenerate = () => {
+    if (busy) return
+    setError('')
+    setRegenerating(true)
+    fireCustomUrl(REGEN_HREF)
+  }
+
+  const onReplySent = () => {
+    if (busy) return
+    setError('')
+    setReplyScanning(true)
+    fireCustomUrl(REPLY_SENT_HREF)
+  }
 
   const priorityAll = useMemo(
     () => (data ? buildContactPriorityQueue(data) : []),
@@ -64,7 +149,7 @@ export default function App() {
         id: 'clarify' as const,
         label: 'Clarify',
         count: counts.clarify || 0,
-        hint: 'Reply with clarifiers — draft attached to each lead',
+        hint: 'Reply now — unreplied recruiter messages rank first',
       },
       {
         id: 'send_resume' as const,
@@ -76,7 +161,7 @@ export default function App() {
         id: 'wait_schedule' as const,
         label: 'Wait / schedule',
         count: counts.wait_schedule || 0,
-        hint: 'Ball in their court',
+        hint: `Ball in their court — follow-up due after ${data.waitFollowupDays ?? 7} silent days`,
       },
       {
         id: 'decide_apply' as const,
@@ -108,15 +193,34 @@ export default function App() {
               <span>Generated {data.generatedAt || '—'}</span>
             </>
           )}
-          <a className="btn link" href="refreshpending://run?no_open=1" title="Regenerate JSON + HTML">
-            Regenerate
-          </a>
+          <button
+            type="button"
+            className="btn link regen-btn"
+            onClick={onReplySent}
+            disabled={busy}
+            title="After you BCC yourself on a LinkedIn reply: scan Sent + refresh so the card can move to Wait"
+            aria-busy={replyScanning}
+          >
+            {replyScanning && <span className="regen-spinner" aria-hidden="true" />}
+            {replyScanning ? 'Scanning…' : 'Reply sent'}
+          </button>
+          <button
+            type="button"
+            className="btn link regen-btn"
+            onClick={onRegenerate}
+            disabled={busy}
+            title="Re-run render_pending_actions.py, then reload JSON in this tab"
+            aria-busy={regenerating}
+          >
+            {regenerating && <span className="regen-spinner" aria-hidden="true" />}
+            {regenerating ? 'Regenerating…' : 'Regenerate'}
+          </button>
         </div>
       </header>
 
       {error && (
         <div className="banner error">
-          <strong>No workflow data.</strong> {error}
+          <strong>Problem.</strong> {error}
         </div>
       )}
 

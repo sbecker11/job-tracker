@@ -59,6 +59,19 @@ def test_parse_plain_body():
     assert message.from_address == "recruiter@example.com"
     assert "greenhouse.io" in message.body_plain
     assert message.label_ids == ["UNREAD", "INBOX"]
+    assert message.reply_to == ""
+
+
+def test_parse_reply_to_header():
+    raw = _sample_message(plain="Message replied: hello")
+    raw["payload"]["headers"].append(
+        {
+            "name": "Reply-To",
+            "value": "Deven Mehta <a971f516-ea0f-42bf-a315-bdb8d949c45f@reply.linkedin.com>",
+        }
+    )
+    message = parse_gmail_message(raw)
+    assert message.reply_to == "a971f516-ea0f-42bf-a315-bdb8d949c45f@reply.linkedin.com"
 
 
 def test_parse_html_fallback_when_no_plain():

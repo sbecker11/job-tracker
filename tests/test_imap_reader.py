@@ -51,6 +51,22 @@ def test_parse_rfc822_message_maps_fields_and_namespaces_id():
     assert message.subject == "Remote Senior Data Engineer - DIRECTV"
     assert "let me know if you're interested" in message.body_plain
     assert message.label_ids == ["INBOX"]
+    assert message.reply_to == ""
+
+
+def test_parse_rfc822_captures_linkedin_reply_to():
+    raw = (
+        b"From: Deven Mehta <hit-reply@linkedin.com>\r\n"
+        b"To: shawn.becker@spexture.com\r\n"
+        b"Reply-To: a971f516-ea0f-42bf-a315-bdb8d949c45f@reply.linkedin.com\r\n"
+        b"Subject: Message replied: AWS AI Engineer\r\n"
+        b"Message-Id: <li-1@linkedin.com>\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"\r\n"
+        b"Please send resume.\r\n"
+    )
+    message = parse_rfc822_message(raw, uid="9", folder="INBOX")
+    assert message.reply_to == "a971f516-ea0f-42bf-a315-bdb8d949c45f@reply.linkedin.com"
 
 
 def test_parse_rfc822_message_falls_back_to_uid_when_no_message_id():

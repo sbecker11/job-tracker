@@ -36,10 +36,11 @@ CLAUDE.md dealbreaker / skills framework changes.
 
 - Finder folder open: `tools/reveal-folder/install.sh` → `revealfolder://reveal?path=...`
 - Regenerate pending-actions page: `tools/refresh-pending/install.sh` → `refreshpending://run`
+- After BCC self on a LinkedIn reply: `tools/reply-sent/install.sh` → `replysent://run` (UI **Reply sent** button — runs `comms_fast_cycle.py`)
 - Inline tri-state edit (direct_recruiter_outreach): `tools/set-direct-recruiter-outreach/install.sh` → `setdro://set?key=...&value=yes|no|undecided`
 - Dismiss LinkedIn reply card: `tools/dismiss-linkedin-reply/install.sh` → `dlr://dismiss?kind=lead|unmatched&key=...&message_id=...`
 - Mark résumé package sent: `tools/mark-package-sent/install.sh` → `mps://mark?key=...`
-- React pending-actions UI: `pending-actions-ui/` — run `python scripts/render_pending_actions.py --no-rescore` then `cd pending-actions-ui && npm run dev` (stage strip: Clarify → Send résumé → Wait → Decide/apply)
+- React pending-actions UI: `pending-actions-ui/` — `tools/pending-actions-ui-server/install.sh` starts Vite at login/reboot (`http://127.0.0.1:3174/`); or manually `python scripts/render_pending_actions.py --no-rescore` then `cd pending-actions-ui && npm run dev` (stage strip: Clarify → Send résumé → Wait → Decide/apply)
 
 Prefer `python-docx` via this repo’s `.venv` (+ `letter_style.apply_template_styles`)
 when generating packages from scratch.

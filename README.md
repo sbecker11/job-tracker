@@ -76,6 +76,8 @@ recruiting Gmail inbox
 | `config/framework.yaml` | Dealbreakers, `not_dealbreakers` (e.g. W2-only, US citizen / no sponsorship), + skills vocabulary — transcribed from `~/CLAUDE.md` |
 | `docs/JOB_CRM_VISION.md` | Design doc: Job as a first-class object — contacts, conversations, documents, meetings, offers, and the 5 use cases (dedupe alerts, follow-ups, offer comparison, market-withdrawal notice) this is building toward |
 | `docs/CATEGORY_HANDLER_EXTENSIBILITY.md` | Design doc: how the classify → decide → label/archive pattern generalizes beyond `recruiter_job` to future comms-migration categories |
+| `pending-actions-ui/` | React + Vite UI for the pending-actions workflow (Contact priority stage strip); reads JSON from `scripts/render_pending_actions.py` |
+| `tools/pending-actions-ui-server/` | LaunchAgent install/stop wrappers so that Vite UI starts at login/reboot (`http://127.0.0.1:3174/`) |
 
 ## Setup
 
@@ -91,6 +93,38 @@ Optional: copy `.env.example` to `.env` and fill in `ANTHROPIC_API_KEY` if you
 plan to use `--llm-fallback` (see below). `.env` is loaded automatically at
 startup (via `python-dotenv`, wired in `job_tracker/__init__.py`) and is
 git-ignored.
+
+### Pending-actions React UI (LaunchAgent)
+
+The static funnel page is still `var/pending-actions.html` (from
+`scripts/render_pending_actions.py`). The React app in `pending-actions-ui/`
+is the live UI for Contact priority / Clarify → Send résumé → Wait →
+Decide/apply. Keep it running across login/reboot with a LaunchAgent:
+
+```bash
+# One-time install (starts immediately; RunAtLoad + KeepAlive)
+./tools/pending-actions-ui-server/install.sh
+
+# Stop (unload; plist stays — re-run install.sh to start again)
+./tools/pending-actions-ui-server/stop.sh
+
+# Manual (no agent): regenerate JSON, then start Vite
+python scripts/render_pending_actions.py --no-rescore
+cd pending-actions-ui && npm run dev
+```
+
+| | |
+|---|---|
+| URL | http://127.0.0.1:3174/ (pinned in `pending-actions-ui/vite.config.ts`) |
+| Label | `com.sbecker11.job-tracker.pending-actions-ui` |
+| Plist | `~/Library/LaunchAgents/com.sbecker11.job-tracker.pending-actions-ui.plist` |
+| Logs | `pending-actions-ui/logs/launchd.{out,err}.log` |
+| Docs | `tools/pending-actions-ui-server/README.md` |
+
+`install.sh` bakes the current `node` absolute path into the plist (launchd
+does not source nvm). After an `nvm` Node upgrade, re-run `install.sh`.
+This is separate from sibling `recruiting-automation`'s hourly cycle agent
+(`com.sbecker11.recruiting-automation`).
 
 ```bash
 cp .env.example .env

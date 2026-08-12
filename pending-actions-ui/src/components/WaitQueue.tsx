@@ -20,7 +20,7 @@ export function WaitQueue({ items }: { items: WaitItem[] }) {
               </div>
             </div>
             <div className="badges">
-              <ChannelBadge channel={item.channel} />
+              <ChannelBadge channel={item.channel} href={item.gmailUrl} />
               <span className="meta">{item.contactAttempts}× contact</span>
             </div>
           </header>

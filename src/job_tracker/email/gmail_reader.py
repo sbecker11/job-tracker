@@ -226,6 +226,7 @@ def parse_gmail_message(raw: dict[str, Any]) -> EmailMessage:
 
     _, from_address = parseaddr(headers.get("from", ""))
     _, to_address = parseaddr(headers.get("to", ""))
+    _, reply_to = parseaddr(headers.get("reply-to", ""))
 
     return EmailMessage(
         id=raw.get("id", ""),
@@ -237,6 +238,7 @@ def parse_gmail_message(raw: dict[str, Any]) -> EmailMessage:
         snippet=raw.get("snippet", ""),
         body_plain=body_plain,
         body_html=body_html,
+        reply_to=reply_to or "",
         label_ids=list(raw.get("labelIds") or []),
     )
 

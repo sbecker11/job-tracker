@@ -14,16 +14,23 @@ export interface ClarifyItem {
   stage: string
   channel: Channel
   recruiterName?: string
+  recruiterEmail?: string
+  /** True when recruiterEmail is uuid@reply.linkedin.com (not a personal inbox). */
+  emailIsLinkedInRelay?: boolean
   subject?: string
   company?: string
   title?: string
   threadUrl?: string
+  /** Gmail deep-link pinned to shawnbecker.recruiting@gmail.com (authuser=). */
+  gmailUrl?: string
   draftReply?: string
   ageDays: number
   messageId?: string
   normalizedKey?: string
   replyId?: string
   contactAttempts: number
+  replyDue?: boolean
+  unansweredDays?: number
   actionHint?: string
   nextAction?: string
 }
@@ -37,11 +44,13 @@ export interface SendResumeItem {
   normalizedKey: string
   recruiterName?: string
   recruiterEmail?: string
+  emailIsLinkedInRelay?: boolean
   ageDays: number
   matchPct?: number
   folderPath?: string
   applyUrl?: string
   threadUrl?: string
+  gmailUrl?: string
   contactAttempts: number
   resumeRequested?: boolean
   packageReady?: boolean
@@ -58,11 +67,20 @@ export interface WaitItem {
   company: string
   title: string
   normalizedKey: string
+  recruiterName?: string
+  recruiterEmail?: string
+  emailIsLinkedInRelay?: boolean
   ageDays: number
   waitingDays: number
   awaitingSince?: string
   status?: string
   contactAttempts: number
+  followUpDue?: boolean
+  followUpThresholdDays?: number
+  draftReply?: string
+  threadUrl?: string
+  gmailUrl?: string
+  markSentUrl?: string
   actionHint?: string
   nextAction?: string
 }
@@ -85,6 +103,7 @@ export interface DecideLead {
 export interface WorkflowPayload {
   generatedAt: string
   folderRoot?: string
+  waitFollowupDays?: number
   pipeline: PipelineStage[]
   stages: {
     clarify: ClarifyItem[]

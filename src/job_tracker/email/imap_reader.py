@@ -116,6 +116,7 @@ def parse_rfc822_message(raw_bytes: bytes, *, uid: str, folder: str = "INBOX") -
 
     _, from_address = parseaddr(_decode_header_value(msg.get("From", "")))
     _, to_address = parseaddr(_decode_header_value(msg.get("To", "")))
+    _, reply_to = parseaddr(_decode_header_value(msg.get("Reply-To", "")))
     message_id = (msg.get("Message-Id") or msg.get("Message-ID") or "").strip()
     references = (msg.get("References") or "").split()
 
@@ -130,6 +131,7 @@ def parse_rfc822_message(raw_bytes: bytes, *, uid: str, folder: str = "INBOX") -
         date=msg.get("Date", ""),
         body_plain=body_plain.strip(),
         body_html=body_html.strip(),
+        reply_to=reply_to or "",
         label_ids=[folder],
     )
 

@@ -36,7 +36,7 @@ export function ClarifyQueue({ items }: { items: ClarifyItem[] }) {
                 <div className="meta">{role}</div>
               </div>
               <div className="badges">
-                <ChannelBadge channel={item.channel} />
+                <ChannelBadge channel={item.channel} href={item.gmailUrl} />
                 <span className="meta">
                   {item.contactAttempts}× contact · {item.ageDays}d
                 </span>
@@ -59,9 +59,14 @@ export function ClarifyQueue({ items }: { items: ClarifyItem[] }) {
                 <a className="btn link" href={item.threadUrl} target="_blank" rel="noreferrer">
                   Open thread
                 </a>
-              ) : (
+              ) : null}
+              {item.gmailUrl ? (
+                <a className="btn link" href={item.gmailUrl} target="_blank" rel="noreferrer">
+                  Reply in Gmail
+                </a>
+              ) : !item.threadUrl ? (
                 <span className="btn disabled">Reply in Gmail</span>
-              )}
+              ) : null}
               {dismissUrl(item) && (
                 <a className="btn link muted" href={dismissUrl(item)!}>
                   Dismiss / marked replied
