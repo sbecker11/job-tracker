@@ -217,7 +217,7 @@ def test_lead_folder_paths_single_vs_multi_lead(tmp_path: Path):
         tmp_path, company="Acme", title="Senior SWE", multi_lead=True
     )
     assert company == "Acme"
-    assert package == "Acme/Acme_Senior_SWE"
+    assert package == "Acme/Senior_SWE"
     assert count == 0
 
 
@@ -241,8 +241,8 @@ def test_render_multi_lead_company_exposes_distinct_folder_paths(tmp_path: Path)
     by_title = {e["title"]: e for e in data["needs_decision"]}
     assert by_title["Backend Engineer"]["companyFolderPath"] == "Acme"
     assert by_title["Frontend Engineer"]["companyFolderPath"] == "Acme"
-    assert by_title["Backend Engineer"]["folderPath"] == "Acme/Acme_Backend_Engineer"
-    assert by_title["Frontend Engineer"]["folderPath"] == "Acme/Acme_Frontend_Engineer"
+    assert by_title["Backend Engineer"]["folderPath"] == "Acme/Backend_Engineer"
+    assert by_title["Frontend Engineer"]["folderPath"] == "Acme/Frontend_Engineer"
 
 
 def test_html_wires_title_and_company_finder_links(tmp_path: Path):

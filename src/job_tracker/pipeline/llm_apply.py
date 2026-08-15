@@ -1007,13 +1007,17 @@ def _job_folder(
 ) -> Path:
     """Where this job's artifacts (JD, LLM review, résumé, cover letter)
     live together, instead of scattering them across parallel Reviews/
-    CoverLetters folders. Layout (2026-07-11 restructure, one `<Company>/`
+    CoverLetters folders. Layout (2026-08-14 restructure, one `<Company>/`
     folder per company under the output root):
     - `multi_lead=False` (this is the only lead tracked for this company):
       files land flat, directly in `<Company>/`.
     - `multi_lead=True` (this company has 2+ tracked leads): files land in
-      `<Company>/<Company>_<Title>/`, one subfolder per lead, so different
-      roles at the same company never collide.
+      `<Company>/<Title>/`, one subfolder per lead, so different roles at
+      the same company never collide. (Was `<Company>/<Company>_<Title>/`
+      until 2026-08-14 — the company prefix was redundant once the folder
+      is already nested under `<Company>/`; dropped for every company, not
+      just new ones — see scripts/rename_role_subfolders.py for the
+      one-time migration that renamed every pre-existing subfolder.)
 
     `multi_lead`/`sibling_titles` are computed by the caller from the leads
     DB (see store.get_sibling_titles) since this module has no DB
@@ -1035,13 +1039,13 @@ def _job_folder(
         company_dir.mkdir(parents=True, exist_ok=True)
         return company_dir
 
-    lead_dir = company_dir / _safe_filename(f"{company}_{title}")
+    lead_dir = company_dir / _safe_filename(title)
     if not lead_dir.exists() and company_dir.exists():
         flat_files = [p for p in company_dir.iterdir() if p.is_file()]
         has_subfolders = any(p.is_dir() for p in company_dir.iterdir())
         if flat_files and not has_subfolders:
             if len(sibling_titles) == 1:
-                old_dir = company_dir / _safe_filename(f"{company}_{sibling_titles[0]}")
+                old_dir = company_dir / _safe_filename(sibling_titles[0])
                 old_dir.mkdir(parents=True, exist_ok=True)
                 for f in flat_files:
                     f.rename(old_dir / f.name)

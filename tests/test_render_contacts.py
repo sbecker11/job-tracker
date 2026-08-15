@@ -114,7 +114,7 @@ def test_folder_path_nested_for_multi_lead_company(tmp_path: Path):
         acme2 = JobLead(company="Acme", title="Frontend Engineer", source_message_id="m2", source_label="single-jd")
         upsert_lead(conn, acme)
         upsert_lead(conn, acme2)
-        assert render_contacts._folder_path(conn, company="Acme", title="Backend Engineer") == "Acme/Acme_Backend_Engineer"
+        assert render_contacts._folder_path(conn, company="Acme", title="Backend Engineer") == "Acme/Backend_Engineer"
     finally:
         conn.close()
 

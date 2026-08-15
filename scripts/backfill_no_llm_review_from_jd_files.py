@@ -55,7 +55,7 @@ def _lead_folder(out_dir: Path, *, company: str, title: str, multi_lead: bool) -
     company_dir = out_dir / _safe_filename(company)
     if not multi_lead:
         return company_dir
-    return company_dir / _safe_filename(f"{company}_{title}")
+    return company_dir / _safe_filename(title)
 
 
 def _extract_jd_from_docx(path: Path) -> tuple[str, str, str]:

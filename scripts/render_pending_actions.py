@@ -126,21 +126,19 @@ def _lead_folder_and_count(output_root: Path, *, company: str, title: str, multi
     to `output_root`) plus a file count scoped to just the package folder.
 
     Mirrors `llm_apply._job_folder`'s naming rules (flat `<Company>/` for a
-    single-lead company, nested `<Company>/<Company>_<Title>/` once a
-    second lead exists) without its mkdir/migration side effects, since
-    this only reads state to render a static page. 0 files if the package
-    folder doesn't exist yet (e.g. a multi-lead company whose sibling
-    hasn't triggered the on-disk migration out of the old flat layout yet
-    — self-heals next time the real pipeline runs for that lead).
+    single-lead company, nested `<Company>/<Title>/` once a second lead
+    exists) without its mkdir/migration side effects, since this only reads
+    state to render a static page. 0 files if the package folder doesn't
+    exist yet (e.g. a multi-lead company whose sibling hasn't triggered the
+    on-disk migration out of the old flat layout yet — self-heals next time
+    the real pipeline runs for that lead).
 
     Returns `(package_rel, company_rel, file_count)` so the page can link
     the company name to the shared company root and the title to this
     lead's own package folder.
     """
     company_safe = _safe_filename(company)
-    package_rel = (
-        f"{company_safe}/{_safe_filename(f'{company}_{title}')}" if multi_lead else company_safe
-    )
+    package_rel = f"{company_safe}/{_safe_filename(title)}" if multi_lead else company_safe
     lead_dir = output_root / package_rel
     count = sum(1 for p in lead_dir.rglob("*") if p.is_file()) if lead_dir.is_dir() else 0
     return package_rel, company_safe, count

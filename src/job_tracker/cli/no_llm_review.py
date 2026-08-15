@@ -50,7 +50,7 @@ def _resolve_job(conn, company: str, title: str):
 def _expected_review_path(output_root: Path, *, company: str, title: str, multi_lead: bool) -> Path:
     """Read-only path for `no-LLM-review.docx` (does not mkdir / migrate)."""
     company_dir = output_root / _safe_filename(company)
-    folder = company_dir if not multi_lead else company_dir / _safe_filename(f"{company}_{title}")
+    folder = company_dir if not multi_lead else company_dir / _safe_filename(title)
     return folder / "no-LLM-review.docx"
 
 

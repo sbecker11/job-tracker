@@ -49,7 +49,7 @@ def _folder_path(conn, *, company: str, title: str) -> str:
     company_safe = _safe_filename(company)
     if not multi_lead:
         return company_safe
-    return f"{company_safe}/{_safe_filename(f'{company}_{title}')}"
+    return f"{company_safe}/{_safe_filename(title)}"
 
 
 _TEMPLATE = r"""<!DOCTYPE html>

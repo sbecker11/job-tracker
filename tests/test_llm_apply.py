@@ -360,7 +360,7 @@ def test_generate_package_multi_lead_nests_under_company_folder(tmp_path):
         multi_lead=True,
         sibling_titles=("Manager",),
     )
-    assert result.jd_path.parent == result.review_path.parent == tmp_path / "Acme" / "Acme_Engineer"
+    assert result.jd_path.parent == result.review_path.parent == tmp_path / "Acme" / "Engineer"
 
 
 # --- _job_folder layout -------------------------------------------------------
@@ -373,7 +373,7 @@ def test_job_folder_flat_when_not_multi_lead(tmp_path):
 
 def test_job_folder_nested_when_multi_lead(tmp_path):
     folder = llm_apply._job_folder(tmp_path, company="Acme", title="Engineer", multi_lead=True)
-    assert folder == tmp_path / "Acme" / "Acme_Engineer"
+    assert folder == tmp_path / "Acme" / "Engineer"
 
 
 def test_job_folder_migrates_stale_flat_files_when_second_lead_appears(tmp_path):
@@ -387,8 +387,8 @@ def test_job_folder_migrates_stale_flat_files_when_second_lead_appears(tmp_path)
         tmp_path, company="Acme", title="Engineer", multi_lead=True, sibling_titles=("Manager",)
     )
 
-    assert folder == flat_dir / "Acme_Engineer"
-    migrated = flat_dir / "Acme_Manager" / "JobDescription.docx"
+    assert folder == flat_dir / "Engineer"
+    migrated = flat_dir / "Manager" / "JobDescription.docx"
     assert migrated.exists()
     assert migrated.read_text(encoding="utf-8") == "old JD"
     assert not (flat_dir / "JobDescription.docx").exists()
@@ -405,7 +405,7 @@ def test_job_folder_does_not_guess_when_migration_is_ambiguous(tmp_path):
         tmp_path, company="Acme", title="Engineer", multi_lead=True, sibling_titles=("Manager", "Director")
     )
 
-    assert folder == flat_dir / "Acme_Engineer"
+    assert folder == flat_dir / "Engineer"
     assert (flat_dir / "JobDescription.docx").exists()  # left in place, not moved
 
 
@@ -567,7 +567,7 @@ def test_render_resume_and_cover_letter_nest_under_company_when_multi_lead(tmp_p
     cover_letter_path = llm_apply.render_cover_letter(
         {}, company="Acme", title="Engineer", out_dir=tmp_path, multi_lead=True, sibling_titles=("Manager",)
     )
-    assert resume_path.parent == cover_letter_path.parent == tmp_path / "Acme" / "Acme_Engineer"
+    assert resume_path.parent == cover_letter_path.parent == tmp_path / "Acme" / "Engineer"
 
 
 # --- JD review rendering -------------------------------------------------------
@@ -795,7 +795,7 @@ def test_job_description_and_review_nest_under_company_when_multi_lead(tmp_path)
         _sample_evaluation(), company="Acme", title="Engineer", out_dir=tmp_path,
         multi_lead=True, sibling_titles=("Manager",),
     )
-    assert jd_path.parent == review_path.parent == tmp_path / "Acme" / "Acme_Engineer"
+    assert jd_path.parent == review_path.parent == tmp_path / "Acme" / "Engineer"
 
 
 # --- candidate profile loading -------------------------------------------------
