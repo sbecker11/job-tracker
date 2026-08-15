@@ -3,10 +3,11 @@ import Foundation
 
 /// URL-scheme helper: `viewcomms://open?company=<enc>&title=<enc>`
 /// Shells out to the `export-communications` console script to render this
-/// lead's full job_conversations history to a fresh PDF, then opens it —
-/// browsers cannot query sqlite or open a PDF from a static file:// page.
+/// lead's full job_conversations history to a fresh ODT, then opens it —
+/// browsers cannot query sqlite or open an ODT from a static file:// page.
 /// Used by pending-actions.html's per-title communications-count badge
-/// (see titleCellHtml()/commsUrl() in scripts/render_pending_actions.py).
+/// (see titleCellHtml()/commsUrl() in scripts/render_pending_actions.py)
+/// and the React Pending Actions "View communications" button.
 
 private let scheme = "viewcomms"
 
@@ -103,8 +104,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        if let pdfPath = extractPdfPath(from: outText) {
-            NSWorkspace.shared.open(URL(fileURLWithPath: pdfPath))
+        if let odtPath = extractExportPath(from: outText) {
+            NSWorkspace.shared.open(URL(fileURLWithPath: odtPath))
         } else {
             // "No conversations logged yet ... — nothing to export." (or an
             // unrecognized message shape) — surface whatever the CLI said
@@ -115,8 +116,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// export_communications.py's success line is fixed:
     /// "Exported N conversation(s) to <path>" — everything after the last
-    /// "conversation(s) to " marker is the path, straight through to EOF.
-    private func extractPdfPath(from output: String) -> String? {
+    /// "conversation(s) to " marker is the path, straight through to EOF
+    /// (typically a `.odt` under the lead's communications/ folder).
+    private func extractExportPath(from output: String) -> String? {
         guard let marker = output.range(of: "conversation(s) to ", options: .backwards) else {
             return nil
         }

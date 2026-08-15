@@ -6,7 +6,9 @@ import {
   buildContactPriorityQueue,
   contactQueueCounts,
   filterContactQueue,
+  replyAckKey,
   type ContactFilter,
+  type ContactPriorityItem,
 } from './priorityQueue'
 import type { WorkflowPayload } from './types'
 import './App.css'
@@ -21,6 +23,31 @@ const REGEN_TIMEOUT_MS = 120_000
 /** Full mailbox tick is slower than render-only; allow ~3 minutes. */
 const REPLY_SENT_TIMEOUT_MS = 180_000
 const REGEN_POLL_MS = 1500
+/** Inbound message ids whose Reply sent already completed (survives refresh). */
+const REPLY_SENT_ACK_STORAGE_KEY = 'pending-actions.replySentAck'
+
+function loadReplySentAcks(): Record<string, true> {
+  try {
+    const raw = localStorage.getItem(REPLY_SENT_ACK_STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const out: Record<string, true> = {}
+    for (const [k, v] of Object.entries(parsed)) {
+      if (v) out[k] = true
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+function saveReplySentAcks(acks: Record<string, true>) {
+  try {
+    localStorage.setItem(REPLY_SENT_ACK_STORAGE_KEY, JSON.stringify(acks))
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
 
 async function fetchWorkflow(): Promise<WorkflowPayload> {
   const res = await fetch(`${DATA_URL}?_=${Date.now()}`, { cache: 'no-store' })
@@ -47,7 +74,11 @@ export default function App() {
   const [error, setError] = useState('')
   const [filter, setFilter] = useState<ContactFilter>('all')
   const [regenerating, setRegenerating] = useState(false)
-  const [replyScanning, setReplyScanning] = useState(false)
+  const [replyScanningId, setReplyScanningId] = useState('')
+  /** Ack key captured at click — locked only after scan finishes. */
+  const [replyScanningAckKey, setReplyScanningAckKey] = useState('')
+  /** Inbound ids already acknowledged after a successful Reply sent scan. */
+  const [replySentDone, setReplySentDone] = useState<Record<string, true>>(loadReplySentAcks)
 
   useEffect(() => {
     let cancelled = false
@@ -67,9 +98,11 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!regenerating && !replyScanning) return
+    if (!regenerating && !replyScanningId) return
     const startedAt = data?.generatedAt || ''
-    const timeoutMs = replyScanning ? REPLY_SENT_TIMEOUT_MS : REGEN_TIMEOUT_MS
+    const scanningAckKey = replyScanningAckKey
+    const wasReplyScan = Boolean(replyScanningId)
+    const timeoutMs = wasReplyScan ? REPLY_SENT_TIMEOUT_MS : REGEN_TIMEOUT_MS
     let cancelled = false
     const deadline = Date.now() + timeoutMs
 
@@ -82,7 +115,16 @@ export default function App() {
           setData(payload)
           setError('')
           setRegenerating(false)
-          setReplyScanning(false)
+          setReplyScanningId('')
+          setReplyScanningAckKey('')
+          if (wasReplyScan && scanningAckKey) {
+            setReplySentDone((prev) => {
+              if (prev[scanningAckKey]) return prev
+              const next = { ...prev, [scanningAckKey]: true }
+              saveReplySentAcks(next)
+              return next
+            })
+          }
           return
         }
       } catch {
@@ -91,9 +133,10 @@ export default function App() {
       if (Date.now() >= deadline) {
         if (!cancelled) {
           setRegenerating(false)
-          setReplyScanning(false)
+          setReplyScanningId('')
+          setReplyScanningAckKey('')
           setError(
-            replyScanning
+            wasReplyScan
               ? 'Reply sent timed out — is tools/reply-sent installed? Or run: recruiting-automation/run_comms_fast.sh'
               : 'Regenerate timed out — is tools/refresh-pending installed? Or run: python scripts/render_pending_actions.py --no-rescore',
           )
@@ -108,9 +151,9 @@ export default function App() {
       cancelled = true
       window.clearTimeout(id)
     }
-  }, [regenerating, replyScanning, data?.generatedAt])
+  }, [regenerating, replyScanningId, replyScanningAckKey, data?.generatedAt])
 
-  const busy = regenerating || replyScanning
+  const busy = regenerating || Boolean(replyScanningId)
 
   const onRegenerate = () => {
     if (busy) return
@@ -119,10 +162,12 @@ export default function App() {
     fireCustomUrl(REGEN_HREF)
   }
 
-  const onReplySent = () => {
-    if (busy) return
+  const onReplySent = (item: ContactPriorityItem) => {
+    const ackKey = replyAckKey(item)
+    if (busy || replySentDone[ackKey]) return
     setError('')
-    setReplyScanning(true)
+    setReplyScanningId(item.id)
+    setReplyScanningAckKey(ackKey)
     fireCustomUrl(REPLY_SENT_HREF)
   }
 
@@ -196,17 +241,6 @@ export default function App() {
           <button
             type="button"
             className="btn link regen-btn"
-            onClick={onReplySent}
-            disabled={busy}
-            title="After you BCC yourself on a LinkedIn reply: scan Sent + refresh so the card can move to Wait"
-            aria-busy={replyScanning}
-          >
-            {replyScanning && <span className="regen-spinner" aria-hidden="true" />}
-            {replyScanning ? 'Scanning…' : 'Reply sent'}
-          </button>
-          <button
-            type="button"
-            className="btn link regen-btn"
             onClick={onRegenerate}
             disabled={busy}
             title="Re-run render_pending_actions.py, then reload JSON in this tab"
@@ -256,7 +290,14 @@ export default function App() {
               <DecideApplyStage data={data.stages.decideApply} folderRoot={data.folderRoot} />
             </div>
           ) : (
-            <ContactPriorityQueue items={filtered} filterLabel={filterLabel} />
+            <ContactPriorityQueue
+              items={filtered}
+              filterLabel={filterLabel}
+              onReplySent={onReplySent}
+              replySentDone={replySentDone}
+              replyScanningId={replyScanningId}
+              replyScanBusy={busy}
+            />
           )}
         </section>
       )}

@@ -121,25 +121,30 @@ def _rescore_new_leads(conn) -> int:
     return updated
 
 
-def _lead_folder_and_count(output_root: Path, *, company: str, title: str, multi_lead: bool) -> tuple[str, str, int]:
+def _lead_folder_and_count(output_root: Path, *, company: str, title: str, multi_lead: bool = True) -> tuple[str, str, int]:
     """This lead's package folder + the company root folder (both relative
     to `output_root`) plus a file count scoped to just the package folder.
 
-    Mirrors `llm_apply._job_folder`'s naming rules (flat `<Company>/` for a
-    single-lead company, nested `<Company>/<Title>/` once a second lead
-    exists) without its mkdir/migration side effects, since this only reads
-    state to render a static page. 0 files if the package folder doesn't
-    exist yet (e.g. a multi-lead company whose sibling hasn't triggered the
-    on-disk migration out of the old flat layout yet — self-heals next time
-    the real pipeline runs for that lead).
+    Always nested `<Company>/<Title>/` (2026-08-14; `multi_lead` retained
+    for call-site compatibility but ignored). No mkdir/migration side
+    effects — this only reads state for the static page. Also counts files
+    under a legacy flat `<Company>/` folder when the nested path does not
+    exist yet (self-heals next time the real pipeline runs).
 
     Returns `(package_rel, company_rel, file_count)` so the page can link
     the company name to the shared company root and the title to this
     lead's own package folder.
     """
+    _ = multi_lead
     company_safe = _safe_filename(company)
-    package_rel = f"{company_safe}/{_safe_filename(title)}" if multi_lead else company_safe
+    package_rel = f"{company_safe}/{_safe_filename(title)}"
     lead_dir = output_root / package_rel
+    if not lead_dir.is_dir():
+        flat = output_root / company_safe
+        if flat.is_dir() and not any(p.is_dir() for p in flat.iterdir()):
+            # Legacy flat package still on disk — count those files for the badge.
+            count = sum(1 for p in flat.rglob("*") if p.is_file())
+            return package_rel, company_safe, count
     count = sum(1 for p in lead_dir.rglob("*") if p.is_file()) if lead_dir.is_dir() else 0
     return package_rel, company_safe, count
 
@@ -443,7 +448,7 @@ def render(conn, *, output_root: Path, now: datetime, automation_state_dir: Path
             # page a lot more than the handful of parked unmatched
             # messages does. Clicking the badge instead shells out to
             # export-communications via the viewcomms:// helper (see
-            # commsUrl()/titleCellHtml() below) to render a fresh PDF on
+            # commsUrl()/titleCellHtml() below) to render a fresh ODT on
             # demand and open it.
             "commCount": len(list_job_conversations(conn, r["normalized_key"])),
             "folderPath": folder_path,
@@ -1484,11 +1489,10 @@ function escapeHtml(s) {
 // folderPath / companyFolderPath are precomputed server-side per LEAD —
 // see render_pending_actions._lead_folder_and_count, which mirrors
 // job_tracker.pipeline.llm_apply._safe_filename()/_job_folder()'s naming
-// rules: a single-lead company's files sit flat in <Company>/, a
-// multi-lead company's land in <Company>/<Company>_<Title>/ instead.
-// The company-name link opens the shared <Company>/ root; the title link
-// opens THIS lead's own package folder. File count is scoped to the
-// package folder alone.
+// rules: every lead's files sit in <Company>/<Title>/ (always nested as of
+// 2026-08-14). The company-name link opens the shared
+// <Company>/ root; the title link opens THIS lead's own package folder.
+// File count is scoped to the package folder alone.
 const FOLDER_ROOT = "${FOLDER_ROOT}";
 // Opens a package folder in Finder via the local RevealFolder helper
 // (tools/reveal-folder/) — browsers cannot open Finder from a static
@@ -1501,12 +1505,12 @@ function companyCellHtml(company, companyFolderPath) {
   return `<a class="company-link" href="${folderUrl(companyFolderPath)}" title="Open company folder in Finder">${escapeHtml(company)}</a>`;
 }
 
-// Opens this lead's full communications history (job_conversations) as a
-// freshly-exported PDF via the local ViewCommunications helper
-// (tools/view-communications/) — mirrors folderUrl()'s revealfolder://
-// pattern; a static file:// page can neither query sqlite nor shell out to
-// export-communications/open a PDF on its own. Install once:
-// tools/view-communications/install.sh
+# Opens this lead's full communications history (job_conversations) as a
+# freshly-exported ODT via the local ViewCommunications helper
+# (tools/view-communications/) — mirrors folderUrl()'s revealfolder://
+# pattern; a static file:// page can neither query sqlite nor shell out to
+# export-communications/open an ODT on its own. Install once:
+# tools/view-communications/install.sh
 function commsUrl(company, title) {
   return `viewcomms://open?company=${encodeURIComponent(company)}&title=${encodeURIComponent(title)}`;
 }
@@ -1594,7 +1598,7 @@ function titleCellHtml(title, folderPath, fileCount, commCount, company) {
   const commsSuffix = commCount > 0
     ? ` <a class="comms-badge" href="${commsUrl(company, title)}" ` +
       `title="View ${commCount} communication${commCount === 1 ? "" : "s"} for this lead ` +
-      `(exports a fresh PDF and opens it)">\uD83D\uDCAC ${commCount}</a>`
+      `(exports a fresh ODT and opens it)">\uD83D\uDCAC ${commCount}</a>`
     : "";
   return `<a class="title-link" href="${folderUrl(folderPath)}" title="Open this role's folder in Finder">${escapeHtml(title)}</a>${countSuffix}${commsSuffix}`;
 }

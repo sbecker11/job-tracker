@@ -33,6 +33,8 @@ export interface ClarifyItem {
   unansweredDays?: number
   actionHint?: string
   nextAction?: string
+  folderPath?: string
+  companyFolderPath?: string
 }
 
 export interface SendResumeItem {
@@ -48,6 +50,7 @@ export interface SendResumeItem {
   ageDays: number
   matchPct?: number
   folderPath?: string
+  companyFolderPath?: string
   applyUrl?: string
   threadUrl?: string
   gmailUrl?: string
@@ -81,6 +84,8 @@ export interface WaitItem {
   threadUrl?: string
   gmailUrl?: string
   markSentUrl?: string
+  folderPath?: string
+  companyFolderPath?: string
   actionHint?: string
   nextAction?: string
 }
@@ -94,6 +99,7 @@ export interface DecideLead {
   verdict?: string
   applyUrl?: string
   folderPath?: string
+  companyFolderPath?: string
   stage?: string
   resumeRequested?: boolean
   nextAction?: string

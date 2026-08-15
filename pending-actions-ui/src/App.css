@@ -538,6 +538,20 @@ th.num {
   font-size: 0.98rem;
 }
 
+.priority-lead .company-link,
+.priority-lead .title-link {
+  color: #c5daf5;
+  text-decoration: underline;
+  text-decoration-color: rgba(197, 218, 245, 0.45);
+  text-underline-offset: 2px;
+}
+
+.priority-lead .company-link:hover,
+.priority-lead .title-link:hover {
+  color: #e8f1ff;
+  text-decoration-color: #e8f1ff;
+}
+
 .priority-meta {
   display: flex;
   flex-wrap: wrap;
@@ -581,6 +595,34 @@ th.num {
   background: #2a1212;
 }
 
+.reply-sent-btn {
+  font-size: 0.78rem;
+  padding: 2px 8px;
+  gap: 6px;
+  color: #e8f1ff;
+  border-color: #8eb4e8;
+  background: #1a2a40;
+}
+
+.reply-sent-btn:hover:not(:disabled) {
+  color: #ffffff;
+  border-color: #b8d4f5;
+  background: #243652;
+}
+
+.reply-sent-btn:disabled {
+  cursor: default;
+  opacity: 1;
+  color: #c5d8f0;
+  border-color: #6a849e;
+  background: #152032;
+}
+
+.reply-sent-btn .regen-spinner {
+  border-color: rgba(200, 220, 245, 0.3);
+  border-top-color: #e8f1ff;
+}
+
 .step-list {
   margin: 0;
   padding-left: 1.25rem;
@@ -601,6 +643,17 @@ th.num {
   font-size: 0.82rem;
   line-height: 1.35;
   max-width: 28rem;
+}
+
+.decide-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.decide-actions .btn.link {
+  font-size: 0.78rem;
 }
 
 .priority-row.reply-due {

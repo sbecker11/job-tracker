@@ -95,8 +95,8 @@ def main(argv: list[str] | None = None) -> int:
         "--output-root",
         type=Path,
         default=DEFAULT_OUTPUT_ROOT,
-        help="Artifacts land in <root>/<Company>/ (or <root>/<Company>/<Company>_<Title>/ if this company "
-        "has multiple tracked leads): JobDescription.docx + no-LLM-review.docx always, "
+        help="Artifacts land in <root>/<Company>/<Title>/ (always nested per role): "
+        "JobDescription.docx + no-LLM-review.docx always, "
         "full-LLM-review.docx once the rule-based score clears the LLM gate (or --force), and the "
         f"résumé + cover letter on a pursue verdict (or --force) (default: {DEFAULT_OUTPUT_ROOT})",
     )

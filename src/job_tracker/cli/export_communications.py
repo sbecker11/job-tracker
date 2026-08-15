@@ -1,21 +1,27 @@
 """CLI: render one job's full communications history (job_conversations) to
-a single PDF under that job's folder.
+a single ODT under that job's folder.
 
 Deliberately on-demand, not automatic (2026-07-17 design decision — see
 chat history): every inbound/outbound message is already archived as text
 in `job_conversations.body_text` the moment it's linked (by
 `triage_recruiter_inbox.py` or `scan_communications.py`), which is cheap,
-searchable, and needs no rendering step. A PDF is only generated when you
+searchable, and needs no rendering step. An ODT is only generated when you
 actually want a paper trail to hand someone — this command builds it fresh
 from whatever's in the DB right now, every time; it does not accumulate
 separate dated snapshots.
+
+ODT (not PDF) so the thread opens in Pages / LibreOffice / Word with normal
+dark-mode reading, copy/paste, and editing — Preview's PDF dark mode is
+chrome-only.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import zipfile
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT, _job_folder, _safe_filename
 from job_tracker.pipeline.models import JobDocument
@@ -30,56 +36,136 @@ from job_tracker.pipeline.store import (
 )
 
 
-def _sanitize(text: str) -> str:
-    """fpdf2's core (non-TTF) fonts are Latin-1 only; recruiting mail
-    regularly carries characters outside that range (curly quotes, emoji,
-    the invisible tracking glyphs some ATS digests pad their text with).
-    This is an internal archival document, not a polished deliverable, so
-    losing an occasional unusual character to "?" is an acceptable trade
-    for never crashing on real-world email content."""
-    return (text or "").encode("latin-1", errors="replace").decode("latin-1")
+def _xml_text(text: str) -> str:
+    """Escape XML specials; map bare newlines to ODF soft line-breaks."""
+    # escape() leaves newlines alone; soft-break each one so multi-line
+    # email bodies stay readable inside a single text:p.
+    return escape(text or "").replace("\r\n", "\n").replace("\r", "\n").replace(
+        "\n", "<text:line-break/>"
+    )
 
 
-def _render_pdf(job_key: str, company: str, title: str, conversations, contacts_by_id: dict, out_path: Path) -> None:
-    from fpdf import FPDF
+def _p(text: str, *, style: str | None = None) -> str:
+    style_attr = f' text:style-name="{style}"' if style else ""
+    return f"<text:p{style_attr}>{_xml_text(text)}</text:p>"
 
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
 
-    def line(text: str, *, font: str = "Helvetica", style: str = "", size: int = 10, height: float = 6) -> None:
-        # fpdf2's multi_cell defaults to leaving the cursor at the RIGHT edge
-        # of the text it just wrote (new_x=XPos.RIGHT) rather than back at
-        # the left margin — harmless for a single call, but the SECOND
-        # w=0 ("use remaining width") call then computes almost no width
-        # left on the line and raises FPDFException. Forcing new_x back to
-        # the left margin after every line is what makes repeated w=0
-        # multi_cell calls (one per email field) actually work.
-        pdf.set_font(font, style, size)
-        pdf.multi_cell(0, height, _sanitize(text), new_x="LMARGIN", new_y="NEXT")
-
-    line(f"{title} @ {company}", style="B", size=16, height=10)
-    line(f"Communications history — {len(conversations)} entries — job_key: {job_key}", size=10)
-    pdf.ln(4)
+def _render_odt(
+    job_key: str,
+    company: str,
+    title: str,
+    conversations,
+    contacts_by_id: dict,
+    out_path: Path,
+) -> None:
+    """Write a minimal ODF Text document (no odfpy — stdlib zip + XML)."""
+    parts: list[str] = [
+        _p(f"{title} @ {company}", style="Title"),
+        _p(
+            f"Communications history — {len(conversations)} entries — job_key: {job_key}",
+            style="Subtitle",
+        ),
+        _p(""),
+    ]
 
     for convo in conversations:
         contact = contacts_by_id.get(convo["contact_id"])
-        contact_label = contact["email"] or contact["name"] if contact else "(no contact on file)"
-
-        direction_label = "OUTBOUND (you wrote)" if convo["direction"] == "outbound" else "INBOUND (they wrote)"
-        line(f"{convo['occurred_at']} — {direction_label} — {contact_label}", style="B", size=11)
-        line(convo["summary"] or "(no summary)", style="I", size=10)
-
+        contact_label = (
+            contact["email"] or contact["name"] if contact else "(no contact on file)"
+        )
+        direction_label = (
+            "OUTBOUND (you wrote)"
+            if convo["direction"] == "outbound"
+            else "INBOUND (they wrote)"
+        )
+        parts.append(
+            _p(
+                f"{convo['occurred_at']} — {direction_label} — {contact_label}",
+                style="Heading",
+            )
+        )
+        parts.append(_p(convo["summary"] or "(no summary)", style="Summary"))
         body = (convo["body_text"] or "").strip()
         if body:
-            line(body, size=9, height=5)
-        pdf.ln(4)
-        pdf.set_draw_color(200, 200, 200)
-        pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
-        pdf.ln(4)
+            parts.append(_p(body, style="Body"))
+        parts.append(_p(""))  # spacer between messages
+
+    content_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+        'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" '
+        'xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" '
+        'xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" '
+        'office:version="1.2">\n'
+        "<office:automatic-styles>\n"
+        '<style:style style:name="Title" style:family="paragraph">'
+        '<style:text-properties fo:font-size="16pt" fo:font-weight="bold"/>'
+        "</style:style>\n"
+        '<style:style style:name="Subtitle" style:family="paragraph">'
+        '<style:text-properties fo:font-size="10pt"/>'
+        "</style:style>\n"
+        '<style:style style:name="Heading" style:family="paragraph">'
+        '<style:text-properties fo:font-size="11pt" fo:font-weight="bold"/>'
+        "</style:style>\n"
+        '<style:style style:name="Summary" style:family="paragraph">'
+        '<style:text-properties fo:font-size="10pt" fo:font-style="italic"/>'
+        "</style:style>\n"
+        '<style:style style:name="Body" style:family="paragraph">'
+        '<style:text-properties fo:font-size="9pt" style:font-name="Courier New"/>'
+        "</style:style>\n"
+        "</office:automatic-styles>\n"
+        "<office:body><office:text>\n"
+        + "\n".join(parts)
+        + "\n</office:text></office:body>\n"
+        "</office:document-content>\n"
+    )
+
+    styles_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+        'office:version="1.2">\n'
+        "<office:styles/>\n"
+        "</office:document-styles>\n"
+    )
+
+    meta_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+        'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+        'office:version="1.2">\n'
+        "<office:meta>"
+        f"<dc:title>{escape(f'{title} @ {company} — communications')}</dc:title>"
+        "</office:meta>\n"
+        "</office:document-meta>\n"
+    )
+
+    manifest_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" '
+        'manifest:version="1.2">\n'
+        '<manifest:file-entry manifest:full-path="/" '
+        'manifest:media-type="application/vnd.oasis.opendocument.text"/>\n'
+        '<manifest:file-entry manifest:full-path="content.xml" '
+        'manifest:media-type="text/xml"/>\n'
+        '<manifest:file-entry manifest:full-path="styles.xml" '
+        'manifest:media-type="text/xml"/>\n'
+        '<manifest:file-entry manifest:full-path="meta.xml" '
+        'manifest:media-type="text/xml"/>\n'
+        "</manifest:manifest>\n"
+    )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    pdf.output(str(out_path))
+    # ODF requires `mimetype` as the first zip entry, stored (not deflated).
+    with zipfile.ZipFile(out_path, "w") as zf:
+        zf.writestr(
+            "mimetype",
+            "application/vnd.oasis.opendocument.text",
+            compress_type=zipfile.ZIP_STORED,
+        )
+        zf.writestr("META-INF/manifest.xml", manifest_xml)
+        zf.writestr("content.xml", content_xml)
+        zf.writestr("styles.xml", styles_xml)
+        zf.writestr("meta.xml", meta_xml)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -100,17 +186,24 @@ def main(argv: list[str] | None = None) -> int:
 
         conversations = list_job_conversations(conn, job_key)
         if not conversations:
-            print(f"No conversations logged yet for {args.title!r} @ {args.company!r} — nothing to export.")
+            print(
+                f"No conversations logged yet for {args.title!r} @ {args.company!r} — nothing to export."
+            )
             return 0
 
         contacts_by_id = {c["id"]: c for c in list_job_contacts(conn, job_key)}
         multi_lead = len(get_sibling_titles(conn, args.company, exclude_title=args.title)) > 0
-        job_dir = _job_folder(args.output_root, company=args.company, title=args.title, multi_lead=multi_lead)
-        out_path = job_dir / "communications" / f"Communications_{_safe_filename(args.title)}.pdf"
+        job_dir = _job_folder(
+            args.output_root, company=args.company, title=args.title, multi_lead=multi_lead
+        )
+        out_path = job_dir / "communications" / f"Communications_{_safe_filename(args.title)}.odt"
 
-        _render_pdf(job_key, args.company, args.title, conversations, contacts_by_id, out_path)
+        _render_odt(job_key, args.company, args.title, conversations, contacts_by_id, out_path)
 
-        add_job_document(conn, JobDocument(job_key=job_key, doc_type="communications_export", path_or_url=str(out_path)))
+        add_job_document(
+            conn,
+            JobDocument(job_key=job_key, doc_type="communications_export", path_or_url=str(out_path)),
+        )
         print(f"Exported {len(conversations)} conversation(s) to {out_path}")
     finally:
         conn.close()

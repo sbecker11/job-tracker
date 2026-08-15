@@ -47,11 +47,11 @@ def _resolve_job(conn, company: str, title: str):
     return None
 
 
-def _expected_review_path(output_root: Path, *, company: str, title: str, multi_lead: bool) -> Path:
+def _expected_review_path(output_root: Path, *, company: str, title: str, multi_lead: bool = True) -> Path:
     """Read-only path for `no-LLM-review.docx` (does not mkdir / migrate)."""
+    _ = multi_lead
     company_dir = output_root / _safe_filename(company)
-    folder = company_dir if not multi_lead else company_dir / _safe_filename(title)
-    return folder / "no-LLM-review.docx"
+    return company_dir / _safe_filename(title) / "no-LLM-review.docx"
 
 
 def _score_to_dict(score: ScoreResult) -> dict:

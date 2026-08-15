@@ -59,7 +59,7 @@ whether it matches an existing job or is brand new — this command:
   1. Saves the raw message as a `.txt` document into that job's folder
      (`communications/Email_<message_id>.txt`) and records it as a
      `JobDocument` (`doc_type="email_txt"`), same convention as
-     `export_communications.py`'s PDF export.
+     `export_communications.py`'s ODT export.
   2. Updates the job lead's `jd_text` with whatever the message added — for
      a brand-new lead, that's `role.snippet` (falling back to the whole
      message body); for an existing `status="new"` lead, the excerpt is
@@ -171,8 +171,8 @@ def _save_message_txt(
     """Archive the raw message as a `.txt` `JobDocument` under this job's
     folder — the filesystem-side half of "save the email as a txt file and
     add it as a new document for that company+title" (2026-07-17). Mirrors
-    `export_communications.py`'s PDF export, just per-message and plain text
-    instead of one consolidated on-demand PDF."""
+    `export_communications.py`'s ODT export, just per-message and plain text
+    instead of one consolidated on-demand ODT."""
     multi_lead = len(get_sibling_titles(conn, company, exclude_title=title)) > 0
     job_dir = _job_folder(output_root, company=company, title=title, multi_lead=multi_lead)
     out_path = job_dir / "communications" / f"Email_{_safe_filename(message_id)}.txt"

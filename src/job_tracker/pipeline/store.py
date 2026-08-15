@@ -557,12 +557,10 @@ def get_job(conn: sqlite3.Connection, company: str, title: str) -> sqlite3.Row |
 
 
 def get_sibling_titles(conn: sqlite3.Connection, company: str, *, exclude_title: str | None = None) -> list[str]:
-    """All distinct titles already tracked for this company (any status),
-    optionally excluding one — used to decide the on-disk artifact layout
-    (see llm_apply.py's `_job_folder`): a company with only one tracked
-    lead gets a flat `<Company>/` folder; once a second lead exists,
-    both get their own `<Company>/<Company>_<Title>/` subfolder so files
-    from different roles at the same company never collide."""
+    """All distinct titles already tracked for this company (any status).
+    Still useful for UI labels / sibling awareness; package folder layout
+    always nests as `<Company>/<Title>/` regardless of sibling
+    count (see llm_apply._job_folder, 2026-08-14)."""
     rows = conn.execute("SELECT DISTINCT title FROM job_leads WHERE company = ?", (company,)).fetchall()
     titles = [r[0] for r in rows]
     if exclude_title is not None:

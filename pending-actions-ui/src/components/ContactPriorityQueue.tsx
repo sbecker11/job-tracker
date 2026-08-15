@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { ChannelBadge } from './ChannelBadge'
-import type { ContactPriorityItem } from '../priorityQueue'
+import { replyAckKey, type ContactPriorityItem } from '../priorityQueue'
 
 const STAGE_LABEL: Record<string, string> = {
   clarify: 'Clarify',
@@ -22,9 +22,15 @@ function dismissUrl(item: ContactPriorityItem): string | null {
   return `dlr://dismiss?${params.toString()}`
 }
 
-function revealFolderUrl(folderPath: string): string | null {
+function revealFolderUrl(folderPath: string | undefined): string | null {
   if (!folderPath) return null
   return `revealfolder://reveal?path=${encodeURIComponent(folderPath)}`
+}
+
+/** Export + open this lead's job_conversations ODT (tools/view-communications/). */
+function viewCommunicationsUrl(company?: string, title?: string): string | null {
+  if (!company?.trim() || !title?.trim()) return null
+  return `viewcomms://open?company=${encodeURIComponent(company)}&title=${encodeURIComponent(title)}`
 }
 
 function mailtoUrl(item: ContactPriorityItem): string | null {
@@ -52,9 +58,21 @@ function markSentHref(item: ContactPriorityItem): string | null {
 interface Props {
   items: ContactPriorityItem[]
   filterLabel: string
+  onReplySent?: (item: ContactPriorityItem) => void
+  /** Keys from replyAckKey — locked after a successful scan for that inbound. */
+  replySentDone?: Record<string, true>
+  replyScanningId?: string
+  replyScanBusy?: boolean
 }
 
-export function ContactPriorityQueue({ items, filterLabel }: Props) {
+export function ContactPriorityQueue({
+  items,
+  filterLabel,
+  onReplySent,
+  replySentDone = {},
+  replyScanningId = '',
+  replyScanBusy = false,
+}: Props) {
   const [expandedId, setExpandedId] = useState('')
   const [copiedId, setCopiedId] = useState('')
 
@@ -70,14 +88,18 @@ export function ContactPriorityQueue({ items, filterLabel }: Props) {
     <ol className="priority-list">
       {items.map((item, index) => {
         const open = expandedId === item.id
-        const leadLine =
-          [item.company, item.title].filter(Boolean).join(' — ') ||
-          item.recruiterName ||
-          '(unnamed lead)'
+        const companyHref = revealFolderUrl(item.companyFolderPath)
+        const titleHref = revealFolderUrl(item.folderPath)
+        const companyText = item.company || ''
+        const titleText = item.title || ''
+        const fallbackName = item.recruiterName || '(unnamed lead)'
         const nextAction =
           item.nextAction ||
           item.actionHint ||
           'YOUR ACTION: See stage chip and use the buttons on the right.'
+        const ackKey = replyAckKey(item)
+        const replyAcknowledged = Boolean(replySentDone[ackKey])
+        const replyScanning = replyScanningId === item.id
         const showDetail =
           open &&
           (item.stage === 'clarify' ||
@@ -94,7 +116,41 @@ export function ContactPriorityQueue({ items, filterLabel }: Props) {
               </span>
               <div className="priority-body">
                 <div className="priority-title-row">
-                  <strong className="priority-lead">{leadLine}</strong>
+                  <strong className="priority-lead">
+                    {companyText || titleText ? (
+                      <>
+                        {companyText ? (
+                          companyHref ? (
+                            <a
+                              className="company-link"
+                              href={companyHref}
+                              title="Open company folder in Finder"
+                            >
+                              {companyText}
+                            </a>
+                          ) : (
+                            companyText
+                          )
+                        ) : null}
+                        {companyText && titleText ? ' — ' : ''}
+                        {titleText ? (
+                          titleHref ? (
+                            <a
+                              className="title-link"
+                              href={titleHref}
+                              title="Open this role's folder in Finder"
+                            >
+                              {titleText}
+                            </a>
+                          ) : (
+                            titleText
+                          )
+                        ) : null}
+                      </>
+                    ) : (
+                      fallbackName
+                    )}
+                  </strong>
                   <span className={`stage-chip stage-${item.stage}`}>
                     {STAGE_LABEL[item.stage] || item.stage}
                   </span>
@@ -115,6 +171,29 @@ export function ContactPriorityQueue({ items, filterLabel }: Props) {
                       {item.unansweredDays != null ? ` · ${item.unansweredDays}d` : ''}
                     </span>
                   )}
+                  {item.replyDue && onReplySent && (
+                    <button
+                      type="button"
+                      className="btn link regen-btn reply-sent-btn"
+                      onClick={() => onReplySent(item)}
+                      disabled={replyAcknowledged || replyScanBusy}
+                      title={
+                        replyAcknowledged
+                          ? 'Already marked for this recruiter message — re-enables when a new reply is due'
+                          : 'After you BCC yourself on the reply: scan Sent + refresh so this card can move to Wait'
+                      }
+                      aria-busy={replyScanning}
+                    >
+                      {replyScanning && (
+                        <span className="regen-spinner" aria-hidden="true" />
+                      )}
+                      {replyScanning
+                        ? 'Scanning…'
+                        : replyAcknowledged
+                          ? 'Reply sent ✓'
+                          : 'Reply sent'}
+                    </button>
+                  )}
                 </div>
                 <p className="next-action">{nextAction}</p>
                 <div className="priority-meta">
@@ -132,6 +211,15 @@ export function ContactPriorityQueue({ items, filterLabel }: Props) {
                 </div>
               </div>
               <div className="priority-actions">
+                {viewCommunicationsUrl(item.company, item.title) && (
+                  <a
+                    className="btn link"
+                    href={viewCommunicationsUrl(item.company, item.title)!}
+                    title="Export and open full communications ODT for this lead"
+                  >
+                    View communications
+                  </a>
+                )}
                 {item.stage === 'clarify' && item.draftReply && (
                   <button
                     type="button"

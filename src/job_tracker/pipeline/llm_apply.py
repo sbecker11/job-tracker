@@ -997,69 +997,152 @@ def _safe_filename(name: str) -> str:
     return _UNSAFE_FILENAME_CHARS.sub("", name.replace(" ", "_"))
 
 
+def _legacy_flat_file_belongs(path: Path, *, company: str, title: str) -> bool:
+    """True if a leftover flat file under `<Company>/` looks like it belongs
+    to this role (used when migrating the pre-2026-08-14 flat layout).
+
+    Prefers an explicit `{title} @ {company}` heading in DOCX/ODT/text;
+    unknown binary types are left alone rather than guessed."""
+    needle = f"{title} @ {company}".casefold()
+    name = path.name.casefold()
+    try:
+        if path.suffix.casefold() == ".docx":
+            from docx import Document
+
+            doc = Document(str(path))
+            head = "\n".join(p.text for p in doc.paragraphs[:8])
+            return needle in head.casefold()
+        if path.suffix.casefold() == ".odt":
+            import zipfile
+
+            with zipfile.ZipFile(path) as zf:
+                content = zf.read("content.xml").decode("utf-8", errors="ignore")
+            return needle in content.casefold()
+        if path.suffix.casefold() in {".txt", ".md", ".html", ".webloc"}:
+            return needle in path.read_text(encoding="utf-8", errors="ignore").casefold()
+        # Résumé/cover naming often embeds company+title; treat as belonging
+        # when both tokens appear in the filename.
+        if "resume" in name or "cover" in name:
+            return (
+                _safe_filename(company).casefold() in name
+                and _safe_filename(title).casefold() in name
+            )
+    except Exception:
+        logger.debug("Could not inspect legacy flat file %s for ownership", path, exc_info=True)
+    return False
+
+
 def _job_folder(
     out_dir: Path,
     *,
     company: str,
     title: str,
-    multi_lead: bool = False,
+    multi_lead: bool = True,
     sibling_titles: tuple[str, ...] = (),
 ) -> Path:
-    """Where this job's artifacts (JD, LLM review, résumé, cover letter)
-    live together, instead of scattering them across parallel Reviews/
-    CoverLetters folders. Layout (2026-08-14 restructure, one `<Company>/`
-    folder per company under the output root):
-    - `multi_lead=False` (this is the only lead tracked for this company):
-      files land flat, directly in `<Company>/`.
-    - `multi_lead=True` (this company has 2+ tracked leads): files land in
-      `<Company>/<Title>/`, one subfolder per lead, so different roles at
-      the same company never collide. (Was `<Company>/<Company>_<Title>/`
-      until 2026-08-14 — the company prefix was redundant once the folder
-      is already nested under `<Company>/`; dropped for every company, not
-      just new ones — see scripts/rename_role_subfolders.py for the
-      one-time migration that renamed every pre-existing subfolder.)
+    """Where this job's artifacts (JD, reviews, résumé, cover letter) live.
 
-    `multi_lead`/`sibling_titles` are computed by the caller from the leads
-    DB (see store.get_sibling_titles) since this module has no DB
-    connection of its own; default `multi_lead=False` keeps this usable
-    without a DB (e.g. tests, one-off scripts) at the cost of not knowing
-    about sibling leads.
+    Layout (2026-08-14): **always** nest under `<Company>/<Title>/`, even
+    for a company's first/only lead. Flat `<Company>/` packages stranded
+    reviews at company level when a second role appeared later. Role
+    subfolders used to be `<Company>/<Company>_<Title>/` — the company
+    prefix was redundant once nested under `<Company>/` and was dropped
+    the same day (see `scripts/rename_role_subfolders.py`).
 
-    Created if missing; reused as-is if a prior evaluate/generate run
-    already made it (e.g. the JD + review land first, the résumé/cover
-    letter land later only if the verdict is "pursue"). If a second lead
-    just appeared for a company that was previously flat (single-lead),
-    and there's exactly one unambiguous sibling to attribute the existing
-    flat files to, they're migrated into their own subfolder first so
-    nothing from the two roles gets mixed together; a less-clear case (0 or
-    2+ apparent siblings) is left alone with a warning rather than guessing
-    wrong and silently mixing two roles' files."""
+    `multi_lead` is retained for call-site compatibility but ignored for
+    path selection (always nested). `sibling_titles` still drives legacy
+    flat-file migration when upgrading an old single-lead company folder.
+
+    Created if missing. Legacy migration:
+    - Pure flat `<Company>/` with no role subfolders + exactly one sibling
+      title → move flat files into that sibling's new nested folder (second
+      lead just appeared).
+    - Pure flat `<Company>/` with no role subfolders + no siblings → claim
+      flat files for *this* title's nested folder.
+    - Pure flat + 2+ siblings, or role subfolders already exist + leftover
+      flat files → move only files that clearly belong to this title;
+      otherwise warn and leave them.
+    """
     company_dir = out_dir / _safe_filename(company)
-    if not multi_lead:
-        company_dir.mkdir(parents=True, exist_ok=True)
-        return company_dir
-
     lead_dir = company_dir / _safe_filename(title)
-    if not lead_dir.exists() and company_dir.exists():
-        flat_files = [p for p in company_dir.iterdir() if p.is_file()]
-        has_subfolders = any(p.is_dir() for p in company_dir.iterdir())
-        if flat_files and not has_subfolders:
-            if len(sibling_titles) == 1:
-                old_dir = company_dir / _safe_filename(sibling_titles[0])
-                old_dir.mkdir(parents=True, exist_ok=True)
-                for f in flat_files:
-                    f.rename(old_dir / f.name)
-                logger.info(
-                    "Migrated %s's existing flat files into %s now that a second lead exists",
-                    company, old_dir,
-                )
-            else:
+    company_dir.mkdir(parents=True, exist_ok=True)
+
+    flat_files = [
+        p for p in company_dir.iterdir() if p.is_file() and not p.name.startswith(".")
+    ]
+    role_subdirs = [p for p in company_dir.iterdir() if p.is_dir()]
+
+    if flat_files and not role_subdirs:
+        if len(sibling_titles) == 1:
+            old_dir = company_dir / _safe_filename(sibling_titles[0])
+            old_dir.mkdir(parents=True, exist_ok=True)
+            for f in flat_files:
+                dest = old_dir / f.name
+                if not dest.exists():
+                    f.rename(dest)
+            logger.info(
+                "Migrated %s's legacy flat files into %s now that a second lead exists",
+                company,
+                old_dir,
+            )
+        elif not sibling_titles:
+            lead_dir.mkdir(parents=True, exist_ok=True)
+            for f in flat_files:
+                dest = lead_dir / f.name
+                if not dest.exists():
+                    f.rename(dest)
+            logger.info(
+                "Migrated %s's legacy flat files into always-nested %s",
+                company,
+                lead_dir,
+            )
+        else:
+            owned = [f for f in flat_files if _legacy_flat_file_belongs(f, company=company, title=title)]
+            if owned:
+                lead_dir.mkdir(parents=True, exist_ok=True)
+                for f in owned:
+                    dest = lead_dir / f.name
+                    if not dest.exists():
+                        f.rename(dest)
+            leftover = [f for f in flat_files if f.exists()]
+            if leftover:
                 logger.warning(
                     "%s has flat lead files directly in %s but %d sibling lead(s) in the DB — "
-                    "couldn't safely auto-migrate (ambiguous which lead they belong to); "
-                    "move them into their own subfolder manually.",
-                    company, company_dir, len(sibling_titles),
+                    "couldn't safely auto-migrate %s; move them into their own "
+                    "<Company>/<Title>/ folder manually.",
+                    company,
+                    company_dir,
+                    len(sibling_titles),
+                    [f.name for f in leftover],
                 )
+    elif flat_files:
+        owned = [f for f in flat_files if _legacy_flat_file_belongs(f, company=company, title=title)]
+        if owned:
+            lead_dir.mkdir(parents=True, exist_ok=True)
+            for f in owned:
+                dest = lead_dir / f.name
+                if not dest.exists():
+                    f.rename(dest)
+            logger.info(
+                "Migrated %d leftover flat file(s) under %s into %s",
+                len(owned),
+                company_dir,
+                lead_dir,
+            )
+        leftover = [f for f in flat_files if f.exists()]
+        if leftover:
+            logger.warning(
+                "%s has leftover flat file(s) in %s alongside role subfolders — "
+                "couldn't attribute %s to %r; move them into the right "
+                "<Company>/<Title>/ folder manually.",
+                company,
+                company_dir,
+                [f.name for f in leftover],
+                title,
+            )
+
+    # multi_lead kept in signature for callers; layout is always nested.
+    _ = multi_lead
     lead_dir.mkdir(parents=True, exist_ok=True)
     return lead_dir
 
@@ -1278,11 +1361,10 @@ def generate_package(
     banned content (comp figures, work-auth statements, etc.) is still
     caught and repaired the same as any other generated package.
 
-    `multi_lead`/`sibling_titles` decide the on-disk folder layout — see
-    `_job_folder`. This function has no DB connection of its own, so the
-    caller computes these from the leads DB (store.get_sibling_titles) and
-    passes them through; the defaults (flat, no known siblings) are only
-    right for a standalone/no-DB caller.
+    `multi_lead`/`sibling_titles` are retained for call-site compatibility;
+    package folders are **always** nested under `<Company>/<Title>/`
+    (see `_job_folder`, 2026-08-14). Callers may still pass sibling titles so
+    legacy flat-file migration can attribute old company-level packages.
     """
     evaluation = evaluate_lead(jd_text, company=company, title=title, model=model, client=client)
     jd_path = render_job_description(

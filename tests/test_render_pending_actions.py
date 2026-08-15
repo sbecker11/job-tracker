@@ -203,14 +203,14 @@ def test_render_populates_age_days_on_funnel_buckets(tmp_path: Path):
     assert data["jd_unresolved"][0]["company"] == "Unresolved Co"
 
 
-def test_lead_folder_paths_single_vs_multi_lead(tmp_path: Path):
-    """Company link uses the shared company root; title link uses the
-    lead package folder (nested under company once a second title exists)."""
+def test_lead_folder_paths_always_nested(tmp_path: Path):
+    """Company link uses the shared company root; title link always uses
+    the nested lead package folder."""
     package, company, count = render_pending_actions._lead_folder_and_count(
         tmp_path, company="Acme", title="Senior SWE", multi_lead=False
     )
     assert company == "Acme"
-    assert package == "Acme"
+    assert package == "Acme/Senior_SWE"
     assert count == 0
 
     package, company, count = render_pending_actions._lead_folder_and_count(
@@ -264,7 +264,7 @@ def test_html_wires_title_and_company_finder_links(tmp_path: Path):
     assert "titleCellHtml(lead.title, lead.folderPath, lead.fileCount, lead.commCount, lead.company)" in text
     assert "companyCellHtml(lead.company, lead.companyFolderPath)" in text
     assert '"companyFolderPath": "Acme"' in text
-    assert '"folderPath": "Acme"' in text
+    assert '"folderPath": "Acme/Engineer"' in text
 
 
 def test_render_computes_comm_count_per_lead(tmp_path: Path):

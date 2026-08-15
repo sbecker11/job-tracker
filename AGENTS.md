@@ -35,8 +35,9 @@ CLAUDE.md dealbreaker / skills framework changes.
 ## Local helpers (optional)
 
 - Finder folder open: `tools/reveal-folder/install.sh` → `revealfolder://reveal?path=...`
+- View communications ODT: `tools/view-communications/install.sh` → `viewcomms://open?company=...&title=...` (Pending Actions React UI: **View communications**)
 - Regenerate pending-actions page: `tools/refresh-pending/install.sh` → `refreshpending://run`
-- After BCC self on a LinkedIn reply: `tools/reply-sent/install.sh` → `replysent://run` (UI **Reply sent** button — runs `comms_fast_cycle.py`)
+- After BCC self on a LinkedIn reply: `tools/reply-sent/install.sh` → `replysent://run` (per-row **Reply sent** next to “Recruiter waiting on you” — runs `comms_fast_cycle.py`)
 - Inline tri-state edit (direct_recruiter_outreach): `tools/set-direct-recruiter-outreach/install.sh` → `setdro://set?key=...&value=yes|no|undecided`
 - Dismiss LinkedIn reply card: `tools/dismiss-linkedin-reply/install.sh` → `dlr://dismiss?kind=lead|unmatched&key=...&message_id=...`
 - Mark résumé package sent: `tools/mark-package-sent/install.sh` → `mps://mark?key=...`

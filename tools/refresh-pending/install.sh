@@ -56,6 +56,7 @@ sleep 0.5
 echo "Installed: ${DEST_APP}"
 echo "URL scheme: refreshpending://run"
 echo "  (optional) refreshpending://run?no_rescore=1"
+echo "  (optional) refreshpending://run?open=1  — open static HTML (default: no browser)"
 echo ""
 echo "Runs: ${PYTHON} ${SCRIPT}"
-echo "Then opens: ${HTML}"
+echo "Does not open a browser unless ?open=1 is passed."

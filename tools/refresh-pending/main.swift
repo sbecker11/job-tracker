@@ -1,9 +1,12 @@
 import AppKit
 import Foundation
 
-/// URL-scheme helper: `refreshpending://run` (optional `?no_rescore=1`)
-/// Runs job-tracker/scripts/render_pending_actions.py, then reopens the
-/// generated HTML so the browser picks up the new snapshot.
+/// URL-scheme helper: `refreshpending://run`
+///
+/// Runs job-tracker/scripts/render_pending_actions.py.
+/// Does **not** open a browser tab by default — the React UI
+/// (http://127.0.0.1:3174/) and the static HTML page reload/poll themselves.
+/// Pass `?open=1` only for a terminal smoke test that should open the HTML file.
 
 private let scheme = "refreshpending"
 
@@ -59,7 +62,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let queryItems = components?.queryItems ?? []
+        let pathLower = (components?.path ?? url.path).lowercased()
+        let hostLower = (components?.host ?? "").lowercased()
+
         func flag(_ name: String) -> Bool {
             queryItems.contains { item in
                 guard item.name == name else { return false }
@@ -67,18 +74,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return v == "1" || v == "true" || v == "yes"
             }
         }
-        let noRescore = flag("no_rescore")
-        // Added so the page's own "Regenerate page" button (see
-        // render_pending_actions.py's regen-btn JS) can reload the SAME
-        // browser tab itself (location.reload with a cache-busting query
-        // string) instead of this helper also calling NSWorkspace.open,
-        // which was spawning a second browser window/tab on every click —
-        // the exact "why does this open a new window" complaint this was
-        // added to fix (2026-07-19). The `open 'refreshpending://run'`
-        // terminal smoke test (no page involved) still wants the open-a-
-        // browser behavior, so it stays the default; only the in-page
-        // button passes no_open=1.
-        let noOpen = flag("no_open")
+        // Also accept path/host tokens when Chrome/macOS drops the query string
+        // from a custom-scheme iframe / location.href handoff.
+        func pathFlag(_ name: String) -> Bool {
+            pathLower.contains("/\(name)") || pathLower.hasSuffix("/\(name)") || hostLower == name
+        }
+
+        let noRescore = flag("no_rescore") || pathFlag("no_rescore")
+        // Default: do NOT open a browser. Opening HTML via NSWorkspace was
+        // spawning a second Chrome tab while the React UI tab stayed put.
+        // Opt in with ?open=1 (or /open in the path) for terminal smoke tests.
+        let wantOpen = flag("open") || pathFlag("open")
+        let noOpen = flag("no_open") || pathFlag("no_open") || !wantOpen
 
         var args = [config.scriptPath]
         if noRescore { args.append("--no-rescore") }
@@ -107,9 +114,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Re-open the HTML so the browser shows the fresh snapshot — skipped
-        // when the page's own button already asked for no_open=1, since
-        // that button reloads its own tab once this process exits instead.
         if !noOpen {
             NSWorkspace.shared.open(URL(fileURLWithPath: config.htmlPath))
         }

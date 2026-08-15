@@ -39,6 +39,7 @@ export interface ContactPriorityItem {
   normalizedKey?: string
   replyId?: string
   folderPath?: string
+  companyFolderPath?: string
   applyUrl?: string
   packageReady?: boolean
   resumeRequested?: boolean
@@ -134,6 +135,8 @@ function fromClarify(c: ClarifyItem): ContactPriorityItem {
     replyId: c.replyId,
     replyDue: c.replyDue,
     unansweredDays: c.unansweredDays,
+    folderPath: c.folderPath,
+    companyFolderPath: c.companyFolderPath,
     actionHint: c.actionHint,
     nextAction: c.nextAction || c.actionHint,
     kind: c.kind,
@@ -154,6 +157,7 @@ function fromSendResume(s: SendResumeItem): ContactPriorityItem {
     contactAttempts: s.contactAttempts || 1,
     normalizedKey: s.normalizedKey,
     folderPath: s.folderPath,
+    companyFolderPath: s.companyFolderPath,
     applyUrl: s.applyUrl,
     threadUrl: s.threadUrl,
     gmailUrl: s.gmailUrl,
@@ -186,6 +190,8 @@ function fromWait(w: WaitItem): ContactPriorityItem {
     threadUrl: w.threadUrl,
     gmailUrl: w.gmailUrl,
     markSentUrl: w.markSentUrl,
+    folderPath: w.folderPath,
+    companyFolderPath: w.companyFolderPath,
     normalizedKey: w.normalizedKey,
     actionHint: w.actionHint,
     nextAction: w.nextAction || w.actionHint,
@@ -212,4 +218,9 @@ export function contactQueueCounts(items: ContactPriorityItem[]): Record<string,
     counts[i.stage] = (counts[i.stage] || 0) + 1
   }
   return counts
+}
+
+/** Stable id for the inbound the row is answering — used to lock Reply sent. */
+export function replyAckKey(item: ContactPriorityItem): string {
+  return item.messageId || item.replyId || item.id
 }

@@ -135,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Print the full communications history (job_conversations — every inbound/outbound message "
         "already archived by triage_recruiter_inbox.py/scan_communications.py/triage_imap_inbox.py) for "
         "each matching lead, oldest first (best combined with --company/--title to narrow to one). For a "
-        "shareable PDF instead of a terminal dump, see scripts/export_communications.py.",
+        "shareable ODT instead of a terminal dump, see scripts/export_communications.py.",
     )
     ap.add_argument(
         "--waiting",

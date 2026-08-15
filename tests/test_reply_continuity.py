@@ -22,6 +22,56 @@ def test_build_queries_prefer_linkedin_person_and_company():
     assert any("hit-reply@linkedin.com" in q and "Deven Mehta" in q for q in qs)
     assert any("NeoTek" in q for q in qs)
     assert any("from:Deven.Mehta@neotekus.com" in q for q in qs)
+    # Corporate email before company-only LinkedIn collision surface.
+    email_i = next(i for i, q in enumerate(qs) if "from:Deven.Mehta@neotekus.com" in q)
+    company_only = [i for i, q in enumerate(qs) if "NeoTek" in q and "Deven" not in q and "Medicaid" not in q]
+    if company_only:
+        assert email_i < company_only[0]
+
+
+def test_company_only_linkedin_hit_rejected_without_subject_overlap():
+    """Artech Data Engineer must not inherit Vibhor's GRC InMail links."""
+
+    def search(query: str, limit: int) -> list[str]:
+        if "Artech" in query and "hit-reply" in query:
+            return ["19f86b8f747f4ea1"]
+        return []
+
+    def body(message_id: str) -> str:
+        return (
+            "Subject: GRC Software Engineer needed with our major Technology end-client\n"
+            "GRC Software Engineer needed with our major Technology end-client "
+            "https://www.linkedin.com/messaging/thread/2-NjViMmE1YTctOGEwMS00NTNiLTkxMDUtNGRkNDFkYmUyMDczXzEwMA==/\n"
+            "This email was intended for Shawn Becker (Open to Senior Software, Full Stack, & Data Engineer · AI/ML Engineer)"
+        )
+
+    resolved = resolve_reply_continuity(
+        recruiter_name="",
+        company="Artech",
+        subject="100% Remote Position | Position: AI & Data - Data Engineer | Long Term Contract",
+        recruiter_email="Kashish.Thakur@artech.com",
+        search_gmail=search,
+        fetch_body=body,
+    )
+    assert resolved["gmailUrl"] == ""
+    assert resolved["threadUrl"] == ""
+    assert resolved["messageId"] == ""
+
+
+def test_body_matches_lead_subject_uses_email_subject_not_footer():
+    from job_tracker.pipeline.reply_continuity import body_matches_lead_subject
+
+    subj = "AI & Data - Data Engineer | Long Term Contract"
+    grc = (
+        "Subject: GRC Software Engineer needed\n"
+        "Hello\n"
+        "This email was intended for Shawn Becker (Open to Senior Software, Full Stack, & Data Engineer · AI/ML Engineer)"
+    )
+    good = "Subject: 100% Remote Position | AI & Data - Data Engineer\nHello"
+    assert body_matches_lead_subject(grc, subj) is False
+    assert body_matches_lead_subject(good, subj) is True
+    assert body_matches_lead_subject("Data Engineer remote role", subj) is True
+    assert body_matches_lead_subject("GRC Software Engineer onsite", subj) is False
 
 
 def test_resolve_uses_injected_gmail_search():
@@ -33,6 +83,8 @@ def test_resolve_uses_injected_gmail_search():
     def body(message_id: str) -> str:
         assert message_id == "19fb2d71933ae946"
         return (
+            "Subject: AWS AI Engineer\n"
+            "AWS AI Engineer follow-up "
             "Reply https://www.linkedin.com/messaging/thread/2-abc123/ more text"
         )
 
@@ -64,7 +116,7 @@ def test_enrich_item_fills_gmail_and_thread():
         return ["aabbccddeeff0011"]
 
     def body(message_id: str) -> str:
-        return "no thread url here"
+        return "Subject: AWS AI Engineer\nAWS AI Engineer — no thread url here"
 
     enrich_item_reply_links(item, search_gmail=search, fetch_body=body)
     assert item["gmailUrl"] == recruiting_gmail_message_url("aabbccddeeff0011")

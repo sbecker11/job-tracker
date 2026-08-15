@@ -68,7 +68,7 @@ recruiting Gmail inbox
 | `src/job_tracker/pipeline/comms_match.py` | Tiered matching (thread id → contact email → opt-in LLM extraction) that attaches a communication to the right job |
 | `src/job_tracker/cli/scan_communications.py` | Archives LinkedIn message replies (and, with `--include-sent`, your own Sent-folder replies) that `triage_recruiter_inbox.py` never sees, and labels/archives the inbound ones `JobTracker/Linked` or `JobTracker/NeedsFollowup` (`scan-communications`) |
 | `src/job_tracker/cli/resolve_communication.py` | Manually resolve a parked `unmatched_messages` row onto a real (or brand-new) job (`resolve-communication`) |
-| `src/job_tracker/cli/export_communications.py` | Render one job's full communications history to an on-demand PDF (`export-communications`) |
+| `src/job_tracker/cli/export_communications.py` | Render one job's full communications history to an on-demand ODT (`export-communications`) |
 | `src/job_tracker/cli/process_awaiting_llm_review.py` | Sweeps every lead whose free rule-based score cleared the LLM-review gate but has no `llm_verdict` yet (most often a `scan_communications.py` stub lead) and runs the same two-tier review `apply_package.py` runs by hand (`process-awaiting-llm-review`) |
 | `src/job_tracker/cli/resync_labels.py` | Re-syncs a message's `JobTracker/PURSUE\|SKIP\|NEEDS_REVIEW` label to its linked lead(s)' CURRENT verdict, catching drift from a later LLM review or manual status change (`resync-labels`) |
 | `src/job_tracker/email/imap_reader.py` | Plain-IMAP mailbox reader (username/password, no OAuth) for non-Gmail accounts — currently `shawn.becker@spexture.com` (Hostinger) — producing the same `EmailMessage` shape `gmail_reader.py` does |
@@ -540,7 +540,7 @@ python scripts/list_leads.py --waiting
 
 # Full communications history for a lead (every inbound/outbound message already
 # archived by triage_recruiter_inbox.py/scan_communications.py/triage_imap_inbox.py),
-# oldest first, straight to the terminal — the quick alternative to generating a PDF
+# oldest first, straight to the terminal — the quick alternative to generating an ODT
 # via export_communications.py when you just want to read the thread.
 python scripts/list_leads.py --company "Acme" --title "Software Engineer" --show-communications
 
@@ -766,15 +766,15 @@ it fires the `viewcomms://` custom URL scheme
 (`tools/view-communications/`, install once with its `install.sh`), whose
 tiny Mac helper app shells out to the `export-communications` console
 script (`cli/export_communications.py`) to render that lead's full
-conversation history to a **fresh** PDF (same file
+conversation history to a **fresh** ODT (same file
 `export-communications`/`list_leads.py --show-communications` would
 produce by hand — see "Review stored leads" above), then opens it in
-Preview. Chosen over embedding the full conversation text in the page
+the default ODT app (Pages / LibreOffice / Word). Chosen over embedding the full conversation text in the page
 itself (the way `unmatched_communications`' preview/body fields do) because
 every single lead already has at least one conversation once triaged —
 inlining full bodies for all of them, rather than just the handful of
 parked unmatched messages, would make this static page dramatically
-larger for comparatively little benefit over a one-click PDF.
+larger for comparatively little benefit over a one-click ODT.
 
 ### Company-name duplicates — auto-fixed casing vs. detect-and-reconcile
 
@@ -971,7 +971,7 @@ tiers, cheapest first:
 which don't run an extraction at all), two more things happen automatically:
 the raw message is saved as a `.txt` `JobDocument` (`doc_type="email_txt"`)
 in that job's folder (`communications/Email_<message_id>.txt`, same
-folder convention as `export_communications.py`'s PDF), and the extracted
+folder convention as `export_communications.py`'s ODT), and the extracted
 text is folded into that lead's `jd_text` — appended for an existing lead,
 set outright for a new one. Both only touch a lead while it's still
 `status="new"`; once a human has triaged it, `store.upsert_lead`'s standing
@@ -991,7 +991,7 @@ Wired into `recruiting-automation/run_cycle.sh`'s hourly cycle already;
 `var/pending-actions.html`'s "Unmatched communications" section (rendered by
 `scripts/render_pending_actions.py`) surfaces whatever's still waiting on a
 human. Every linked/resolved message is archived verbatim in
-`job_conversations.body_text` — cheap and searchable by default; the PDF
+`job_conversations.body_text` — cheap and searchable by default; the ODT
 export above is only for when you actually need a document to hand someone.
 
 **`triage_recruiter_inbox.py` uses the same Tier 1/2 matching too

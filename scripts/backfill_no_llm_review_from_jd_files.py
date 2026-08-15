@@ -51,11 +51,10 @@ from job_tracker.scoring.scorer import score_jd  # noqa: E402
 from job_tracker.pipeline.llm_apply import _RULE_STATUS_LABEL, _add_table, should_run_llm_review  # noqa: E402
 
 
-def _lead_folder(out_dir: Path, *, company: str, title: str, multi_lead: bool) -> Path:
-    company_dir = out_dir / _safe_filename(company)
-    if not multi_lead:
-        return company_dir
-    return company_dir / _safe_filename(title)
+def _lead_folder(out_dir: Path, *, company: str, title: str, multi_lead: bool = True) -> Path:
+    """Read-only nested path mirror of `llm_apply._job_folder` (always `<Company>/<Title>/`)."""
+    _ = multi_lead
+    return out_dir / _safe_filename(company) / _safe_filename(title)
 
 
 def _extract_jd_from_docx(path: Path) -> tuple[str, str, str]:

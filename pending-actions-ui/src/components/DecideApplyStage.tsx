@@ -1,15 +1,14 @@
 import type { DecideLead, WorkflowPayload } from '../types'
 
-function revealFolderUrl(folderPath: string): string | null {
+function revealFolderUrl(folderPath: string | undefined): string | null {
   if (!folderPath) return null
-  // Decide leads often carry relative paths; reveal helper needs absolute.
-  // Absolute paths already work; relative ones are opened via Regenerate HTML root elsewhere.
-  if (folderPath.startsWith('/')) {
-    return `revealfolder://reveal?path=${encodeURIComponent(folderPath)}`
-  }
-  return `revealfolder://reveal?path=${encodeURIComponent(
-    `${'/Users/sbecker11/Desktop/Resumes/2026'}/${folderPath}`.replace(/\/+/g, '/'),
-  )}`
+  return `revealfolder://reveal?path=${encodeURIComponent(folderPath)}`
+}
+
+/** Export + open this lead's job_conversations ODT (tools/view-communications/). */
+function viewCommunicationsUrl(company?: string, title?: string): string | null {
+  if (!company?.trim() || !title?.trim()) return null
+  return `viewcomms://open?company=${encodeURIComponent(company)}&title=${encodeURIComponent(title)}`
 }
 
 function LeadTable({
@@ -43,14 +42,30 @@ function LeadTable({
             {rows.map((r) => (
               <tr key={r.normalizedKey}>
                 <td>
-                  {r.company}
+                  {r.companyFolderPath ? (
+                    <a
+                      className="company-link"
+                      href={revealFolderUrl(r.companyFolderPath) || '#'}
+                      title="Open company folder in Finder"
+                    >
+                      {r.company}
+                    </a>
+                  ) : (
+                    r.company
+                  )}
                   {r.resumeRequested && (
                     <div className="resume-ask-flag">Recruiter asked for résumé</div>
                   )}
                 </td>
                 <td>
                   {r.folderPath ? (
-                    <a href={revealFolderUrl(r.folderPath) || '#'}>{r.title}</a>
+                    <a
+                      className="title-link"
+                      href={revealFolderUrl(r.folderPath) || '#'}
+                      title="Open this role's folder in Finder"
+                    >
+                      {r.title}
+                    </a>
                   ) : (
                     r.title
                   )}
@@ -58,7 +73,18 @@ function LeadTable({
                 <td className="num">{r.matchPct ?? '—'}</td>
                 <td className="num">{r.ageDays}d</td>
                 <td className="action-cell">
-                  {r.nextAction || r.actionHint || 'Review reviews → pursue or skip'}
+                  <div className="decide-actions">
+                    <span>{r.nextAction || r.actionHint || 'Review reviews → pursue or skip'}</span>
+                    {viewCommunicationsUrl(r.company, r.title) && (
+                      <a
+                        className="btn link"
+                        href={viewCommunicationsUrl(r.company, r.title)!}
+                        title="Export and open full communications ODT for this lead"
+                      >
+                        View communications
+                      </a>
+                    )}
+                  </div>
                 </td>
                 {showApply && (
                   <td>

@@ -115,9 +115,9 @@ snapshot laid out as a **sales funnel toward "ready to apply"** (redesigned
 2026-07-15, replacing an earlier flatter needs-review/auto-skipped/unresolved
 split that made "how close am I to actually submitting something" hard to
 answer at a glance). Company-name links open the shared `<Company>/` folder in
-**Finder**; title links open that lead's own package folder (`<Company>/` for
-a single-lead company, `<Company>/<Company>_<Title>/` when the company has
-multiple leads) via the local `revealfolder://` helper — install once with
+**Finder**; title links open that lead's own package folder
+(`<Company>/<Title>/`, always nested per role as of 2026-08-14)
+via the local `revealfolder://` helper — install once with
 `tools/reveal-folder/install.sh`. **Regenerate page** re-runs this same
 script via `tools/refresh-pending/install.sh` (`refreshpending://run`), then
 reloads the SAME browser tab in place (2026-07-19 fix — it used to also
@@ -212,9 +212,10 @@ cd pending-actions-ui && npm run dev
 Regenerate data the UI reads with
 `python scripts/render_pending_actions.py --no-rescore` (or the
 `refreshpending://` helper / **Regenerate** button). After you BCC yourself
-on a LinkedIn reply, click **Reply sent** (requires
-`tools/reply-sent/install.sh` → `replysent://run`) to run the same fast
-mailbox tick immediately instead of waiting for the 3-minute LaunchAgent.
+on a LinkedIn reply, click **Reply sent** on that lead’s row (next to
+“Recruiter waiting on you”; requires `tools/reply-sent/install.sh` →
+`replysent://run`) to run the same fast mailbox tick immediately instead of
+waiting for the 3-minute LaunchAgent.
 
 Every table also shows an **Age (days)** column (days since `first_seen`)
 and defaults to oldest-first sort — a lead's value decays the longer it
@@ -246,7 +247,7 @@ python scripts/list_leads.py --company "Acme" --title "Software Engineer" --show
 ```
 
 (Or on `pending-actions.html` itself: click the 💬 badge next to the title
-for a one-click PDF of the same communications history — see
+for a one-click ODT of the same communications history — see
 `tools/view-communications/README.md`.) A nonzero 💬 count is not
 automatically a live conversation worth acting on — check it; LinkedIn/ATS
 job-alert digests get archived here too, not just real recruiter replies.
@@ -332,12 +333,11 @@ only an actual "pursue" verdict spends a second LLM call on documents:
    `Shawn_Becker_Cover_Letter_<Company>_<Title>.docx`.
 
 - Output location: everything for one lead lands together under
-  `~/Desktop/Resumes/2026/<Company>/` (override the root with
-  `--output-root`) — flat directly in that folder if this is the company's
-  only tracked lead, or nested one level deeper in
-  `<Company>/<Company>_<Title>/` once a second lead exists for the same
-  company (existing flat files auto-migrate the first time a sibling shows
-  up).
+  `~/Desktop/Resumes/2026/<Company>/<Title>/` (override the root with
+  `--output-root`) — **always nested per role** as of 2026-08-14, even for a
+  company's first/only lead. Role subfolders no longer repeat the company
+  prefix. Legacy flat files under `<Company>/` are migrated into the role
+  folder on the next write when ownership is clear.
 - Both documents are generated from the candidate profile in `~/CLAUDE.md` (contact info, banned terms, positioning) — never hand-typed per lead.
 - `--json` gives the full machine-readable result (both tiers' verdicts/scores, all doc paths, token/cost/time metrics for the evaluate and generate calls) if you're scripting around this.
 - Optional `--comparison-jsonl <path>`: if you're tracking leads in a manual comparison JSONL file, this updates the matching company/title line with the result instead of leaving it a separate, disconnected artifact.
@@ -483,7 +483,7 @@ python scripts/resolve_communication.py --message-id <id> --show
 # Attach one to the right job (add --create for a genuinely new lead):
 python scripts/resolve_communication.py --message-id <id> --company "<company>" --title "<title>"
 
-# On-demand PDF of one job's full communications history:
+# On-demand ODT of one job's full communications history:
 python scripts/export_communications.py --company "<company>" --title "<title>"
 ```
 

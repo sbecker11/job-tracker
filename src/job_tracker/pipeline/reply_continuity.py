@@ -47,43 +47,15 @@ def _company_token(company: str) -> str:
     return cleaned.split()[0] if cleaned.split() else ""
 
 
-def build_continuity_gmail_queries(
-    *,
-    recruiter_name: str = "",
-    company: str = "",
-    subject: str = "",
-    recruiter_email: str = "",
-    newer_than_days: int = 60,
-) -> list[str]:
-    """Ordered Gmail search queries — most specific first."""
-    nt = f"newer_than:{max(1, int(newer_than_days))}d"
-    queries: list[str] = []
-    seen: set[str] = set()
+_FOOTER_MARKERS = (
+    "This email was intended",
+    "Learn why we included",
+    "Unsubscribe:",
+    "You are receiving LinkedIn notification emails",
+)
 
-    def add(q: str) -> None:
-        q = " ".join(q.split())
-        if q and q not in seen:
-            seen.add(q)
-            queries.append(q)
 
-    person = _clean_person_name(recruiter_name)
-    if person:
-        add(f'{_LI_FROM} "{person}" {nt}')
-        parts = person.split()
-        if len(parts) >= 2:
-            add(f'{_LI_FROM} "{parts[0]} {parts[-1]}" {nt}')
-
-    co = _company_token(company)
-    if co:
-        add(f"{_LI_FROM} {co} {nt}")
-        if person:
-            add(f'{_LI_FROM} "{person}" {co} {nt}')
-
-    email = (recruiter_email or "").strip()
-    if email and "@" in email and "linkedin.com" not in email.lower():
-        add(f"from:{email} {nt}")
-        add(f"to:{email} {nt}")
-
+def _subject_keywords(subject: str) -> list[str]:
     skip = {
         "message",
         "replied",
@@ -97,14 +69,118 @@ def build_continuity_gmail_queries(
         "for",
         "with",
         "from",
+        "position",
+        "needed",
+        "hiring",
+        "contract",
+        "fulltime",
+        "full",
+        "time",
+        "term",
+        "long",
+        "role",
     }
-    subj_words = [
-        w for w in _WORD_RE.findall(subject or "") if w.lower() not in skip and len(w) >= 4
-    ][:4]
+    # Preserve order, drop duplicates (AI & Data - Data Engineer → Data once).
+    out: list[str] = []
+    seen: set[str] = set()
+    for w in _WORD_RE.findall(subject or ""):
+        if w.lower() in skip or len(w) < 4:
+            continue
+        key = w.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(w)
+        if len(out) >= 6:
+            break
+    return out
+
+
+def _strip_linkedin_footer(body: str) -> str:
+    text = body or ""
+    cut = len(text)
+    for marker in _FOOTER_MARKERS:
+        idx = text.find(marker)
+        if idx > 80:
+            cut = min(cut, idx)
+    return text[:cut]
+
+
+def _candidate_email_subject(body: str) -> str:
+    for line in (body or "").splitlines()[:8]:
+        if line.lower().startswith("subject:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def body_matches_lead_subject(body: str, subject: str, *, min_hits: int = 1) -> bool:
+    """True when distinctive lead subject tokens appear in the *email Subject*.
+
+    Falls back to footer-stripped body only when no ``Subject:`` line is present.
+    LinkedIn notification footers include Shawn's headline (often \"Data
+    Engineer\"), so matching against the full body falsely accepts unrelated
+    InMails for the same staffing firm.
+    """
+    keys = _subject_keywords(subject)
+    if not keys:
+        return True
+    email_subj = _candidate_email_subject(body)
+    haystack = (email_subj or _strip_linkedin_footer(body)).lower()
+    hits = sum(1 for w in keys if w.lower() in haystack)
+    need = 2 if len(keys) >= 2 else min_hits
+    return hits >= need
+
+
+def build_continuity_gmail_queries(
+    *,
+    recruiter_name: str = "",
+    company: str = "",
+    subject: str = "",
+    recruiter_email: str = "",
+    newer_than_days: int = 60,
+) -> list[str]:
+    """Ordered Gmail search queries — most specific first.
+
+    Corporate recruiter email beats company-only LinkedIn searches so a second
+    Artech pitch cannot inherit Vibhor's GRC thread via ``Artech`` alone.
+    """
+    nt = f"newer_than:{max(1, int(newer_than_days))}d"
+    queries: list[str] = []
+    seen: set[str] = set()
+
+    def add(q: str) -> None:
+        q = " ".join(q.split())
+        if q and q not in seen:
+            seen.add(q)
+            queries.append(q)
+
+    person = _clean_person_name(recruiter_name)
+    email = (recruiter_email or "").strip()
+    co = _company_token(company)
+    subj_words = _subject_keywords(subject)
+
+    if person:
+        add(f'{_LI_FROM} "{person}" {nt}')
+        parts = person.split()
+        if len(parts) >= 2:
+            add(f'{_LI_FROM} "{parts[0]} {parts[-1]}" {nt}')
+
+    if email and "@" in email and "linkedin.com" not in email.lower():
+        add(f"from:{email} {nt}")
+        add(f"to:{email} {nt}")
+
     if subj_words and person:
         add(f'{_LI_FROM} "{person}" {" ".join(subj_words[:2])} {nt}')
-    elif subj_words and co:
+    if subj_words and co:
         add(f"{_LI_FROM} {co} {' '.join(subj_words[:2])} {nt}")
+    if person and co:
+        add(f'{_LI_FROM} "{person}" {co} {nt}')
+
+    # Company-only LinkedIn is last-resort — high collision risk across roles.
+    if co and subj_words:
+        add(f"{_LI_FROM} {co} {' '.join(subj_words[:3])} {nt}")
+    elif co and person:
+        add(f"{_LI_FROM} {co} {nt}")
 
     return queries
 
@@ -172,6 +248,8 @@ def resolve_reply_continuity(
                 body = fetch_body(mid) or ""
             except Exception:
                 body = ""
+            if subject and not body_matches_lead_subject(body, subject):
+                continue
             thread = extract_linkedin_thread_url(body) or out["threadUrl"]
             gmail_url = out["gmailUrl"] or recruiting_gmail_message_url(mid)
             if not gmail_url and not thread:
@@ -239,11 +317,18 @@ def _live_gmail_helpers() -> tuple[Callable[[str, int], list[str]], Callable[[st
                 )
                 .execute()
             )
+            headers = {
+                (h.get("name") or "").lower(): (h.get("value") or "")
+                for h in (raw.get("payload") or {}).get("headers") or []
+            }
+            subject = headers.get("subject") or ""
             snippet = raw.get("snippet") or ""
+            # Always prefix Subject so lead-matching can ignore LinkedIn footers
+            # that repeat Shawn's headline skills (e.g. "Data Engineer").
             if "linkedin.com/messaging/thread" in snippet.lower():
-                return snippet
+                return f"Subject: {subject}\n{snippet}"
             msg = gmail_reader.fetch_message(service, message_id)
-            return msg.combined_text or snippet
+            return f"Subject: {subject}\n{msg.combined_text or snippet}"
 
         return search, body
     except Exception:

@@ -1,7 +1,8 @@
-"""Tests for the on-demand communications PDF export CLI."""
+"""Tests for the on-demand communications ODT export CLI."""
 
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -30,15 +31,26 @@ def seeded_db(tmp_path: Path) -> Path:
     return db_path
 
 
-def test_export_writes_pdf(seeded_db: Path, tmp_path: Path, capsys):
+def test_export_writes_odt(seeded_db: Path, tmp_path: Path, capsys):
     out_root = tmp_path / "out"
-    rc = export_main(["--db", str(seeded_db), "--company", "Acme", "--title", "Engineer", "--output-root", str(out_root)])
+    rc = export_main(
+        ["--db", str(seeded_db), "--company", "Acme", "--title", "Engineer", "--output-root", str(out_root)]
+    )
     assert rc == 0
 
-    pdf_path = out_root / "Acme" / "communications" / "Communications_Engineer.pdf"
-    assert pdf_path.is_file()
-    assert pdf_path.stat().st_size > 0
+    odt_path = out_root / "Acme" / "Engineer" / "communications" / "Communications_Engineer.odt"
+    assert odt_path.is_file()
+    assert odt_path.stat().st_size > 0
     assert "Exported 1 conversation" in capsys.readouterr().out
+    assert odt_path.suffix == ".odt"
+
+    with zipfile.ZipFile(odt_path) as zf:
+        assert zf.namelist()[0] == "mimetype"
+        assert zf.read("mimetype") == b"application/vnd.oasis.opendocument.text"
+        content = zf.read("content.xml").decode("utf-8")
+    assert "Engineer @ Acme" in content
+    assert "Hi Shawn" in content
+    assert "\u2014" in content or "—" in content  # curly em dash preserved (UTF-8)
 
 
 def test_export_no_conversations_is_a_noop(tmp_path: Path, capsys):
@@ -47,7 +59,9 @@ def test_export_no_conversations_is_a_noop(tmp_path: Path, capsys):
     upsert_lead(conn, JobLead(company="NoConvos", title="Role", source_message_id="m1", source_label="single-jd"))
     conn.close()
 
-    rc = export_main(["--db", str(db_path), "--company", "NoConvos", "--title", "Role", "--output-root", str(tmp_path / "out")])
+    rc = export_main(
+        ["--db", str(db_path), "--company", "NoConvos", "--title", "Role", "--output-root", str(tmp_path / "out")]
+    )
     assert rc == 0
     assert "nothing to export" in capsys.readouterr().out
     assert not (tmp_path / "out").exists()
@@ -56,6 +70,8 @@ def test_export_no_conversations_is_a_noop(tmp_path: Path, capsys):
 def test_export_unknown_job_errors(tmp_path: Path, capsys):
     db_path = tmp_path / "leads.db"
     connect(db_path).close()
-    rc = export_main(["--db", str(db_path), "--company", "Nope", "--title", "Nope", "--output-root", str(tmp_path / "out")])
+    rc = export_main(
+        ["--db", str(db_path), "--company", "Nope", "--title", "Nope", "--output-root", str(tmp_path / "out")]
+    )
     assert rc == 1
     assert "No job found" in capsys.readouterr().err

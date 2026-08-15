@@ -275,10 +275,9 @@ def test_generate_package_skips_generation_when_verdict_is_not_pursue(tmp_path):
     assert result.jd_path.name == "JobDescription.docx"
     assert result.review_path is not None and result.review_path.exists()
     assert result.review_path.name == "full-LLM-review.docx"
-    # Both artifacts land together in one per-job folder. This is the only
-    # tracked lead for "Acme" (no multi_lead passed), so the layout is flat:
-    # straight in the company folder, no title-specific subfolder.
-    assert result.jd_path.parent == result.review_path.parent == tmp_path / "Acme"
+    # Both artifacts land together in one per-job folder — always nested
+    # under <Company>/<Title>/ (even for a company's first lead).
+    assert result.jd_path.parent == result.review_path.parent == tmp_path / "Acme" / "Engineer"
 
     review_doc = Document(result.review_path)
     review_text = "\n".join(cell.text for table in review_doc.tables for row in table.rows for cell in row.cells)
@@ -326,9 +325,8 @@ def test_generate_package_full_flow_saves_docx_and_aggregates_metrics(tmp_path):
     assert result.resume_path is not None and result.resume_path.exists()
     assert result.cover_letter_path is not None and result.cover_letter_path.exists()
     assert result.warnings == []
-    # All four artifacts land in the same per-job folder. Flat layout: this
-    # is the only tracked lead for "Bellese" (no multi_lead passed).
-    job_folder = tmp_path / "Bellese"
+    # All four artifacts land in the same always-nested per-job folder.
+    job_folder = tmp_path / "Bellese" / "Senior_Engineer"
     assert result.jd_path.parent == result.review_path.parent == job_folder
     assert result.resume_path.parent == result.cover_letter_path.parent == job_folder
 
@@ -366,14 +364,26 @@ def test_generate_package_multi_lead_nests_under_company_folder(tmp_path):
 # --- _job_folder layout -------------------------------------------------------
 
 
-def test_job_folder_flat_when_not_multi_lead(tmp_path):
+def test_job_folder_always_nested_even_for_single_lead(tmp_path):
     folder = llm_apply._job_folder(tmp_path, company="Acme", title="Engineer", multi_lead=False)
-    assert folder == tmp_path / "Acme"
+    assert folder == tmp_path / "Acme" / "Engineer"
 
 
 def test_job_folder_nested_when_multi_lead(tmp_path):
     folder = llm_apply._job_folder(tmp_path, company="Acme", title="Engineer", multi_lead=True)
     assert folder == tmp_path / "Acme" / "Engineer"
+
+
+def test_job_folder_migrates_pure_flat_files_into_this_role_when_only_lead(tmp_path):
+    flat_dir = tmp_path / "Acme"
+    flat_dir.mkdir()
+    (flat_dir / "JobDescription.docx").write_text("old JD", encoding="utf-8")
+
+    folder = llm_apply._job_folder(tmp_path, company="Acme", title="Engineer", multi_lead=False)
+
+    assert folder == flat_dir / "Engineer"
+    assert (folder / "JobDescription.docx").exists()
+    assert not (flat_dir / "JobDescription.docx").exists()
 
 
 def test_job_folder_migrates_stale_flat_files_when_second_lead_appears(tmp_path):
@@ -407,6 +417,24 @@ def test_job_folder_does_not_guess_when_migration_is_ambiguous(tmp_path):
 
     assert folder == flat_dir / "Engineer"
     assert (flat_dir / "JobDescription.docx").exists()  # left in place, not moved
+
+
+def test_job_folder_migrates_owned_flat_files_alongside_existing_role_subdir(tmp_path):
+    company_dir = tmp_path / "Acme"
+    company_dir.mkdir()
+    (company_dir / "Acme_Other").mkdir()
+    # Minimal DOCX with the Data Engineer heading so ownership can be detected.
+    from docx import Document
+
+    doc = Document()
+    doc.add_paragraph("Engineer @ Acme")
+    doc.add_paragraph("body")
+    doc.save(company_dir / "JobDescription.docx")
+
+    folder = llm_apply._job_folder(tmp_path, company="Acme", title="Engineer")
+    assert folder == company_dir / "Engineer"
+    assert (folder / "JobDescription.docx").exists()
+    assert not (company_dir / "JobDescription.docx").exists()
 
 
 def test_generate_package_auto_repairs_house_rule_violation_before_saving(tmp_path):
@@ -510,7 +538,7 @@ def test_render_resume_places_homeportfolio_last_regardless_of_input_order(tmp_p
         ]
     }
     path = llm_apply.render_resume(resume, company="Acme", title="Engineer", out_dir=tmp_path)
-    assert path.parent == tmp_path / "Acme"
+    assert path.parent == tmp_path / "Acme" / "Engineer"
     doc = Document(path)
     employer_paras = [p.text for p in doc.paragraphs if "HomePortfolio" in p.text or "Sierra Vista" in p.text]
     assert employer_paras[0].startswith("Sierra Vista")
@@ -520,7 +548,7 @@ def test_render_resume_places_homeportfolio_last_regardless_of_input_order(tmp_p
 def test_render_cover_letter_includes_phone_and_salutation(tmp_path):
     cover_letter = {"salutation": "Dear Hiring Team,", "paragraphs": ["Body paragraph."]}
     path = llm_apply.render_cover_letter(cover_letter, company="Acme", title="Engineer", out_dir=tmp_path)
-    assert path.parent == tmp_path / "Acme"
+    assert path.parent == tmp_path / "Acme" / "Engineer"
     doc = Document(path)
     full_text = "\n".join(p.text for p in doc.paragraphs)
     assert llm_apply.CANDIDATE_PHONE in full_text
@@ -557,7 +585,7 @@ def test_render_resume_includes_phone_and_renames_spexture_subsections(tmp_path)
 def test_render_resume_and_cover_letter_share_the_same_job_folder(tmp_path):
     resume_path = llm_apply.render_resume({}, company="Acme", title="Engineer", out_dir=tmp_path)
     cover_letter_path = llm_apply.render_cover_letter({}, company="Acme", title="Engineer", out_dir=tmp_path)
-    assert resume_path.parent == cover_letter_path.parent == tmp_path / "Acme"
+    assert resume_path.parent == cover_letter_path.parent == tmp_path / "Acme" / "Engineer"
 
 
 def test_render_resume_and_cover_letter_nest_under_company_when_multi_lead(tmp_path):
@@ -646,7 +674,7 @@ def test_render_jd_review_docx_writes_llm_review_with_dealbreaker_table_and_grou
     path = llm_apply.render_jd_review_docx(_sample_evaluation(), company="Talkiatry", title="Senior AI Engineer", out_dir=tmp_path)
     assert path.exists()
     assert path.name == "full-LLM-review.docx"
-    assert path.parent == tmp_path / "Talkiatry"
+    assert path.parent == tmp_path / "Talkiatry" / "Senior_AI_Engineer"
 
     doc = Document(path)
     full_text = "\n".join(p.text for p in doc.paragraphs)
@@ -678,7 +706,7 @@ def test_render_job_description_writes_docx(tmp_path):
     )
     assert path.exists()
     assert path.name == "JobDescription.docx"
-    assert path.parent == tmp_path / "Talkiatry"
+    assert path.parent == tmp_path / "Talkiatry" / "Senior_AI_Engineer"
 
     doc = Document(path)
     full_text = "\n".join(p.text for p in doc.paragraphs)
@@ -744,7 +772,7 @@ def test_render_apply_url_webloc_removes_stale_file_when_url_cleared(tmp_path):
     llm_apply.render_apply_url_webloc(
         "https://example.com/jobs/1", company="Acme", title="Engineer", out_dir=tmp_path
     )
-    webloc_path = tmp_path / "Acme" / "ApplyURL.webloc"
+    webloc_path = tmp_path / "Acme" / "Engineer" / "ApplyURL.webloc"
     assert webloc_path.exists()
 
     result = llm_apply.render_apply_url_webloc("", company="Acme", title="Engineer", out_dir=tmp_path)
@@ -784,7 +812,7 @@ def test_generate_two_tier_package_threads_apply_url_into_jd_doc(tmp_path, monke
 def test_job_description_and_review_share_the_same_job_folder(tmp_path):
     jd_path = llm_apply.render_job_description("JD text", company="Acme", title="Engineer", out_dir=tmp_path)
     review_path = llm_apply.render_jd_review_docx(_sample_evaluation(), company="Acme", title="Engineer", out_dir=tmp_path)
-    assert jd_path.parent == review_path.parent == tmp_path / "Acme"
+    assert jd_path.parent == review_path.parent == tmp_path / "Acme" / "Engineer"
 
 
 def test_job_description_and_review_nest_under_company_when_multi_lead(tmp_path):

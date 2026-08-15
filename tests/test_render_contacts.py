@@ -100,8 +100,11 @@ def test_folder_path_flat_for_single_lead_company(tmp_path: Path):
     db_path = _seed_db(tmp_path)
     conn = connect(db_path)
     try:
-        # DIRECTV has exactly one lead in _seed_db -> flat company folder.
-        assert render_contacts._folder_path(conn, company="DIRECTV", title="Senior Data Engineer") == "DIRECTV"
+        # DIRECTV has exactly one lead in _seed_db — still always-nested.
+        assert (
+            render_contacts._folder_path(conn, company="DIRECTV", title="Senior Data Engineer")
+            == "DIRECTV/Senior_Data_Engineer"
+        )
     finally:
         conn.close()
 
@@ -174,9 +177,9 @@ def test_main_embedded_json_round_trips_and_is_recency_sorted(tmp_path: Path):
     assert len(rows) == 2
     assert rows[0]["name"] == "Cole Keener"  # last_contacted_at 2026-07-22, more recent than Jane Doe's 2026-06-05
     assert rows[1]["name"] == "Jane Doe"
-    # Both DIRECTV and Initech are single-lead companies in _seed_db -> flat folders.
-    assert rows[0]["folderPath"] == "DIRECTV"
-    assert rows[1]["folderPath"] == "Initech"
+    # Always-nested package folders even for single-lead companies.
+    assert rows[0]["folderPath"] == "DIRECTV/Senior_Data_Engineer"
+    assert rows[1]["folderPath"] == "Initech/Backend_Engineer"
 
 
 def test_main_errors_cleanly_when_db_missing(tmp_path: Path, capsys):

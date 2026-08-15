@@ -34,13 +34,10 @@ from job_tracker.pipeline.llm_apply import (  # noqa: E402
 from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect, get_sibling_titles  # noqa: E402
 
 
-def _lead_folder(out_dir: Path, *, company: str, title: str, multi_lead: bool) -> Path:
-    """Read-only mirror of `llm_apply._job_folder`'s path logic — see the
-    identical helper (and its rationale) in `backfill_jd_and_no_llm_review.py`."""
-    company_dir = out_dir / _safe_filename(company)
-    if not multi_lead:
-        return company_dir
-    return company_dir / _safe_filename(title)
+def _lead_folder(out_dir: Path, *, company: str, title: str, multi_lead: bool = True) -> Path:
+    """Read-only nested path mirror of `llm_apply._job_folder` (always `<Company>/<Title>/`)."""
+    _ = multi_lead
+    return out_dir / _safe_filename(company) / _safe_filename(title)
 
 
 def main(argv: list[str] | None = None) -> int:

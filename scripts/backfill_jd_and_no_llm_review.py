@@ -40,21 +40,14 @@ from job_tracker.scoring.scorer import score_jd  # noqa: E402
 MIN_JD_LEN = 200
 
 
-def _lead_folder(out_dir: Path, *, company: str, title: str, multi_lead: bool) -> Path:
-    """Read-only mirror of `llm_apply._job_folder`'s path logic, scoped to
-    THIS lead specifically rather than the whole company folder.
+def _lead_folder(out_dir: Path, *, company: str, title: str, multi_lead: bool = True) -> Path:
+    """Read-only nested path mirror of `llm_apply._job_folder` (always `<Company>/<Title>/`).
 
     Deliberately does NOT call `_job_folder` itself for existence checks:
-    that function creates directories and auto-migrates flat files into a
-    subfolder as a side effect, which we don't want to trigger just to look.
-    Bug fixed 2026-07-12: the previous version checked
-    `company_folder.rglob(...)` for existence, which for a multi-lead
-    company found a *sibling* lead's file and incorrectly treated the
-    current lead as already complete, silently skipping it."""
-    company_dir = out_dir / _safe_filename(company)
-    if not multi_lead:
-        return company_dir
-    return company_dir / _safe_filename(title)
+    that function creates directories and can migrate files as a side effect.
+    """
+    _ = multi_lead
+    return out_dir / _safe_filename(company) / _safe_filename(title)
 
 
 def main(argv: list[str] | None = None) -> int:

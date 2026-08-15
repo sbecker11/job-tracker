@@ -32,23 +32,17 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT, _safe_filename  # noqa: E402
-from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect, get_sibling_titles, list_all_contacts  # noqa: E402
+from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect, list_all_contacts  # noqa: E402
 
 DEFAULT_OUTPUT_HTML = _REPO_ROOT / "var" / "contacts.html"
 
 
 def _folder_path(conn, *, company: str, title: str) -> str:
-    """This lead's package folder, relative to DEFAULT_OUTPUT_ROOT — same
-    naming rule as render_pending_actions.py's `_lead_folder_and_count`
-    (itself a read-only mirror of `llm_apply._job_folder`, deliberately
-    reimplemented rather than calling `_job_folder` directly, since that
-    function mkdir's and can migrate files — not something a page-render
-    script should ever trigger as a side effect). No file count needed
-    here (contacts.html only needs the path to open in Finder)."""
-    multi_lead = len(get_sibling_titles(conn, company, exclude_title=title)) > 0
+    """This lead's package folder, relative to DEFAULT_OUTPUT_ROOT — always
+    nested `<Company>/<Title>/` (2026-08-14), matching `llm_apply._job_folder`
+    without mkdir/migration side effects."""
+    _ = conn  # signature kept; layout no longer depends on sibling count
     company_safe = _safe_filename(company)
-    if not multi_lead:
-        return company_safe
     return f"{company_safe}/{_safe_filename(title)}"
 
 

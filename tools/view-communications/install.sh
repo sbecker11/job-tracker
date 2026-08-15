@@ -2,7 +2,7 @@
 # Build ViewCommunications.app and install it to ~/Applications so
 # viewcomms://open?company=...&title=... invokes the export-communications
 # console script (installed by `pip install -e .` in the repo's venv) and
-# opens the resulting PDF.
+# opens the resulting ODT.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -56,4 +56,4 @@ sleep 0.5
 echo "Installed: ${DEST_APP}"
 echo "URL scheme: viewcomms://open?company=<url-encoded>&title=<url-encoded>"
 echo ""
-echo "Runs: ${BIN} --db ${DB} --company <company> --title <title>, then opens the resulting PDF."
+echo "Runs: ${BIN} --db ${DB} --company <company> --title <title>, then opens the resulting ODT."

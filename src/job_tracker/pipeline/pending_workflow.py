@@ -567,10 +567,11 @@ def build_clarify_queue(
             thread_url=draft.thread_url,
             source_label=r["source_label"] or "",
         )
+        recruiter, email, email_is_li_relay = _recruiter_contact(conn, key)
         reply_id = f"key:{key}"
         next_action = _next_action_clarify(
             channel=channel,
-            recruiter_name=draft.recruiter_name,
+            recruiter_name=draft.recruiter_name or recruiter,
             reply_due=True,
             unanswered_days=age,
         )
@@ -579,7 +580,9 @@ def build_clarify_queue(
                 "kind": "lead",
                 "stage": "clarify",
                 "channel": channel,
-                "recruiterName": draft.recruiter_name,
+                "recruiterName": draft.recruiter_name or recruiter,
+                "recruiterEmail": email,
+                "emailIsLinkedInRelay": email_is_li_relay,
                 "subject": subj,
                 "company": r["company"] or draft.company_guess,
                 "title": r["title"] or draft.title_guess,
@@ -727,30 +730,63 @@ def _recruiter_contact(conn, job_key: str) -> tuple[str, str, bool]:
 
 
 def _package_folder_abs(conn, *, company: str, title: str, output_root: Path) -> tuple[str, bool]:
-    """Absolute package folder path + whether résumé+cover exist on disk."""
+    """Absolute package folder path + whether résumé+cover exist on disk.
+
+    Always prefers the nested `<Company>/<Title>/` layout (2026-08-14).
+    Falls back to legacy `<Company>/<Company>_<Title>/` or flat `<Company>/`
+    when the canonical nested path is missing but an older layout still exists.
+    """
     from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT, _safe_filename
 
     root = Path(output_root) if output_root else DEFAULT_OUTPUT_ROOT
-    n = conn.execute(
-        """
-        SELECT COUNT(*) AS n FROM job_leads
-        WHERE deleted_at IS NULL AND company = ?
-        """,
-        (company,),
-    ).fetchone()["n"]
     company_safe = _safe_filename(company)
-    package_rel = (
-        f"{company_safe}/{_safe_filename(f'{company}_{title}')}" if n > 1 else company_safe
-    )
-    lead_dir = root / package_rel
-    # Prefer an existing on-disk folder even if multi_lead naming differs.
-    if not lead_dir.is_dir():
-        flat = root / company_safe
-        if flat.is_dir():
-            lead_dir = flat
+    title_safe = _safe_filename(title)
+    nested = root / company_safe / title_safe
+    legacy_prefixed = root / company_safe / _safe_filename(f"{company}_{title}")
+    flat = root / company_safe
+    if nested.is_dir():
+        lead_dir = nested
+    elif legacy_prefixed.is_dir():
+        lead_dir = legacy_prefixed
+    elif flat.is_dir():
+        lead_dir = flat
+    else:
+        lead_dir = nested
     names = [p.name.lower() for p in lead_dir.glob("*.docx")] if lead_dir.is_dir() else []
     ready = any("resume" in n for n in names) and any("cover" in n for n in names)
-    return (str(lead_dir) if lead_dir.is_dir() else str(root / package_rel), ready)
+    return (str(lead_dir) if lead_dir.is_dir() else str(nested), ready)
+
+
+def _company_folder_abs(*, company: str, output_root: Path) -> str:
+    from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT, _safe_filename
+
+    root = Path(output_root) if output_root else DEFAULT_OUTPUT_ROOT
+    return str(root / _safe_filename(company or "Unknown"))
+
+
+def _attach_folder_links(
+    item: dict,
+    *,
+    conn,
+    output_root: Path,
+) -> None:
+    """Set folderPath (role) + companyFolderPath when company is known."""
+    company = (item.get("company") or "").strip()
+    if not company:
+        return
+    title = (item.get("title") or "").strip()
+    role_abs, _ready = _package_folder_abs(
+        conn, company=company, title=title or company, output_root=output_root
+    )
+    if not item.get("folderPath"):
+        item["folderPath"] = role_abs
+    elif not str(item["folderPath"]).startswith("/"):
+        # Decide/apply buckets carry relative paths from render_pending_actions.
+        from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT
+
+        root = Path(output_root) if output_root else DEFAULT_OUTPUT_ROOT
+        item["folderPath"] = str(root / str(item["folderPath"]))
+    item["companyFolderPath"] = _company_folder_abs(company=company, output_root=output_root)
 
 
 def _thread_url_for_lead(convs: list) -> str:
@@ -1130,6 +1166,19 @@ def build_workflow_payload(
         send_keys=send_keys,
         conn=conn,
     )
+
+    from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT
+
+    root = Path(output_root) if output_root else DEFAULT_OUTPUT_ROOT
+    for item in clarify:
+        _attach_folder_links(item, conn=conn, output_root=root)
+    for item in send_resume:
+        _attach_folder_links(item, conn=conn, output_root=root)
+    for item in wait_schedule:
+        _attach_folder_links(item, conn=conn, output_root=root)
+    for bucket in decide_apply.values():
+        for item in bucket:
+            _attach_folder_links(item, conn=conn, output_root=root)
 
     decide_count = sum(len(v) for v in decide_apply.values())
     counts = {
