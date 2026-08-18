@@ -14,9 +14,11 @@ from job_tracker.pipeline.store import (
     DEFAULT_DB_PATH,
     advance_status,
     connect,
+    list_duplicates_of,
     list_job_contacts,
     list_job_conversations,
     list_leads,
+    mark_duplicate,
 )
 
 _COLUMNS = [
@@ -160,7 +162,44 @@ def main(argv: list[str] | None = None) -> int:
         "--on",
         help="ISO date/timestamp for --set-status's stage column (default: now). E.g. --on 2026-07-10",
     )
+    ap.add_argument(
+        "--duplicates-of",
+        metavar="NORMALIZED_KEY",
+        help="Instead of the normal listing, show every lead skipped as a duplicate of this "
+        "normalized_key (store.list_duplicates_of) — 'what did I skip because of this lead'. "
+        "Ignores every other filter flag.",
+    )
+    ap.add_argument(
+        "--mark-duplicate-of",
+        metavar="NORMALIZED_KEY",
+        help="Skip every row matching the other filters (--company/--title/etc.) and record it as "
+        "a duplicate of this normalized_key (store.mark_duplicate) — e.g. --company VDARTInc "
+        "--title 'Data Engineer' --mark-duplicate-of 'full time::data engineer'. The target key "
+        "must already exist in job_leads; it need not be active.",
+    )
     args = ap.parse_args(argv)
+
+    if args.duplicates_of:
+        conn = connect(args.db)
+        dupes = list_duplicates_of(conn, args.duplicates_of)
+        survivor = conn.execute(
+            "SELECT company, title FROM job_leads WHERE normalized_key = ?", (args.duplicates_of,)
+        ).fetchone()
+        conn.close()
+        if survivor is None:
+            print(f"No lead found with normalized_key={args.duplicates_of!r}.", file=sys.stderr)
+            return 1
+        print(f"Duplicates of {survivor['title']!r} @ {survivor['company']!r} ({args.duplicates_of!r}):\n")
+        if not dupes:
+            print("(none on file)")
+            return 0
+        for d in dupes:
+            print(
+                f"  {d['title']!r:45s} @ {d['company']!r:30s} status={d['status']:9s} "
+                f"skipped_at={d['skipped_at'] or '-'}  key={d['normalized_key']!r}"
+            )
+        print(f"\n{len(dupes)} duplicate(s).")
+        return 0
 
     if not Path(args.db).exists():
         print(f"No leads DB found at {args.db} — run scripts/run_pipeline.py first.", file=sys.stderr)
@@ -194,6 +233,24 @@ def main(argv: list[str] | None = None) -> int:
             # use the default forward-only advance_status.
             advance_status(conn, r["normalized_key"], args.set_status, when=args.on, force=True)
         print(f"Updated {len(rows)} row(s) to status={args.set_status}")
+        conn.close()
+        return 0
+
+    if args.mark_duplicate_of:
+        survivor = conn.execute(
+            "SELECT 1 FROM job_leads WHERE normalized_key = ?", (args.mark_duplicate_of,)
+        ).fetchone()
+        if survivor is None:
+            print(f"--mark-duplicate-of key not found in job_leads: {args.mark_duplicate_of!r}", file=sys.stderr)
+            conn.close()
+            return 1
+        matched = [r for r in rows if r["normalized_key"] != args.mark_duplicate_of]
+        skipped_self = len(rows) - len(matched)
+        for r in matched:
+            mark_duplicate(conn, r["normalized_key"], duplicate_of_key=args.mark_duplicate_of, when=args.on)
+        print(f"Marked {len(matched)} row(s) as duplicates of {args.mark_duplicate_of!r}")
+        if skipped_self:
+            print(f"(skipped {skipped_self} row(s) matching the filters that were --mark-duplicate-of's own key)")
         conn.close()
         return 0
 

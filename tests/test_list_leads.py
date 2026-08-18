@@ -282,6 +282,64 @@ def test_list_leads_waiting_filter_only_shows_awaiting_response_leads(seeded_db:
     assert "BigCorp" not in out
 
 
+def test_list_leads_mark_duplicate_of_skips_and_links(seeded_db: Path):
+    conn = connect(seeded_db)
+    survivor_key = JobLead(
+        company="Stripe", title="Software Engineer", source_message_id="m1", source_label="single-jd"
+    ).normalized_key
+    conn.close()
+
+    rc = list_leads_main(
+        ["--db", str(seeded_db), "--company", "BigCorp", "--title", "Java Developer", "--mark-duplicate-of", survivor_key]
+    )
+    assert rc == 0
+
+    conn = connect(seeded_db)
+    row = conn.execute("SELECT status, duplicate_of_key FROM job_leads WHERE company = 'BigCorp'").fetchone()
+    assert row["status"] == "skipped"
+    assert row["duplicate_of_key"] == survivor_key
+    conn.close()
+
+
+def test_list_leads_mark_duplicate_of_rejects_unknown_target(seeded_db: Path, capsys):
+    rc = list_leads_main(
+        ["--db", str(seeded_db), "--company", "BigCorp", "--mark-duplicate-of", "nonexistent::key"]
+    )
+    assert rc == 1
+    assert "not found" in capsys.readouterr().err
+
+
+def test_list_leads_duplicates_of_lists_linked_leads(seeded_db: Path, capsys):
+    conn = connect(seeded_db)
+    survivor_key = JobLead(
+        company="Stripe", title="Software Engineer", source_message_id="m1", source_label="single-jd"
+    ).normalized_key
+    conn.close()
+
+    list_leads_main(
+        ["--db", str(seeded_db), "--company", "BigCorp", "--title", "Java Developer", "--mark-duplicate-of", survivor_key]
+    )
+
+    rc = list_leads_main(["--db", str(seeded_db), "--duplicates-of", survivor_key])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "BigCorp" in out
+    assert "1 duplicate" in out
+
+
+def test_list_leads_duplicates_of_reports_none_on_file(seeded_db: Path, capsys):
+    conn = connect(seeded_db)
+    survivor_key = JobLead(
+        company="Stripe", title="Software Engineer", source_message_id="m1", source_label="single-jd"
+    ).normalized_key
+    conn.close()
+
+    rc = list_leads_main(["--db", str(seeded_db), "--duplicates-of", survivor_key])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "(none on file)" in out
+
+
 def test_list_leads_default_table_shows_waiting_column(seeded_db: Path, capsys):
     conn = connect(seeded_db)
     key = JobLead(company="Stripe", title="Software Engineer", source_message_id="m1", source_label="single-jd").normalized_key

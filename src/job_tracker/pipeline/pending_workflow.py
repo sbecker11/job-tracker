@@ -789,6 +789,40 @@ def _attach_folder_links(
     item["companyFolderPath"] = _company_folder_abs(company=company, output_root=output_root)
 
 
+def _duplicate_keys(conn) -> dict[str, list[str]]:
+    """`{survivor_normalized_key: [duplicate_normalized_key, ...]}`, most
+    recently skipped first (same ordering as store.list_duplicates_of()) —
+    every survivor lead worth showing a "N duplicates" link on, wherever it
+    appears across the funnel (not just once it's archived), plus the
+    specific duplicate keys needed to deep-link the badge straight to the
+    first one's row on the Duplicates skipped tab. Added 2026-08-17 (keys,
+    not just a count, added the same day after the count-only version could
+    switch tabs but not land on a specific row — see
+    pending-actions-ui/src/lib/links.ts's leadAnchorId)."""
+    rows = conn.execute(
+        "SELECT duplicate_of_key, normalized_key FROM job_leads "
+        "WHERE duplicate_of_key IS NOT NULL ORDER BY skipped_at DESC"
+    ).fetchall()
+    out: dict[str, list[str]] = {}
+    for r in rows:
+        out.setdefault(r["duplicate_of_key"], []).append(r["normalized_key"])
+    return out
+
+
+def _attach_duplicate_count(item: dict, dup_keys: dict[str, list[str]]) -> None:
+    """Set `duplicateCount` + `duplicateKeys` (only when > 0, to keep the
+    payload lean — see `_attach_folder_links` for the analogous pattern) on
+    any item carrying a `normalizedKey` that other leads have been marked a
+    duplicate of."""
+    key = item.get("normalizedKey")
+    if not key:
+        return
+    keys = dup_keys.get(key) or []
+    if keys:
+        item["duplicateCount"] = len(keys)
+        item["duplicateKeys"] = keys
+
+
 def _thread_url_for_lead(convs: list) -> str:
     for c in convs:
         blob = f"{c['body_text'] or ''}\n{c['summary'] or ''}"
@@ -1120,6 +1154,99 @@ def build_decide_apply_stage(
     }
 
 
+_ARCHIVED_STATUSES = (
+    "skipped",
+    "rejected",
+    "deleted",
+    "unavailable",
+    "hired",
+    # Applied-or-beyond (store._APPLIED_OR_BEYOND_STATUSES) — these leads
+    # are equally absent from every decide_apply/clarify/send_resume/
+    # wait_schedule bucket above (render_pending_actions.build_workflow
+    # buckets them into manual_status/manual_handled instead, a
+    # company+status *count* only, with no normalizedKey to link to). Added
+    # 2026-08-17 after "Go to this lead" (a duplicate's survivor link) hit a
+    # dead end for a lead that had gone on to status="applied" — it wasn't
+    # in the active funnel, but wasn't here either, so there was nowhere in
+    # the whole payload a UI element could point at it.
+    "applied",
+    "following_up",
+    "interviewing",
+    "offered",
+    "accepted",
+    "started",
+)
+# Per-status timestamp column stamped by pipeline/store.py's advance_status —
+# COALESCE picks whichever one is actually set for this lead's status.
+_ARCHIVED_AT_COLUMNS = (
+    "skipped_at, rejected_at, deleted_at, unavailable_at, hired_at, "
+    "applied_at, following_up_at, interviewing_at, offered_at, accepted_at, started_at"
+)
+
+
+def _list_archived_leads(conn, *, age_days_fn: Callable[[str | None, datetime], int], now: datetime) -> list[dict]:
+    """Leads off the active clarify/send_resume/wait_schedule/decide_apply
+    funnel — either a decision already made (skipped/rejected/deleted/
+    unavailable/hired) or already past the apply gate (applied/
+    following_up/interviewing/offered/accepted/started) — still worth a
+    "what did I decide/submit, and what was said" lookup, e.g. via **View
+    communications**, and still a valid "Go to this lead" destination for
+    duplicate-of navigation. Sorted most-recently-decided first. Added
+    2026-08-17 after a request to browse a skipped lead's message history
+    from the UI rather than dropping to the CLI; broadened the same day to
+    include applied-or-beyond statuses once a duplicate's survivor link hit
+    a dead end for a since-applied lead."""
+    placeholders = ",".join("?" for _ in _ARCHIVED_STATUSES)
+    rows = conn.execute(
+        f"""
+        SELECT normalized_key, company, title, status, match_pct, llm_verdict,
+               first_seen, duplicate_of_key,
+               COALESCE({_ARCHIVED_AT_COLUMNS}, first_seen) AS decided_at
+        FROM job_leads
+        WHERE status IN ({placeholders})
+        """,
+        _ARCHIVED_STATUSES,
+    ).fetchall()
+    # duplicate_of_key can point at *any* lead (active or archived) — a
+    # second lookup by company/title rather than assuming the survivor is
+    # itself in this same archived batch.
+    survivor_keys = {r["duplicate_of_key"] for r in rows if r["duplicate_of_key"]}
+    survivors: dict[str, dict] = {}
+    if survivor_keys:
+        ph = ",".join("?" for _ in survivor_keys)
+        for s in conn.execute(
+            f"SELECT normalized_key, company, title FROM job_leads WHERE normalized_key IN ({ph})",
+            tuple(survivor_keys),
+        ):
+            survivors[s["normalized_key"]] = {"company": s["company"] or "", "title": s["title"] or ""}
+
+    out: list[dict] = []
+    for r in rows:
+        key = r["normalized_key"]
+        comm_count = len(list_job_conversations(conn, key))
+        item = {
+            "normalizedKey": key,
+            "company": r["company"] or "",
+            "title": r["title"] or "",
+            "status": r["status"] or "",
+            "matchPct": round(r["match_pct"] or 0.0, 1),
+            "verdict": r["llm_verdict"] or "",
+            "decidedAt": r["decided_at"] or "",
+            "ageDays": age_days_fn(r["first_seen"], now),
+            "commCount": comm_count,
+        }
+        dup_key = r["duplicate_of_key"]
+        if dup_key:
+            item["duplicateOfKey"] = dup_key
+            survivor = survivors.get(dup_key)
+            if survivor:
+                item["duplicateOfCompany"] = survivor["company"]
+                item["duplicateOfTitle"] = survivor["title"]
+        out.append(item)
+    out.sort(key=lambda l: l["decidedAt"], reverse=True)
+    return out
+
+
 def build_workflow_payload(
     data: dict,
     *,
@@ -1170,15 +1297,25 @@ def build_workflow_payload(
     from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT
 
     root = Path(output_root) if output_root else DEFAULT_OUTPUT_ROOT
+    dup_keys = _duplicate_keys(conn)
     for item in clarify:
         _attach_folder_links(item, conn=conn, output_root=root)
+        _attach_duplicate_count(item, dup_keys)
     for item in send_resume:
         _attach_folder_links(item, conn=conn, output_root=root)
+        _attach_duplicate_count(item, dup_keys)
     for item in wait_schedule:
         _attach_folder_links(item, conn=conn, output_root=root)
+        _attach_duplicate_count(item, dup_keys)
     for bucket in decide_apply.values():
         for item in bucket:
             _attach_folder_links(item, conn=conn, output_root=root)
+            _attach_duplicate_count(item, dup_keys)
+
+    archived_leads = _list_archived_leads(conn, age_days_fn=age_days_fn, now=now)
+    for item in archived_leads:
+        _attach_folder_links(item, conn=conn, output_root=root)
+        _attach_duplicate_count(item, dup_keys)
 
     decide_count = sum(len(v) for v in decide_apply.values())
     counts = {
@@ -1212,4 +1349,5 @@ def build_workflow_payload(
         "notPrioritizedCount": data.get("not_prioritized_count") or 0,
         "manualHandled": data.get("manual_handled") or [],
         "directRecruiterCount": data.get("direct_recruiter_count") or 0,
+        "archivedLeads": archived_leads,
     }

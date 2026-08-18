@@ -1,3 +1,5 @@
+import { DuplicateBadge } from './DuplicateBadge'
+import { leadAnchorId } from '../lib/links'
 import type { DecideLead, WorkflowPayload } from '../types'
 
 function revealFolderUrl(folderPath: string | undefined): string | null {
@@ -15,10 +17,14 @@ function LeadTable({
   title,
   rows,
   showApply,
+  onViewDuplicates,
+  highlightKey,
 }: {
   title: string
   rows: DecideLead[]
   showApply?: boolean
+  onViewDuplicates?: (normalizedKey: string, firstDuplicateKey?: string) => void
+  highlightKey?: string | null
 }) {
   if (!rows.length) return null
   return (
@@ -40,7 +46,12 @@ function LeadTable({
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.normalizedKey}>
+              <tr
+                key={r.normalizedKey}
+                id={leadAnchorId(r.normalizedKey)}
+                data-lead-key={r.normalizedKey}
+                className={r.normalizedKey === highlightKey ? 'lead-highlight' : undefined}
+              >
                 <td>
                   {r.companyFolderPath ? (
                     <a
@@ -69,6 +80,15 @@ function LeadTable({
                   ) : (
                     r.title
                   )}
+                  <DuplicateBadge
+                    count={r.duplicateCount}
+                    firstDuplicateKey={r.duplicateKeys?.[0]}
+                    onView={
+                      onViewDuplicates
+                        ? () => onViewDuplicates(r.normalizedKey, r.duplicateKeys?.[0])
+                        : undefined
+                    }
+                  />
                 </td>
                 <td className="num">{r.matchPct ?? '—'}</td>
                 <td className="num">{r.ageDays}d</td>
@@ -77,11 +97,11 @@ function LeadTable({
                     <span>{r.nextAction || r.actionHint || 'Review reviews → pursue or skip'}</span>
                     {viewCommunicationsUrl(r.company, r.title) && (
                       <a
-                        className="btn link"
+                        className="btn"
                         href={viewCommunicationsUrl(r.company, r.title)!}
                         title="Export and open full communications ODT for this lead"
                       >
-                        View communications
+                        History
                       </a>
                     )}
                   </div>
@@ -108,8 +128,12 @@ function LeadTable({
 
 export function DecideApplyStage({
   data,
+  onViewDuplicates,
+  highlightKey,
 }: {
   data: WorkflowPayload['stages']['decideApply']
+  onViewDuplicates?: (normalizedKey: string, firstDuplicateKey?: string) => void
+  highlightKey?: string | null
 }) {
   const total =
     data.readyToApply.length +
@@ -128,11 +152,37 @@ export function DecideApplyStage({
         Decide/apply is where you read the reviews and choose pursue (generate package) or skip.
         Contact priority Send résumé only appears after the package exists on disk.
       </p>
-      <LeadTable title="Ready to apply" rows={data.readyToApply} showApply />
-      <LeadTable title="Needs your decision" rows={data.needsDecision} />
-      <LeadTable title="Needs decision (forced package)" rows={data.needsDecisionForced} />
-      <LeadTable title="Awaiting full-LLM-review" rows={data.awaitingLlmReview} />
-      <LeadTable title="JD unresolved" rows={data.jdUnresolved} />
+      <LeadTable
+        title="Ready to apply"
+        rows={data.readyToApply}
+        showApply
+        onViewDuplicates={onViewDuplicates}
+        highlightKey={highlightKey}
+      />
+      <LeadTable
+        title="Needs your decision"
+        rows={data.needsDecision}
+        onViewDuplicates={onViewDuplicates}
+        highlightKey={highlightKey}
+      />
+      <LeadTable
+        title="Needs decision (forced package)"
+        rows={data.needsDecisionForced}
+        onViewDuplicates={onViewDuplicates}
+        highlightKey={highlightKey}
+      />
+      <LeadTable
+        title="Awaiting full-LLM-review"
+        rows={data.awaitingLlmReview}
+        onViewDuplicates={onViewDuplicates}
+        highlightKey={highlightKey}
+      />
+      <LeadTable
+        title="JD unresolved"
+        rows={data.jdUnresolved}
+        onViewDuplicates={onViewDuplicates}
+        highlightKey={highlightKey}
+      />
     </div>
   )
 }

@@ -652,7 +652,7 @@ th.num {
   gap: 6px;
 }
 
-.decide-actions .btn.link {
+.decide-actions .btn {
   font-size: 0.78rem;
 }
 
@@ -718,6 +718,234 @@ th.num {
   margin-top: 4px;
 }
 
+.archive-details {
+  margin-top: 20px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px 16px;
+  background: var(--panel);
+}
+
+.archive-details summary {
+  cursor: pointer;
+  font-weight: 650;
+  font-size: 1.02rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.archive-body {
+  margin-top: 14px;
+}
+
+.archive-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.archive-search {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: #12151c;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 7px 12px;
+  font: inherit;
+  font-size: 0.85rem;
+  min-width: 220px;
+}
+
+.archive-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.status-skipped {
+  color: var(--muted);
+}
+
+.status-rejected {
+  color: #ffb0b0;
+  border-color: rgba(217, 107, 107, 0.45);
+  background: rgba(217, 107, 107, 0.12);
+}
+
+.status-deleted {
+  opacity: 0.6;
+}
+
+.status-unavailable {
+  color: #f5d0a0;
+  border-color: rgba(138, 90, 32, 0.45);
+  background: rgba(138, 90, 32, 0.12);
+}
+
+.status-hired {
+  color: #8fd4a8;
+  border-color: rgba(76, 175, 125, 0.45);
+  background: rgba(76, 175, 125, 0.12);
+}
+
+/* Applied-or-beyond (2026-08-17) — a distinct blue family so "submitted,
+ * still in progress" reads differently at a glance from the green (hired)
+ * / red (rejected) / neutral (skipped) off-ramps above. */
+.status-applied,
+.status-following_up,
+.status-interviewing,
+.status-offered,
+.status-accepted,
+.status-started {
+  color: #a9c9f5;
+  border-color: rgba(70, 120, 200, 0.45);
+  background: rgba(70, 120, 200, 0.12);
+}
+
+.link-button {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-align: left;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
+.duplicate-of-link {
+  font-size: 0.85rem;
+}
+
+.dup-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-family: inherit;
+  font-weight: 600;
+  line-height: 1.4;
+  color: #7a5b00;
+  background: rgba(201, 162, 39, 0.18);
+  border: 1px solid rgba(201, 162, 39, 0.4);
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.dup-badge:hover {
+  background: rgba(201, 162, 39, 0.3);
+}
+
+.dup-jump-link {
+  margin-left: auto;
+  font-size: 0.82rem;
+}
+
+/** Flashed on a lead's row after jumping to it from the Duplicates skipped
+ * tab's "Go to this lead" link — the row is already normally visible
+ * (no closed-container scroll guessing), so a plain CSS animation is
+ * enough to draw the eye to it. */
+.lead-highlight {
+  animation: lead-highlight-flash 2.5s ease-out;
+}
+
+@keyframes lead-highlight-flash {
+  0%,
+  35% {
+    background: rgba(201, 162, 39, 0.22);
+    outline: 2px solid rgba(201, 162, 39, 0.55);
+    outline-offset: 2px;
+  }
+  100% {
+    background: transparent;
+    outline: 2px solid transparent;
+  }
+}
+
+.duplicate-filter-banner {
+  margin: 4px 0 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(201, 162, 39, 0.12);
+  border: 1px solid rgba(201, 162, 39, 0.3);
+}
+
+.duplicate-filter-banner .link-button {
+  color: #f0c97a;
+  font-weight: 650;
+}
+
+.dup-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dup-group {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #12151c;
+  padding: 10px 14px;
+}
+
+/* Lasting marker (outlives the 2.5s .lead-highlight row flash) on whichever
+ * group was jumped to via a "N duplicates" badge, so it's easy to spot even
+ * after scrolling around among all the other groups still shown below it. */
+.dup-group-focused {
+  border-color: rgba(201, 162, 39, 0.55);
+  box-shadow: 0 0 0 1px rgba(201, 162, 39, 0.25);
+}
+
+.dup-group-summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  list-style: none;
+}
+
+.dup-group-summary::-webkit-details-marker {
+  display: none;
+}
+
+.dup-group-icon {
+  font-size: 0.95rem;
+}
+
+.dup-group-title {
+  flex: 1;
+}
+
+.dup-group-table {
+  width: 100%;
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.dup-group-table th {
+  text-align: left;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  padding: 4px 8px;
+}
+
+.dup-group-table td {
+  padding: 4px 8px;
+  font-size: 0.88rem;
+}
+
 @media (max-width: 720px) {
   .top {
     flex-direction: column;
@@ -740,4 +968,112 @@ th.num {
     position: relative;
     max-height: none;
   }
+}
+
+.cycle-word-trigger {
+  color: inherit;
+  font-weight: 700;
+  text-decoration: underline dotted;
+  text-decoration-color: var(--muted);
+}
+
+.cycle-word-trigger:hover {
+  color: var(--accent);
+  text-decoration-color: var(--accent);
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 5, 7, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 100;
+}
+
+.modal-dialog {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  max-width: 560px;
+  width: 100%;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.modal-head h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.modal-close {
+  font-size: 1rem;
+  color: var(--muted);
+}
+
+.cycle-steps-list {
+  list-style: decimal;
+  margin: 12px 0 0;
+  padding-left: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cycle-steps-list li {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.cycle-steps-list li:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.cycle-step-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.cycle-step-title {
+  font-weight: 600;
+}
+
+.cycle-step-time {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 0.85rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.cycle-step-detail {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.cycle-step-failed .cycle-step-time {
+  color: var(--danger);
+}
+
+.cycle-step-timed_out .cycle-step-time {
+  color: var(--warn);
+}
+
+.cycle-step-incomplete .cycle-step-time {
+  color: var(--accent);
 }

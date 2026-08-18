@@ -18,14 +18,20 @@ import os
 import sqlite3
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_SRC = _REPO_ROOT / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from job_tracker.pipeline import db_lock  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = REPO_ROOT / "var" / "leads.db"
 DEFAULT_STATE = REPO_ROOT / "var" / "comms_fast_state.json"
-DEFAULT_LOCK = REPO_ROOT / "var" / "comms_fast.lock"
+DEFAULT_LOCK = db_lock.DEFAULT_LOCK_PATH
 UI_URL = "http://127.0.0.1:3174/"
 WORKSPACE = REPO_ROOT.parent
 COMMS_REPO = WORKSPACE / "comms-migration"
@@ -43,7 +49,10 @@ def _venv_python(repo: Path) -> Path:
 
 
 def _connect(db: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db)
+    # timeout=30 so a brief overlap with the hourly run_cycle.sh's
+    # heavier writes waits instead of immediately raising "database is
+    # locked" (see store.connect's matching fix, 2026-08-18).
+    conn = sqlite3.connect(db, timeout=30.0)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -288,20 +297,6 @@ def save_state(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
-def acquire_lock(lock_path: Path):
-    """Non-blocking exclusive lock (macOS has no flock(1); use fcntl)."""
-    import fcntl
-
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(lock_path, "a+", encoding="utf-8")
-    try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        fh.close()
-        return None
-    return fh
-
-
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--db", type=Path, default=DEFAULT_DB)
@@ -323,18 +318,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"DB not found: {args.db}", file=sys.stderr)
         return 1
 
-    lock_fh = None
-    deadline = time.monotonic() + max(0.0, float(args.wait_lock_seconds))
-    while True:
-        lock_fh = acquire_lock(args.lock)
-        if lock_fh is not None:
-            break
-        if time.monotonic() >= deadline:
-            print("comms_fast: previous tick still running — skip", flush=True)
-            # Non-zero so the Reply-sent helper can surface a clear failure
-            # instead of the UI spinning until generatedAt never changes.
-            return 75
-        time.sleep(0.5)
+    lock_fh = db_lock.acquire(args.lock, wait_seconds=args.wait_lock_seconds)
+    if lock_fh is None:
+        print("comms_fast: previous tick still running — skip", flush=True)
+        # Non-zero so the Reply-sent helper can surface a clear failure
+        # instead of the UI spinning until generatedAt never changes.
+        return db_lock.LOCK_BUSY_EXIT_CODE
 
     try:
         before = take_snapshot(args.db)
@@ -368,13 +357,7 @@ def main(argv: list[str] | None = None) -> int:
             # Still exit 0 so launchd interval does not thrash; errors are logged.
         return 0
     finally:
-        try:
-            import fcntl
-
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
-        except Exception:
-            pass
-        lock_fh.close()
+        db_lock.release(lock_fh)
 
 
 if __name__ == "__main__":

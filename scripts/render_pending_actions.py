@@ -86,7 +86,8 @@ STALE_DAYS_THRESHOLD = 21
 _LEAD_COLUMNS = (
     "normalized_key, company, title, status, jd_text, jd_resolved, "
     "match_pct, matched_skills, verdict, rationale, "
-    "llm_verdict, llm_match_pct, first_seen, apply_url, direct_recruiter_outreach"
+    "llm_verdict, llm_match_pct, first_seen, apply_url, direct_recruiter_outreach, "
+    "package_generated_at"
 )
 
 
@@ -268,6 +269,78 @@ def _calendar_month_uptime(logs_dir: Path, *, now: datetime) -> dict:
     }
 
 
+# Matches lib/cycle_safety.sh's run_step() log lines exactly: it always
+# logs "--- $desc ---" before a step and exactly one terminal line after
+# (OK: $desc / FAILED: $desc (exit N) / TIMED OUT: $desc (>Ns ...)) — never
+# both, since stop_schedule() exits the whole script immediately after
+# logging TIMED OUT. See that function for why.
+_STEP_LOG_TS_FORMAT = "%Y-%m-%d %H:%M:%S %z"
+_STEP_START_RE = re.compile(r"^\[(?P<ts>[^\]]+)\] --- (?P<desc>.+) ---$")
+_STEP_OK_RE = re.compile(r"^\[(?P<ts>[^\]]+)\] OK: (?P<desc>.+)$")
+_STEP_FAILED_RE = re.compile(r"^\[(?P<ts>[^\]]+)\] FAILED: (?P<desc>.+) \(exit \d+\)$")
+_STEP_TIMED_OUT_RE = re.compile(r"^\[(?P<ts>[^\]]+)\] TIMED OUT: (?P<desc>.+) \(>\d+s.*\)$")
+
+
+def _parse_latest_cycle_step_timings(logs_dir: Path) -> list[dict]:
+    """Per-step wall-clock time for the most recent recruiting-automation
+    cycle log (2026-08-18), for the Pending-actions "cycle" info modal —
+    parses run_cycle.sh's own timestamped log() lines instead of
+    duplicating step names/order here, so it stays correct even as steps
+    are added/reordered/reworded in that (sibling-repo) script.
+
+    A step still in flight when the log ends (cycle still running, or
+    halted mid-step with no terminal line at all — shouldn't happen since
+    run_step always logs one, but don't assume) is reported with
+    `seconds: None, status: "incomplete"` rather than silently omitted."""
+    logs = sorted(logs_dir.glob("run-*.log")) if logs_dir.is_dir() else []
+    if not logs:
+        return []
+    try:
+        lines = logs[-1].read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+
+    def _parse_ts(raw: str) -> datetime | None:
+        try:
+            return datetime.strptime(raw, _STEP_LOG_TS_FORMAT)
+        except ValueError:
+            return None
+
+    steps: list[dict] = []
+    current: dict | None = None  # {"desc": str, "start": datetime | None}
+
+    for line in lines:
+        start_match = _STEP_START_RE.match(line)
+        if start_match:
+            if current is not None:
+                steps.append({"title": current["desc"], "seconds": None, "status": "incomplete"})
+            current = {"desc": start_match["desc"], "start": _parse_ts(start_match["ts"])}
+            continue
+        if current is None:
+            continue
+        for pattern, status in (
+            (_STEP_OK_RE, "ok"),
+            (_STEP_FAILED_RE, "failed"),
+            (_STEP_TIMED_OUT_RE, "timed_out"),
+        ):
+            end_match = pattern.match(line)
+            if end_match and end_match["desc"] == current["desc"]:
+                end_ts = _parse_ts(end_match["ts"])
+                seconds = (
+                    (end_ts - current["start"]).total_seconds()
+                    if end_ts and current["start"]
+                    else None
+                )
+                steps.append({"title": current["desc"], "seconds": seconds, "status": status})
+                current = None
+                break
+
+    if current is not None:
+        steps.append({"title": current["desc"], "seconds": None, "status": "incomplete"})
+
+    return steps
+
+
 def _read_automation_schedule_health(
     state_dir: Path, *, now: datetime, stale_hours: int = STALE_CYCLE_HOURS
 ) -> dict:
@@ -284,6 +357,7 @@ def _read_automation_schedule_health(
 
     last_ok_epoch: int | None = None
     last_ok_iso = ""
+    last_ok_at_iso = ""
     hours_since_ok: float | None = None
     if last_ok_path.is_file():
         raw = last_ok_path.read_text(encoding="utf-8").strip()
@@ -291,6 +365,14 @@ def _read_automation_schedule_health(
             last_ok_epoch = int(raw)
             last_ok_dt = datetime.fromtimestamp(last_ok_epoch, tz=timezone.utc).astimezone()
             last_ok_iso = last_ok_dt.strftime("%Y-%m-%d %H:%M %Z")
+            # Machine-parseable twin of last_ok_iso above (2026-08-18) — that
+            # one's "%Z" abbreviation (e.g. "MDT") isn't reliably parseable by
+            # JS's `new Date()`, so the React UI can't tick a live "ago"
+            # counter off it the way it already does for generatedAt. This
+            # uses the same `.isoformat()` shape as generatedAt for exactly
+            # that reason — see pending_workflow.build_workflow_payload's
+            # generated_iso and App.tsx's formatGeneratedAgo.
+            last_ok_at_iso = last_ok_dt.isoformat()
             hours_since_ok = max(0.0, (now.astimezone() - last_ok_dt).total_seconds() / 3600.0)
         except ValueError:
             last_ok_epoch = None
@@ -307,6 +389,7 @@ def _read_automation_schedule_health(
             expiry_iso = ""
 
     month_uptime = _calendar_month_uptime(logs_dir, now=now)
+    cycle_steps = _parse_latest_cycle_step_timings(logs_dir)
 
     stale = hours_since_ok is not None and hours_since_ok >= stale_hours
     if halted:
@@ -331,12 +414,14 @@ def _read_automation_schedule_health(
         "halted": halted,
         "haltReason": halt_reason,
         "lastOkIso": last_ok_iso,
+        "lastOkAtIso": last_ok_at_iso,
         "hoursSinceOk": None if hours_since_ok is None else round(hours_since_ok, 1),
         "stale": stale,
         "staleHoursThreshold": stale_hours,
         "expiryIso": expiry_iso,
         "stateDir": str(state_dir),
         "monthUptime": month_uptime,
+        "cycleSteps": cycle_steps,
     }
 
 
@@ -487,7 +572,14 @@ def render(conn, *, output_root: Path, now: datetime, automation_state_dir: Path
             if r["llm_verdict"] == "pursue" and _has_resume_and_cover(output_root / folder_path):
                 ready_to_apply.append({**entry, "matchPct": pct})
             else:
-                needs_decision_forced.append({**entry, "matchPct": pct, "verdict": r["llm_verdict"] or "review"})
+                needs_decision_forced.append(
+                    {
+                        **entry,
+                        "matchPct": pct,
+                        "verdict": r["llm_verdict"] or "review",
+                        "packageGeneratedAt": r["package_generated_at"] or "",
+                    }
+                )
             continue
 
         # status == "new" from here down.
@@ -528,7 +620,13 @@ def render(conn, *, output_root: Path, now: datetime, automation_state_dir: Path
     jd_unresolved.sort(key=lambda l: (-l["ageDays"], l["company"].lower()))
     awaiting_llm_review.sort(key=lambda l: (-l["ageDays"], -l["matchPct"]))
     needs_decision.sort(key=lambda l: (-l["ageDays"], -l["matchPct"]))
-    needs_decision_forced.sort(key=lambda l: (-l["ageDays"], -l["matchPct"]))
+    # Exception to the oldest-first rule above: every lead here already has a
+    # forced (--force / --force-llm-review) résumé + cover letter on disk
+    # despite a non-pursue LLM verdict — i.e. a human already spent effort
+    # overriding the review call. The one you *just* forced is what you're
+    # mid-decision on right now, so it belongs on top regardless of how old
+    # the lead itself is; staler forced-but-undecided leads sort below that.
+    needs_decision_forced.sort(key=lambda l: (l.get("packageGeneratedAt") or "", l["matchPct"]), reverse=True)
     ready_to_apply.sort(key=lambda l: (-l["ageDays"], -l["matchPct"]))
 
     unmatched_communications = []

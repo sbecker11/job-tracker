@@ -274,6 +274,14 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     ("job_conversations", "body_text", "ALTER TABLE job_conversations ADD COLUMN body_text TEXT"),
     # LinkedIn reply-card dismiss from pending-actions (2026-08-04).
     ("unmatched_messages", "dismissed_at", "ALTER TABLE unmatched_messages ADD COLUMN dismissed_at TEXT"),
+    # Duplicate-lead linkage (2026-08-17) — see mark_duplicate()/
+    # list_duplicates_of() below. NULL for every lead skipped for its own
+    # reasons (dealbreaker, JD mismatch, no longer interested, etc.); only
+    # set when a lead is the same real opportunity as another row already
+    # in job_leads, so "what did I skip because of *this* lead" stays
+    # answerable after the fact — a plain `status='skipped'` alone doesn't
+    # say why.
+    ("job_leads", "duplicate_of_key", "ALTER TABLE job_leads ADD COLUMN duplicate_of_key TEXT"),
 ]
 
 # models.LEAD_STAGES -> the timestamp column stamped when a lead enters that
@@ -353,11 +361,21 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def connect(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
+def connect(db_path: Path = DEFAULT_DB_PATH, *, timeout: float = 30.0) -> sqlite3.Connection:
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
+    # timeout=30 (was the sqlite3 default of 5s) + WAL: the hourly
+    # run_cycle.sh's triage_recruiter_inbox step can hold this DB open for
+    # 10+ minutes of LLM-heavy work interleaved with per-lead commits, while
+    # the independent 3-minute comms_fast_cycle.py LaunchAgent tick writes
+    # to the same file — a 5s busy-wait wasn't always enough margin and
+    # surfaced as "sqlite3.OperationalError: database is locked" (which
+    # HALTs the whole automated schedule). WAL journal mode also lets
+    # readers proceed without blocking on a writer, shrinking how often
+    # contention happens at all. Added 2026-08-18.
+    conn = sqlite3.connect(str(db_path), timeout=timeout)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
     conn.commit()
     _apply_migrations(conn)
@@ -703,6 +721,65 @@ def advance_status(
         )
     conn.commit()
     return True
+
+
+def mark_duplicate(
+    conn: sqlite3.Connection, normalized_key: str, *, duplicate_of_key: str, when: str | None = None
+) -> bool:
+    """Skip `normalized_key` and record that it's a duplicate of
+    `duplicate_of_key` — the other `job_leads` row representing the same
+    real opportunity (e.g. the same posting shopped by a second recruiter,
+    or a bad extraction that turned out to be a second copy of an
+    already-tracked lead). Unlike a plain `advance_status(key, "skipped")`,
+    this leaves a queryable trail: `list_duplicates_of(duplicate_of_key)`
+    can later answer "what did I skip because of this lead", which a bare
+    status flip can't. `duplicate_of_key` need not itself be active — two
+    dead-end copies of the same declined opportunity can still point at
+    each other (whichever was evaluated first is the natural anchor).
+
+    Added 2026-08-17 after a session of manual duplicate cleanup (see
+    `merge_leads.py`'s MERGE mode for the destructive alternative — full
+    CRM-history merge + hard delete — when you don't want to keep the
+    duplicate's row at all) left no queryable trace of which lead
+    superseded which.
+
+    Raises ValueError if `duplicate_of_key` equals `normalized_key` or
+    doesn't name a real row. Returns whatever `advance_status(..., "skipped")`
+    returns (True unless somehow already past that off-ramp in a way that
+    blocks it — in practice always True, since "skipped" is an off-ramp
+    that always applies).
+    """
+    if duplicate_of_key == normalized_key:
+        raise ValueError("a lead cannot be a duplicate of itself")
+    survivor = conn.execute(
+        "SELECT 1 FROM job_leads WHERE normalized_key = ?", (duplicate_of_key,)
+    ).fetchone()
+    if survivor is None:
+        raise ValueError(f"duplicate_of_key not found in job_leads: {duplicate_of_key!r}")
+
+    ok = advance_status(conn, normalized_key, "skipped", when=when, force=True)
+    conn.execute(
+        "UPDATE job_leads SET duplicate_of_key = ? WHERE normalized_key = ?",
+        (duplicate_of_key, normalized_key),
+    )
+    conn.commit()
+    return ok
+
+
+def list_duplicates_of(conn: sqlite3.Connection, normalized_key: str) -> list[dict]:
+    """Every lead whose `duplicate_of_key` points at `normalized_key` — i.e.
+    what got skipped specifically *because* this lead is the same real
+    opportunity. Sorted most-recently-skipped first. See `mark_duplicate()`."""
+    rows = conn.execute(
+        """
+        SELECT normalized_key, company, title, status, first_seen, skipped_at
+        FROM job_leads
+        WHERE duplicate_of_key = ?
+        ORDER BY skipped_at DESC
+        """,
+        (normalized_key,),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def heal_applied_status_lags(

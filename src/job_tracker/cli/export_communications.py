@@ -33,7 +33,12 @@ from job_tracker.pipeline.store import (
     get_sibling_titles,
     list_job_contacts,
     list_job_conversations,
+    list_job_documents,
 )
+
+# Not listed in the "Documents on file" section — it's this export itself,
+# and listing it would just be the file linking to its own prior versions.
+_DOC_TYPE_SELF = "communications_export"
 
 
 def _xml_text(text: str) -> str:
@@ -56,6 +61,7 @@ def _render_odt(
     title: str,
     conversations,
     contacts_by_id: dict,
+    documents,
     out_path: Path,
 ) -> None:
     """Write a minimal ODF Text document (no odfpy — stdlib zip + XML)."""
@@ -67,6 +73,19 @@ def _render_odt(
         ),
         _p(""),
     ]
+
+    docs = [d for d in documents if d["doc_type"] != _DOC_TYPE_SELF]
+    if docs:
+        parts.append(_p("Documents on file", style="Heading"))
+        for doc in docs:
+            parts.append(
+                _p(
+                    f"{doc['doc_type']} (v{doc['version']}), attached {doc['created_at']}: "
+                    f"{doc['path_or_url']}",
+                    style="Summary",
+                )
+            )
+        parts.append(_p(""))
 
     for convo in conversations:
         contact = contacts_by_id.get(convo["contact_id"])
@@ -192,13 +211,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         contacts_by_id = {c["id"]: c for c in list_job_contacts(conn, job_key)}
+        documents = list_job_documents(conn, job_key)
         multi_lead = len(get_sibling_titles(conn, args.company, exclude_title=args.title)) > 0
         job_dir = _job_folder(
             args.output_root, company=args.company, title=args.title, multi_lead=multi_lead
         )
         out_path = job_dir / "communications" / f"Communications_{_safe_filename(args.title)}.odt"
 
-        _render_odt(job_key, args.company, args.title, conversations, contacts_by_id, out_path)
+        _render_odt(job_key, args.company, args.title, conversations, contacts_by_id, documents, out_path)
 
         add_job_document(
             conn,

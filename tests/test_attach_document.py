@@ -20,12 +20,17 @@ def seeded_db(tmp_path: Path) -> Path:
     return db_path
 
 
-def test_attach_document_stores_local_file_path(seeded_db: Path, tmp_path: Path):
+def test_attach_document_snapshots_local_file_by_default(seeded_db: Path, tmp_path: Path):
     rtr_path = tmp_path / "signed_rtr.pdf"
     rtr_path.write_text("fake pdf contents", encoding="utf-8")
+    output_root = tmp_path / "packages"
 
     rc = attach_document_main(
-        ["--db", str(seeded_db), "--company", "Acme", "--title", "Software Engineer", "--doc-type", "rtr", "--file", str(rtr_path)]
+        [
+            "--db", str(seeded_db), "--output-root", str(output_root),
+            "--company", "Acme", "--title", "Software Engineer",
+            "--doc-type", "rtr", "--file", str(rtr_path),
+        ]
     )
     assert rc == 0
 
@@ -34,6 +39,37 @@ def test_attach_document_stores_local_file_path(seeded_db: Path, tmp_path: Path)
     docs = list_job_documents(conn, key)
     assert len(docs) == 1
     assert docs[0]["doc_type"] == "rtr"
+    # Not the original path — an immutable, timestamped copy under this
+    # job's document_snapshots/ folder, so later edits to the source file
+    # can't rewrite history.
+    snapshot_path = Path(docs[0]["path_or_url"])
+    assert snapshot_path != rtr_path
+    assert snapshot_path.parent.name == "document_snapshots"
+    assert snapshot_path.is_relative_to(output_root)
+    assert snapshot_path.read_text(encoding="utf-8") == "fake pdf contents"
+
+    # Prove the snapshot is truly independent: editing the source afterward
+    # must not change the archived copy.
+    rtr_path.write_text("edited later — should not affect the snapshot", encoding="utf-8")
+    assert snapshot_path.read_text(encoding="utf-8") == "fake pdf contents"
+    conn.close()
+
+
+def test_attach_document_no_snapshot_stores_original_path(seeded_db: Path, tmp_path: Path):
+    rtr_path = tmp_path / "signed_rtr.pdf"
+    rtr_path.write_text("fake pdf contents", encoding="utf-8")
+
+    rc = attach_document_main(
+        [
+            "--db", str(seeded_db), "--company", "Acme", "--title", "Software Engineer",
+            "--doc-type", "rtr", "--file", str(rtr_path), "--no-snapshot",
+        ]
+    )
+    assert rc == 0
+
+    conn = connect(seeded_db)
+    key = conn.execute("SELECT normalized_key FROM job_leads WHERE company = 'Acme'").fetchone()["normalized_key"]
+    docs = list_job_documents(conn, key)
     assert docs[0]["path_or_url"] == str(rtr_path)
     conn.close()
 
@@ -76,14 +112,21 @@ def test_attach_document_versions_repeat_doc_types(seeded_db: Path, tmp_path: Pa
     f2 = tmp_path / "resume_v2.docx"
     f1.write_text("v1", encoding="utf-8")
     f2.write_text("v2", encoding="utf-8")
+    output_root = tmp_path / "packages"
 
-    attach_document_main(["--db", str(seeded_db), "--company", "Acme", "--title", "Software Engineer", "--doc-type", "resume", "--file", str(f1)])
-    attach_document_main(["--db", str(seeded_db), "--company", "Acme", "--title", "Software Engineer", "--doc-type", "resume", "--file", str(f2)])
+    attach_document_main(
+        ["--db", str(seeded_db), "--output-root", str(output_root), "--company", "Acme", "--title", "Software Engineer", "--doc-type", "resume", "--file", str(f1)]
+    )
+    attach_document_main(
+        ["--db", str(seeded_db), "--output-root", str(output_root), "--company", "Acme", "--title", "Software Engineer", "--doc-type", "resume", "--file", str(f2)]
+    )
 
     conn = connect(seeded_db)
     key = conn.execute("SELECT normalized_key FROM job_leads WHERE company = 'Acme'").fetchone()["normalized_key"]
     docs = sorted(list_job_documents(conn, key), key=lambda d: d["version"])
     assert [d["version"] for d in docs] == [1, 2]
+    assert Path(docs[0]["path_or_url"]).read_text(encoding="utf-8") == "v1"
+    assert Path(docs[1]["path_or_url"]).read_text(encoding="utf-8") == "v2"
     conn.close()
 
 

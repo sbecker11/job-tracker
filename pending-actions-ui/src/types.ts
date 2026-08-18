@@ -1,5 +1,17 @@
 export type PipelineStageId = 'clarify' | 'send_resume' | 'wait_schedule' | 'decide_apply'
 
+/** One `run_step` call's outcome from the latest recruiting-automation
+ * cycle log — `title` is that step's exact log description string (see
+ * recruiting-automation/run_cycle.sh), matched by prefix against the
+ * static step list in ScheduleHealthBanner.tsx rather than duplicated
+ * verbatim there, so cosmetic rewording in that sibling repo's script
+ * doesn't silently break the match. */
+export interface CycleStepTiming {
+  title: string
+  seconds: number | null
+  status: 'ok' | 'failed' | 'timed_out' | 'incomplete'
+}
+
 export type Channel = 'linkedin' | 'email'
 
 export interface PipelineStage {
@@ -35,6 +47,11 @@ export interface ClarifyItem {
   nextAction?: string
   folderPath?: string
   companyFolderPath?: string
+  /** Count of, and normalizedKeys for, other leads marked as duplicates of
+   * this one (store.mark_duplicate). Only present (and non-empty) when at
+   * least one exists — see the "Duplicates skipped" tab in App.tsx. */
+  duplicateCount?: number
+  duplicateKeys?: string[]
 }
 
 export interface SendResumeItem {
@@ -61,6 +78,8 @@ export interface SendResumeItem {
   markSentUrl?: string
   actionHint?: string
   nextAction?: string
+  duplicateCount?: number
+  duplicateKeys?: string[]
 }
 
 export interface WaitItem {
@@ -88,6 +107,8 @@ export interface WaitItem {
   companyFolderPath?: string
   actionHint?: string
   nextAction?: string
+  duplicateCount?: number
+  duplicateKeys?: string[]
 }
 
 export interface DecideLead {
@@ -104,6 +125,37 @@ export interface DecideLead {
   resumeRequested?: boolean
   nextAction?: string
   actionHint?: string
+  duplicateCount?: number
+  duplicateKeys?: string[]
+}
+
+/** A lead a decision has already been made on (skipped/rejected/deleted/
+ * unavailable/hired) — off the active funnel, but still browsable for its
+ * message history via commCount + View communications. */
+export interface ArchivedLead {
+  normalizedKey: string
+  company: string
+  title: string
+  status: string
+  matchPct?: number
+  verdict?: string
+  decidedAt?: string
+  ageDays: number
+  commCount: number
+  folderPath?: string
+  companyFolderPath?: string
+  /** Set when this lead was skipped specifically because it's the same
+   * real opportunity as another job_leads row (store.mark_duplicate) —
+   * distinct from a plain skip (dealbreaker, JD mismatch, etc.). */
+  duplicateOfKey?: string
+  duplicateOfCompany?: string
+  duplicateOfTitle?: string
+  /** Count of, and normalizedKeys for, other leads marked as duplicates of
+   * THIS lead (i.e. this lead is itself a survivor with its own duplicates,
+   * distinct from duplicateOfKey above which is set when this lead IS a
+   * duplicate of something else). */
+  duplicateCount?: number
+  duplicateKeys?: string[]
 }
 
 export interface WorkflowPayload {
@@ -128,7 +180,20 @@ export interface WorkflowPayload {
   scheduleHealth?: {
     level?: string
     summary?: string
+    /** ISO timestamp of the last successful cycle (`state/last_ok_cycle`),
+     * parseable by `new Date()` — lets the UI tick a live "ago" counter
+     * the same way it already does for `generatedAt` (see App.tsx's
+     * formatGeneratedAgo), instead of just showing the server-rendered
+     * `summary` string as of whenever this JSON was last regenerated. */
+    lastOkAtIso?: string
+    /** Per-step wall-clock time from the most recent recruiting-automation
+     * cycle log (see render_pending_actions.py's
+     * `_parse_latest_cycle_step_timings`) — one entry per `run_step` call
+     * in that cycle's log, in the order they ran. May be empty if no log
+     * was found yet. */
+    cycleSteps?: CycleStepTiming[]
   }
+  archivedLeads?: ArchivedLead[]
 }
 
 export const STAGE_ORDER: PipelineStageId[] = [

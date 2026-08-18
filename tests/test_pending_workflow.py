@@ -10,6 +10,7 @@ from job_tracker.pipeline.pending_workflow import build_workflow_payload
 from job_tracker.pipeline.store import (
     add_job_conversation,
     connect,
+    mark_duplicate,
     record_unmatched_message,
     upsert_lead,
 )
@@ -416,6 +417,115 @@ def test_recruiter_followup_after_outbound_is_clarify_reply_due(tmp_path: Path):
     assert hit["unansweredDays"] >= 2
     assert "Recruiter followed up" in hit["nextAction"]
     assert hit["draftReply"]
+
+
+def test_archived_leads_include_duplicate_of_survivor_details(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    survivor = JobLead(
+        company="NeoTek", title="AWS AI Engineer", source_message_id="m1", source_label="single-jd"
+    )
+    dup = JobLead(
+        company="Department of Medicaid",
+        title="AWS AI Engineer",
+        source_message_id="m2",
+        source_label="single-jd",
+    )
+    plain_skip = JobLead(company="Acme", title="Backend Engineer", source_message_id="m3", source_label="single-jd")
+    upsert_lead(conn, survivor)
+    upsert_lead(conn, dup)
+    upsert_lead(conn, plain_skip)
+    mark_duplicate(conn, dup.normalized_key, duplicate_of_key=survivor.normalized_key)
+    from job_tracker.pipeline.store import advance_status
+
+    advance_status(conn, plain_skip.normalized_key, "skipped")
+
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    workflow = build_workflow_payload(
+        data, conn=conn, age_days_fn=render_pending_actions._age_days, now=NOW, output_root=tmp_path
+    )
+    conn.close()
+
+    archived = workflow["archivedLeads"]
+    dup_item = next(i for i in archived if i["normalizedKey"] == dup.normalized_key)
+    assert dup_item["duplicateOfKey"] == survivor.normalized_key
+    assert dup_item["duplicateOfCompany"] == "NeoTek"
+    assert dup_item["duplicateOfTitle"] == "AWS AI Engineer"
+
+    plain_item = next(i for i in archived if i["normalizedKey"] == plain_skip.normalized_key)
+    assert "duplicateOfKey" not in plain_item
+
+
+def test_duplicate_count_surfaces_on_survivor_wherever_it_appears(tmp_path: Path):
+    """A survivor lead should show its duplicateCount in whatever stage it
+    naturally lands in (not only once it's archived) — added 2026-08-17 so
+    "how do I see duplicates of the lead I'm looking at right now" works
+    from Decide/apply, not just the dedicated Duplicate leads folder."""
+    conn = connect(tmp_path / "leads.db")
+    survivor = JobLead(
+        company="NeoTek",
+        title="AWS AI Engineer",
+        source_message_id="m-neo",
+        source_label="linkedin_message",
+        jd_text="python aws sagemaker",
+        match_pct=88.0,
+        verdict="pursue",
+    )
+    upsert_lead(conn, survivor)
+    conn.execute(
+        "UPDATE job_leads SET llm_verdict = ?, llm_match_pct = ? WHERE normalized_key = ?",
+        ("review", 52.0, survivor.normalized_key),
+    )
+    conn.commit()
+    dup = JobLead(
+        company="Department of Medicaid",
+        title="AWS AI Engineer",
+        source_message_id="m-dom",
+        source_label="single-jd",
+    )
+    upsert_lead(conn, dup)
+    mark_duplicate(conn, dup.normalized_key, duplicate_of_key=survivor.normalized_key)
+
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    workflow = build_workflow_payload(
+        data, conn=conn, age_days_fn=render_pending_actions._age_days, now=NOW, output_root=tmp_path
+    )
+    conn.close()
+
+    needs = workflow["stages"]["decideApply"]["needsDecision"]
+    hit = next(i for i in needs if i.get("normalizedKey") == survivor.normalized_key)
+    assert hit["duplicateCount"] == 1
+    assert hit["duplicateKeys"] == [dup.normalized_key]
+
+
+def test_applied_or_beyond_lead_still_appears_in_archived_leads(tmp_path: Path):
+    """A survivor lead that's since moved past the apply gate (status
+    "applied"/"interviewing"/etc.) is absent from every clarify/send_resume/
+    wait_schedule/decide_apply bucket — added 2026-08-17 after a duplicate's
+    "Go to this lead" link hit a dead end for exactly this case: the
+    survivor wasn't in the active funnel, and (before this test/fix) wasn't
+    in archivedLeads either, so nothing in the whole payload could name it
+    as a real, linkable row."""
+    conn = connect(tmp_path / "leads.db")
+    survivor = JobLead(
+        company="Upstart", title="Sr Software Engineer - Lending Platform", source_message_id="m1", source_label="single-jd"
+    )
+    upsert_lead(conn, survivor)
+    from job_tracker.pipeline.store import advance_status
+
+    advance_status(conn, survivor.normalized_key, "applied")
+
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    workflow = build_workflow_payload(
+        data, conn=conn, age_days_fn=render_pending_actions._age_days, now=NOW, output_root=tmp_path
+    )
+    conn.close()
+
+    for bucket in workflow["stages"]["decideApply"].values():
+        assert all(i["normalizedKey"] != survivor.normalized_key for i in bucket)
+
+    archived = workflow["archivedLeads"]
+    hit = next(i for i in archived if i["normalizedKey"] == survivor.normalized_key)
+    assert hit["status"] == "applied"
 
 
 def test_recruiting_gmail_message_url_pins_authuser():

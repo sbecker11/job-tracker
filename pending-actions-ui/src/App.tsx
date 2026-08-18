@@ -1,11 +1,17 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { ArchivedLeadsPanel } from './components/ArchivedLeadsPanel'
 import { ContactFilterBar, decideApplyCount } from './components/ContactFilterBar'
 import { ContactPriorityQueue } from './components/ContactPriorityQueue'
 import { DecideApplyStage } from './components/DecideApplyStage'
+import { DuplicatesSkippedPanel } from './components/DuplicatesSkippedPanel'
+import { ScheduleHealthBanner } from './components/ScheduleHealthBanner'
+import { scrollToLeadRow } from './lib/links'
 import {
+  allLeadKeys,
   buildContactPriorityQueue,
   contactQueueCounts,
   filterContactQueue,
+  locateLeadTab,
   replyAckKey,
   type ContactFilter,
   type ContactPriorityItem,
@@ -18,11 +24,23 @@ const DATA_URL = '/pending-actions.json'
 const REGEN_HREF = 'refreshpending://run?no_open=1'
 /** Custom URL helper runs comms_fast_cycle.py (see tools/reply-sent). */
 const REPLY_SENT_HREF = 'replysent://run'
+/** Custom URL helper runs triage_imap_now.py (see tools/triage-imap-now). */
+const TRIAGE_IMAP_HREF = 'triageimap://run'
 /** Max time to keep the spinner if the helper never finishes / isn't installed. */
 const REGEN_TIMEOUT_MS = 120_000
 /** Full mailbox tick is slower than render-only; allow ~3 minutes. */
 const REPLY_SENT_TIMEOUT_MS = 180_000
+/** Full JD-resolve + LLM-extract + LLM-score + generate for one message can
+ * run longer than the lightweight Reply-sent scan; allow ~4 minutes. */
+const TRIAGE_IMAP_TIMEOUT_MS = 240_000
 const REGEN_POLL_MS = 1500
+/** How often to silently re-fetch pending-actions.json in the background
+ * (see the effect that uses this below). Faster than comms_fast_cycle.py's
+ * own ~3-minute LaunchAgent cadence — this is just a cheap static-file GET,
+ * not an LLM-billed step, so polling a bit ahead of "how often the backend
+ * could realistically have new data" is fine and keeps a left-open tab
+ * from ever drifting more than ~1 minute stale. */
+const BACKGROUND_REFRESH_MS = 60_000
 /** Inbound message ids whose Reply sent already completed (survives refresh). */
 const REPLY_SENT_ACK_STORAGE_KEY = 'pending-actions.replySentAck'
 
@@ -59,6 +77,37 @@ async function fetchWorkflow(): Promise<WorkflowPayload> {
   return res.json() as Promise<WorkflowPayload>
 }
 
+/** "last generated HH:MM:SS ago", ticking live off `nowMs`. */
+function formatGeneratedAgo(generatedAt: string | undefined, nowMs: number): string {
+  const then = generatedAt ? new Date(generatedAt).getTime() : NaN
+  if (!generatedAt || Number.isNaN(then)) return 'last generated —'
+  const totalSeconds = Math.max(0, Math.floor((nowMs - then) / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `last generated ${pad(hours)}:${pad(minutes)}:${pad(seconds)} ago`
+}
+
+/** recruiting-automation's run_cycle.sh (which calls render_pending_actions.py)
+ * is launchd-scheduled hourly (`StartInterval=3600` in install.sh) — this is
+ * an estimate assuming that schedule stayed on since the last render, not a
+ * guarantee (it no-ops during a HALT/expiry window). */
+const AUTO_GENERATE_INTERVAL_MS = 3600_000
+
+function formatNextAutoGenerate(generatedAt: string | undefined, nowMs: number): string {
+  const then = generatedAt ? new Date(generatedAt).getTime() : NaN
+  if (!generatedAt || Number.isNaN(then)) return 'next auto-generate —'
+  const remainingMs = then + AUTO_GENERATE_INTERVAL_MS - nowMs
+  if (remainingMs <= 0) return 'next auto-generate due now'
+  const totalSeconds = Math.floor(remainingMs / 1000)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `next auto-generate in ${pad(hours)}:${pad(minutes)}:${pad(seconds)}`
+}
+
 function fireCustomUrl(href: string) {
   // Prefer a hidden iframe so the Vite tab is not navigated away by the
   // custom URL scheme (window.location.href can unload the SPA).
@@ -79,6 +128,30 @@ export default function App() {
   const [replyScanningAckKey, setReplyScanningAckKey] = useState('')
   /** Inbound ids already acknowledged after a successful Reply sent scan. */
   const [replySentDone, setReplySentDone] = useState<Record<string, true>>(loadReplySentAcks)
+  /** True while a "Check inbox now" (triageimap://run) triage is in flight. */
+  const [triagingImap, setTriagingImap] = useState(false)
+  /** Lead keys present just before firing triageimap://run — captured
+   * synchronously at click time so the poll loop below can diff against it
+   * once the refreshed JSON arrives and find whichever lead is new. */
+  const triageImapBeforeKeysRef = useRef<Set<string>>(new Set())
+  /** Ticks every second so the "last generated ... ago" clock stays live. */
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  /** Set when a "N duplicates" badge is clicked — every duplicate group
+   * still renders (see DuplicatesSkippedPanel), this just tracks which
+   * group to auto-expand + flash so it's easy to spot among the rest. */
+  const [duplicatesFocusKey, setDuplicatesFocusKey] = useState<string | null>(null)
+  /** Set after jumping from a duplicate's "Go to this lead" link back to
+   * the survivor's row — briefly flashes + scrolls to it. */
+  const [highlightKey, setHighlightKey] = useState<string | null>(null)
+  /** Controls the "Archived / decided leads" <details> — forced open when
+   * "Go to this lead" targets a survivor that's no longer in the active
+   * funnel (it was itself fully decided since). */
+  const [archiveOpen, setArchiveOpen] = useState(false)
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -98,11 +171,17 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!regenerating && !replyScanningId) return
+    if (!regenerating && !replyScanningId && !triagingImap) return
     const startedAt = data?.generatedAt || ''
     const scanningAckKey = replyScanningAckKey
     const wasReplyScan = Boolean(replyScanningId)
-    const timeoutMs = wasReplyScan ? REPLY_SENT_TIMEOUT_MS : REGEN_TIMEOUT_MS
+    const wasImapTriage = triagingImap
+    const beforeKeys = wasImapTriage ? triageImapBeforeKeysRef.current : null
+    const timeoutMs = wasImapTriage
+      ? TRIAGE_IMAP_TIMEOUT_MS
+      : wasReplyScan
+        ? REPLY_SENT_TIMEOUT_MS
+        : REGEN_TIMEOUT_MS
     let cancelled = false
     const deadline = Date.now() + timeoutMs
 
@@ -117,13 +196,17 @@ export default function App() {
           setRegenerating(false)
           setReplyScanningId('')
           setReplyScanningAckKey('')
+          setTriagingImap(false)
           if (wasReplyScan && scanningAckKey) {
             setReplySentDone((prev) => {
               if (prev[scanningAckKey]) return prev
-              const next = { ...prev, [scanningAckKey]: true }
+              const next: Record<string, true> = { ...prev, [scanningAckKey]: true }
               saveReplySentAcks(next)
               return next
             })
+          }
+          if (wasImapTriage) {
+            jumpToNewlyProcessedLead(payload, beforeKeys)
           }
           return
         }
@@ -135,10 +218,13 @@ export default function App() {
           setRegenerating(false)
           setReplyScanningId('')
           setReplyScanningAckKey('')
+          setTriagingImap(false)
           setError(
-            wasReplyScan
-              ? 'Reply sent timed out — is tools/reply-sent installed? Or run: recruiting-automation/run_comms_fast.sh'
-              : 'Regenerate timed out — is tools/refresh-pending installed? Or run: python scripts/render_pending_actions.py --no-rescore',
+            wasImapTriage
+              ? 'Check inbox now timed out — is tools/triage-imap-now installed? Or run: python scripts/triage_imap_now.py'
+              : wasReplyScan
+                ? 'Reply sent timed out — is tools/reply-sent installed? Or run: recruiting-automation/run_comms_fast.sh'
+                : 'Regenerate timed out — is tools/refresh-pending installed? Or run: python scripts/render_pending_actions.py --no-rescore',
           )
         }
         return
@@ -151,15 +237,112 @@ export default function App() {
       cancelled = true
       window.clearTimeout(id)
     }
-  }, [regenerating, replyScanningId, replyScanningAckKey, data?.generatedAt])
+  }, [regenerating, replyScanningId, replyScanningAckKey, triagingImap, data?.generatedAt])
 
-  const busy = regenerating || Boolean(replyScanningId)
+  useEffect(() => {
+    if (!highlightKey) return
+    const id = window.setTimeout(() => setHighlightKey(null), 2500)
+    return () => window.clearTimeout(id)
+  }, [highlightKey])
+
+  const busy = regenerating || Boolean(replyScanningId) || triagingImap
+
+  // Background auto-refresh (2026-08-18): pending-actions.json is otherwise
+  // only fetched once on mount, then again whenever a button-triggered
+  // action's own polling loop finishes — so a tab left open across an
+  // automation HALT (or its later recovery) can silently show stale
+  // scheduleHealth/lead data for hours until the user manually reloads.
+  // Paused while `busy`, so it never races the action-specific polling
+  // loop above (which does its own fetch-and-diff on a tighter cadence).
+  useEffect(() => {
+    if (regenerating || replyScanningId || triagingImap) return
+    const id = window.setInterval(() => {
+      fetchWorkflow()
+        .then((payload) => {
+          setData(payload)
+          setError('')
+        })
+        .catch(() => {
+          /* silent — a transient blip shouldn't interrupt the page; the next tick retries */
+        })
+    }, BACKGROUND_REFRESH_MS)
+    return () => window.clearInterval(id)
+  }, [regenerating, replyScanningId, triagingImap])
+
+  /** "N duplicates" badge on any lead row → switch to the Duplicates
+   * skipped tab (still showing every group, not just this one), auto-expand
+   * this lead's group, and scroll straight to its first duplicate's row. */
+  const onViewDuplicates = (normalizedKey: string, firstDuplicateKey?: string) => {
+    setFilter('duplicates_skipped')
+    setDuplicatesFocusKey(normalizedKey)
+    setHighlightKey(firstDuplicateKey ?? null)
+    if (firstDuplicateKey) scrollToLeadRow(firstDuplicateKey)
+  }
+
+  /** "Go to this lead" link on a duplicate's card (Duplicates skipped tab)
+   * → switch back to wherever the survivor actually lives and flash it.
+   * The survivor may have itself since been fully decided (applied →
+   * hired/rejected/etc.) and moved out of every active-funnel bucket into
+   * "Archived / decided leads" — that panel is a <details>, not a tab, so
+   * it gets opened via archiveOpen rather than setFilter. */
+  const onJumpToSurvivor = (normalizedKey: string) => {
+    if (!data) return
+    const tab = locateLeadTab(data, normalizedKey)
+    if (!tab) {
+      setError(
+        'That lead is no longer tracked in this dashboard at all (removed from the database) — nothing to jump to.',
+      )
+      return
+    }
+    setDuplicatesFocusKey(null)
+    setHighlightKey(normalizedKey)
+    if (tab === 'archived') {
+      setArchiveOpen(true)
+    } else {
+      setFilter(tab)
+    }
+    scrollToLeadRow(normalizedKey)
+  }
 
   const onRegenerate = () => {
     if (busy) return
     setError('')
     setRegenerating(true)
     fireCustomUrl(REGEN_HREF)
+  }
+
+  /** Once triageimap://run's refreshed JSON lands, diff its lead set against
+   * the snapshot captured at click time and jump straight to whichever lead
+   * is newly present — wherever it landed (Contact priority, Decide/apply,
+   * or Archived), same locate+scroll+flash machinery as onJumpToSurvivor. */
+  const jumpToNewlyProcessedLead = (payload: WorkflowPayload, beforeKeys: Set<string> | null) => {
+    const afterKeys = allLeadKeys(payload)
+    const newKeys = beforeKeys ? [...afterKeys].filter((k) => !beforeKeys.has(k)) : []
+    if (!newKeys.length) {
+      setError(
+        'Checked shawn.becker@spexture.com — no new lead appeared. The message may not have arrived ' +
+          'yet, or it was classified as noise/rejection with nothing to track.',
+      )
+      return
+    }
+    const key = newKeys[0]
+    const tab = locateLeadTab(payload, key)
+    setDuplicatesFocusKey(null)
+    setHighlightKey(key)
+    if (tab === 'archived') {
+      setArchiveOpen(true)
+    } else if (tab) {
+      setFilter(tab)
+    }
+    scrollToLeadRow(key)
+  }
+
+  const onTriageImapNow = () => {
+    if (busy) return
+    setError('')
+    triageImapBeforeKeysRef.current = data ? allLeadKeys(data) : new Set()
+    setTriagingImap(true)
+    fireCustomUrl(TRIAGE_IMAP_HREF)
   }
 
   const onReplySent = (item: ContactPriorityItem) => {
@@ -214,6 +397,12 @@ export default function App() {
         count: decideApplyCount(data.stages.decideApply),
         hint: 'Package/review funnel — not contact prioritization',
       },
+      {
+        id: 'duplicates_skipped' as const,
+        label: '🔁 Duplicates skipped',
+        count: data.archivedLeads?.filter((l) => l.duplicateOfKey).length ?? 0,
+        hint: 'Leads skipped specifically because they duplicated another lead — grouped by survivor',
+      },
     ]
   }, [counts, data])
 
@@ -235,9 +424,21 @@ export default function App() {
           {data && (
             <>
               <span>{data.totalLeads} leads</span>
-              <span>Generated {data.generatedAt || '—'}</span>
+              <span>{formatGeneratedAgo(data.generatedAt, nowMs)}</span>
+              <span>{formatNextAutoGenerate(data.generatedAt, nowMs)}</span>
             </>
           )}
+          <button
+            type="button"
+            className="btn link regen-btn"
+            onClick={onTriageImapNow}
+            disabled={busy}
+            title="Fully process any new mail at shawn.becker@spexture.com right now (JD resolve, LLM score, package on pursue) instead of waiting for the next tick"
+            aria-busy={triagingImap}
+          >
+            {triagingImap && <span className="regen-spinner" aria-hidden="true" />}
+            {triagingImap ? 'Checking inbox…' : 'Check inbox now'}
+          </button>
           <button
             type="button"
             className="btn link regen-btn"
@@ -259,9 +460,13 @@ export default function App() {
       )}
 
       {data?.scheduleHealth?.summary && (
-        <div className={`banner health-${data.scheduleHealth.level || 'info'}`}>
-          {data.scheduleHealth.summary}
-        </div>
+        <ScheduleHealthBanner
+          level={data.scheduleHealth.level}
+          summary={data.scheduleHealth.summary}
+          lastOkAtIso={data.scheduleHealth.lastOkAtIso}
+          cycleSteps={data.scheduleHealth.cycleSteps}
+          nowMs={nowMs}
+        />
       )}
 
       {data && (
@@ -270,25 +475,49 @@ export default function App() {
             <div>
               <h2>Contact priority</h2>
               <p className="panel-action">
-                Ranked by recruiter contact attempts, then age. Read YOUR ACTION on each row before
-                using the buttons. Digests / ATS alerts are excluded — use Decide/apply for those.
+                {filter === 'duplicates_skipped'
+                  ? 'Leads skipped specifically because they duplicated another lead, grouped by the survivor.'
+                  : 'Ranked by recruiter contact attempts, then age. Read YOUR ACTION on each row before using the buttons. Digests / ATS alerts are excluded — use Decide/apply for those.'}
               </p>
             </div>
-            <span className="priority-total">
-              {filter === 'decide_apply' ? decideApplyCount(data.stages.decideApply) : filtered.length}{' '}
-              shown
-            </span>
+            {filter !== 'duplicates_skipped' && (
+              <span className="priority-total">
+                {filter === 'decide_apply' ? decideApplyCount(data.stages.decideApply) : filtered.length}{' '}
+                shown
+              </span>
+            )}
           </div>
 
-          <ContactFilterBar options={filterOptions} active={filter} onSelect={setFilter} />
+          <ContactFilterBar
+            options={filterOptions}
+            active={filter}
+            onSelect={(id) => {
+              // Manually picking a tab (vs. a "N duplicates" badge calling
+              // onViewDuplicates) always shows every duplicate group.
+              setFilter(id)
+              setDuplicatesFocusKey(null)
+            }}
+          />
 
           {filter === 'decide_apply' ? (
             <div className="decide-under-priority">
               <p className="hint-line">
                 Decide / apply is package and review work — not part of the contact ranking above.
               </p>
-              <DecideApplyStage data={data.stages.decideApply} folderRoot={data.folderRoot} />
+              <DecideApplyStage
+                data={data.stages.decideApply}
+                onViewDuplicates={onViewDuplicates}
+                highlightKey={highlightKey}
+              />
             </div>
+          ) : filter === 'duplicates_skipped' ? (
+            <DuplicatesSkippedPanel
+              leads={data.archivedLeads ?? []}
+              focusSurvivorKey={duplicatesFocusKey}
+              highlightKey={highlightKey}
+              onClearFocus={() => setDuplicatesFocusKey(null)}
+              onJumpToSurvivor={onJumpToSurvivor}
+            />
           ) : (
             <ContactPriorityQueue
               items={filtered}
@@ -297,9 +526,31 @@ export default function App() {
               replySentDone={replySentDone}
               replyScanningId={replyScanningId}
               replyScanBusy={busy}
+              onViewDuplicates={onViewDuplicates}
+              highlightKey={highlightKey}
             />
           )}
         </section>
+      )}
+
+      {data && (
+        <details
+          className="archive-details"
+          open={archiveOpen}
+          onToggle={(e) => setArchiveOpen(e.currentTarget.open)}
+        >
+          <summary>
+            Archived / decided leads{' '}
+            <span className="pill">{data.archivedLeads?.length ?? 0}</span>
+          </summary>
+          <div className="archive-body">
+            <ArchivedLeadsPanel
+              leads={data.archivedLeads ?? []}
+              onViewDuplicates={onViewDuplicates}
+              highlightKey={highlightKey}
+            />
+          </div>
+        </details>
       )}
 
       {!data && !error && <p className="loading">Loading workflow…</p>}

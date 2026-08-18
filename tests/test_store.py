@@ -33,6 +33,8 @@ from job_tracker.pipeline.store import (
     heal_applied_crm,
     heal_applied_status_lags,
     heal_same_apply_url_twins,
+    list_duplicates_of,
+    mark_duplicate,
     merge_leads,
     rename_company,
     is_message_processed,
@@ -416,6 +418,70 @@ def test_advance_status_does_not_regress_applied_to_package_generated(tmp_path: 
         ]
         == "package_generated"
     )
+    conn.close()
+
+
+def test_mark_duplicate_skips_and_links_to_survivor(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    survivor = JobLead(company="Full Time", title="Data Engineer", source_message_id="m1", source_label="single-jd")
+    dup = JobLead(company="VDARTInc", title="Data Engineer", source_message_id="m2", source_label="single-jd")
+    upsert_lead(conn, survivor)
+    upsert_lead(conn, dup)
+
+    ok = mark_duplicate(conn, dup.normalized_key, duplicate_of_key=survivor.normalized_key, when="2026-08-17T00:00:00+00:00")
+    assert ok is True
+
+    row = conn.execute(
+        "SELECT status, skipped_at, duplicate_of_key FROM job_leads WHERE normalized_key = ?", (dup.normalized_key,)
+    ).fetchone()
+    assert row["status"] == "skipped"
+    assert row["skipped_at"] == "2026-08-17T00:00:00+00:00"
+    assert row["duplicate_of_key"] == survivor.normalized_key
+
+    # The survivor itself is untouched.
+    survivor_row = conn.execute(
+        "SELECT status, duplicate_of_key FROM job_leads WHERE normalized_key = ?", (survivor.normalized_key,)
+    ).fetchone()
+    assert survivor_row["status"] == "new"
+    assert survivor_row["duplicate_of_key"] is None
+    conn.close()
+
+
+def test_mark_duplicate_rejects_self_reference(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(company="Acme", title="Engineer", source_message_id="m1", source_label="single-jd")
+    upsert_lead(conn, lead)
+    with pytest.raises(ValueError):
+        mark_duplicate(conn, lead.normalized_key, duplicate_of_key=lead.normalized_key)
+    conn.close()
+
+
+def test_mark_duplicate_rejects_unknown_survivor(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(company="Acme", title="Engineer", source_message_id="m1", source_label="single-jd")
+    upsert_lead(conn, lead)
+    with pytest.raises(ValueError):
+        mark_duplicate(conn, lead.normalized_key, duplicate_of_key="nonexistent::key")
+    conn.close()
+
+
+def test_list_duplicates_of_returns_only_linked_leads_most_recent_first(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    survivor = JobLead(company="NeoTek", title="AWS AI Engineer", source_message_id="m1", source_label="single-jd")
+    dup_a = JobLead(company="Department of Medicaid", title="AWS AI Engineer", source_message_id="m2", source_label="single-jd")
+    dup_b = JobLead(company="Unrelated Co", title="Other Role", source_message_id="m3", source_label="single-jd")
+    other_skip = JobLead(company="Some Other Co", title="Unrelated", source_message_id="m4", source_label="single-jd")
+    for lead in (survivor, dup_a, dup_b, other_skip):
+        upsert_lead(conn, lead)
+
+    mark_duplicate(conn, dup_a.normalized_key, duplicate_of_key=survivor.normalized_key, when="2026-08-17T00:00:00+00:00")
+    mark_duplicate(conn, dup_b.normalized_key, duplicate_of_key=survivor.normalized_key, when="2026-08-18T00:00:00+00:00")
+    # Skipped for an unrelated reason — must not show up as a duplicate.
+    advance_status(conn, other_skip.normalized_key, "skipped")
+
+    dupes = list_duplicates_of(conn, survivor.normalized_key)
+    assert [d["normalized_key"] for d in dupes] == [dup_b.normalized_key, dup_a.normalized_key]
+    assert list_duplicates_of(conn, other_skip.normalized_key) == []
     conn.close()
 
 

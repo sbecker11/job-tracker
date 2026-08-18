@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { ChannelBadge } from './ChannelBadge'
+import { DuplicateBadge } from './DuplicateBadge'
+import { leadAnchorId } from '../lib/links'
 import { replyAckKey, type ContactPriorityItem } from '../priorityQueue'
 
 const STAGE_LABEL: Record<string, string> = {
@@ -33,13 +35,35 @@ function viewCommunicationsUrl(company?: string, title?: string): string | null 
   return `viewcomms://open?company=${encodeURIComponent(company)}&title=${encodeURIComponent(title)}`
 }
 
+/**
+ * shawn.becker@spexture.com's Gmail account-switcher slot (the "u/1" in
+ * https://mail.google.com/mail/u/1/...) — matches how Shawn already signs into
+ * this account in Chrome, so compose opens from the right sender.
+ */
+const RECRUITER_REPLY_ACCOUNT_SLOT = 1
+
+/**
+ * The recruiting-automation's tracked inbox (RECRUITING_GMAIL_USER in
+ * reply_continuity.py). BCC'd on every recruiter-email send so the Sent-folder
+ * scanner (comms_fast_cycle.py) can see this reply even though it's sent from
+ * the Spexture account, not this inbox itself.
+ */
+const RECRUITER_REPLY_BCC = 'shawnbecker.recruiting@gmail.com'
+
+/** Opens Gmail compose in the browser (Chrome), pre-filled from this lead, instead of mailto:. */
 function mailtoUrl(item: ContactPriorityItem): string | null {
   if (!item.recruiterEmail) return null
-  const subject = encodeURIComponent(
-    [item.title, item.company].filter(Boolean).join(' — ') || 'Résumé',
-  )
-  const body = encodeURIComponent(item.draftReply || '')
-  return `mailto:${item.recruiterEmail}?subject=${subject}&body=${body}`
+  const subject = [item.company, item.title].filter(Boolean).join(' ')
+  const params = new URLSearchParams({
+    view: 'cm',
+    fs: '1',
+    tf: '1',
+    to: item.recruiterEmail,
+    bcc: RECRUITER_REPLY_BCC,
+    su: `RE: ${subject}`,
+    body: item.draftReply || '',
+  })
+  return `https://mail.google.com/mail/u/${RECRUITER_REPLY_ACCOUNT_SLOT}/?${params.toString()}`
 }
 
 function mailtoLabel(item: ContactPriorityItem): string {
@@ -63,6 +87,11 @@ interface Props {
   replySentDone?: Record<string, true>
   replyScanningId?: string
   replyScanBusy?: boolean
+  /** Switch to the Duplicates skipped tab, focused on this lead's group. */
+  onViewDuplicates?: (normalizedKey: string, firstDuplicateKey?: string) => void
+  /** Briefly flash + scroll to the row for this key (set after jumping in
+   * from the Duplicates skipped tab's "Duplicate of" link). */
+  highlightKey?: string | null
 }
 
 export function ContactPriorityQueue({
@@ -72,6 +101,8 @@ export function ContactPriorityQueue({
   replySentDone = {},
   replyScanningId = '',
   replyScanBusy = false,
+  onViewDuplicates,
+  highlightKey,
 }: Props) {
   const [expandedId, setExpandedId] = useState('')
   const [copiedId, setCopiedId] = useState('')
@@ -105,10 +136,13 @@ export function ContactPriorityQueue({
           (item.stage === 'clarify' ||
             item.stage === 'send_resume' ||
             (item.stage === 'wait_schedule' && item.followUpDue))
+        const highlighted = Boolean(item.normalizedKey) && item.normalizedKey === highlightKey
         return (
           <li
             key={item.id}
-            className={`priority-row${open ? ' open' : ''}${item.followUpDue ? ' follow-up-due' : ''}${item.replyDue ? ' reply-due' : ''}`}
+            id={item.normalizedKey ? leadAnchorId(item.normalizedKey) : undefined}
+            data-lead-key={item.normalizedKey || undefined}
+            className={`priority-row${open ? ' open' : ''}${item.followUpDue ? ' follow-up-due' : ''}${item.replyDue ? ' reply-due' : ''}${highlighted ? ' lead-highlight' : ''}`}
           >
             <div className="priority-main">
               <span className="priority-rank" aria-label={`Priority ${index + 1}`}>
@@ -154,6 +188,17 @@ export function ContactPriorityQueue({
                   <span className={`stage-chip stage-${item.stage}`}>
                     {STAGE_LABEL[item.stage] || item.stage}
                   </span>
+                  {item.normalizedKey && (
+                    <DuplicateBadge
+                      count={item.duplicateCount}
+                      firstDuplicateKey={item.duplicateKeys?.[0]}
+                      onView={
+                        onViewDuplicates
+                          ? () => onViewDuplicates(item.normalizedKey!, item.duplicateKeys?.[0])
+                          : undefined
+                      }
+                    />
+                  )}
                   <ChannelBadge channel={item.channel} href={item.gmailUrl} />
                   {item.stage === 'send_resume' && (
                     <span className={`pkg-chip${item.packageReady ? ' ready' : ' missing'}`}>
@@ -213,11 +258,11 @@ export function ContactPriorityQueue({
               <div className="priority-actions">
                 {viewCommunicationsUrl(item.company, item.title) && (
                   <a
-                    className="btn link"
+                    className="btn"
                     href={viewCommunicationsUrl(item.company, item.title)!}
                     title="Export and open full communications ODT for this lead"
                   >
-                    View communications
+                    History
                   </a>
                 )}
                 {item.stage === 'clarify' && item.draftReply && (
@@ -272,7 +317,13 @@ export function ContactPriorityQueue({
                     </a>
                   ) : null}
                   {mailtoUrl(item) && (
-                    <a className="btn link" href={mailtoUrl(item)!} title={item.recruiterEmail}>
+                    <a
+                      className="btn link"
+                      href={mailtoUrl(item)!}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={item.recruiterEmail}
+                    >
                       {mailtoLabel(item)}
                     </a>
                   )}
@@ -337,7 +388,13 @@ export function ContactPriorityQueue({
                         </button>
                       )}
                       {mailtoUrl(item) && (
-                        <a className="btn link" href={mailtoUrl(item)!} title={item.recruiterEmail}>
+                        <a
+                          className="btn link"
+                          href={mailtoUrl(item)!}
+                          target="_blank"
+                          rel="noreferrer"
+                          title={item.recruiterEmail}
+                        >
                           {mailtoLabel(item)}
                         </a>
                       )}
@@ -395,7 +452,13 @@ export function ContactPriorityQueue({
                         </button>
                       )}
                       {mailtoUrl(item) && (
-                        <a className="btn link" href={mailtoUrl(item)!} title={item.recruiterEmail}>
+                        <a
+                          className="btn link"
+                          href={mailtoUrl(item)!}
+                          target="_blank"
+                          rel="noreferrer"
+                          title={item.recruiterEmail}
+                        >
                           {mailtoLabel(item)}
                         </a>
                       )}
