@@ -62,8 +62,16 @@ SECRET_FILE_PATTERNS=(
 # above even though they match one of those patterns — e.g. template/example
 # files that intentionally look like a secret-class file but hold no real
 # secret values.
+#
+# '.env' itself is allowlisted here (2026-08-19) because this repo tracks it
+# through git-crypt (see .gitattributes) — the object git actually stores/
+# pushes is AES-256 ciphertext, never plaintext, so this is not the same
+# risk this rule otherwise guards against. Only safe because .gitattributes
+# routes '.env' through the git-crypt clean/smudge filters; do not copy this
+# allowlist entry into a repo that isn't also git-crypt-initialized.
 SECRET_FILE_ALLOWLIST=(
   '.env.example'
+  '.env'
 )
 
 # JUNK files (by path). Block; these belong in .gitignore.

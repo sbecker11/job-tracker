@@ -6,7 +6,9 @@ __pycache__/
 coverage.json
 htmlcov/
 *.egg-info/
-.env
+# .env itself is intentionally tracked (git-crypt-encrypted, see
+# .gitattributes) as of 2026-08-19 — only other local override variants
+# (.env.local, .env.production, ...) stay ignored/plaintext-only.
 .env.*
 !.env.example
 *.db

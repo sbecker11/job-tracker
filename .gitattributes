@@ -1,0 +1,7 @@
+# git-crypt (2026-08-19): .env is intentionally tracked (see .gitignore) but
+# transparently AES-256 encrypted at rest by git-crypt's clean/smudge
+# filters — GitHub only ever receives/stores the ciphertext blob, never
+# plaintext, which is why this repo can safely track real credentials while
+# staying public. Decrypt key lives outside git entirely at
+# ~/.git-crypt-keys/job-tracker.key (git-crypt unlock <path> after clone).
+.env filter=git-crypt diff=git-crypt
