@@ -852,7 +852,20 @@ def _generate_content(
     profile = _load_candidate_profile()
     system = _GENERATE_SYSTEM_PROMPT.replace("{profile}", profile)
     user = f"Company: {company}\nTitle: {title}\n\nJob description:\n{jd_text}"
-    return _call_and_parse_json(system, user, model=model, client=client, max_tokens=8192, step="generate")
+    # max_tokens=16000 (raised from 8192 on 2026-08-19) — same fix as
+    # evaluate_lead's 2026-07-12 change, for the same underlying failure
+    # mode: a verbose JD (large candidate-profile context + a long JD, e.g.
+    # a multi-generation-stack role) can genuinely push the résumé+cover-
+    # letter JSON schema's output past 8192 tokens, truncating mid-string.
+    # The existing repair retry (_call_and_parse_json's one-shot "fix the
+    # syntax" call) is designed for a small unescaped-quote-style error, not
+    # for recovering a truncated document — observed once (Pdsinc/LDS
+    # Church lead) collapsing an entire résumé+cover-letter body down to
+    # just the header when the repair call, given a JSON already cut off at
+    # the token ceiling, "fixed" it by closing strings early instead of
+    # regenerating the missing content. Raising the ceiling doesn't raise
+    # cost since billing is by tokens actually generated, not the ceiling.
+    return _call_and_parse_json(system, user, model=model, client=client, max_tokens=16000, step="generate")
 
 
 _HOUSE_RULE_REPAIR_SYSTEM_PROMPT = """Rewrite the JSON object below, fixing ONLY these violations, and leave \
@@ -873,8 +886,12 @@ def _repair_house_rule_violations(
 ) -> tuple[dict, list[CallMetrics]]:
     system = _HOUSE_RULE_REPAIR_SYSTEM_PROMPT.format(issues="\n".join(f"- {i}" for i in issues))
     try:
+        # max_tokens=16000 (2026-08-19, matches _generate_content above) —
+        # this rewrites the full résumé+cover-letter JSON (same size as the
+        # original generate call), so it's subject to the identical
+        # truncation risk at the old 8192 ceiling.
         return _call_and_parse_json(
-            system, json.dumps(content), model=model, client=client, max_tokens=8192, step="generate_house_rule_repair"
+            system, json.dumps(content), model=model, client=client, max_tokens=16000, step="generate_house_rule_repair"
         )
     except (json.JSONDecodeError, LLMApplyError) as exc:
         logger.warning("House-rule repair pass failed (%s); keeping original content with warnings intact", exc)
