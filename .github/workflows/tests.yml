@@ -1,0 +1,29 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # fail_under = 80 in pyproject.toml's [tool.coverage.report] makes
+      # pytest-cov (via --cov) exit non-zero if coverage drops below 80%,
+      # so this step is both the test run and the coverage gate.
+      - name: Run tests with coverage
+        run: python -m pytest tests/ --cov=job_tracker --cov-branch --cov-report=term-missing
