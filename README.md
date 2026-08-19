@@ -91,8 +91,73 @@ pip install -e ".[dev]"
 
 Optional: copy `.env.example` to `.env` and fill in `ANTHROPIC_API_KEY` if you
 plan to use `--llm-fallback` (see below). `.env` is loaded automatically at
-startup (via `python-dotenv`, wired in `job_tracker/__init__.py`) and is
-git-ignored.
+startup (via `python-dotenv`, wired in `job_tracker/__init__.py`).
+
+**`.env` is git-crypt encrypted, not git-ignored** (2026-08-19): unlike most
+repos, this `.env` is intentionally *tracked* so real config travels with
+the repo, but `.gitattributes` (`.env filter=git-crypt diff=git-crypt`)
+makes git transparently AES-256-encrypt it on commit and decrypt it on
+checkout — GitHub only ever stores ciphertext. On this machine that's
+already invisible (the key was registered here when git-crypt was set up),
+but a fresh clone anywhere else needs one manual step — see below.
+
+### Decrypting `.env` on a new machine
+
+On a brand-new clone of this repo (a different Mac, referred to elsewhere in
+these notes as "mini2"; a CI runner; anywhere the key hasn't been registered
+yet), `.env` in the working tree is opaque ciphertext until unlocked:
+
+1. **Install `git-crypt`** on that machine (not needed on this one, where
+   it's already installed and registered):
+   ```bash
+   brew install git-crypt
+   ```
+2. **Get the key file there securely.** The symmetric key lives outside git
+   entirely, at `~/.git-crypt-keys/job-tracker.key` on this Mac (`chmod
+   600`). Copy that exact file to the new machine through an out-of-band
+   channel you trust — an encrypted USB drive, your password manager's
+   secure file/attachment storage, or `scp` directly between two machines
+   you control over SSH. **Never** email it, commit it to any git repo
+   (this one or otherwise), or paste its contents into chat/Slack/any other
+   unencrypted channel — anyone who has this file can decrypt every
+   `.env` this repo has ever committed.
+3. **Clone the repo as usual, then unlock from the repo root** with the
+   copied key file:
+   ```bash
+   git-crypt unlock /path/to/copied/job-tracker.key
+   ```
+   This decrypts the currently-checked-out `.env` in place and registers
+   the key with that machine's local `.git` directory, so every future
+   checkout and commit on that machine is transparent from then on — the
+   same one-time step `git-crypt init` already did on this Mac.
+4. **Verify it worked:**
+   ```bash
+   git-crypt status    # lists every path with "encrypted: <file>" or
+                        # "not encrypted: <file>" — this reflects .gitattributes
+                        # config, not lock state, so it prints "encrypted: .env"
+                        # either way; it's a sanity check the filter is wired
+                        # up, not proof of a successful unlock
+   cat .env             # the real proof: readable plaintext config lines
+                        # (the same ANTHROPIC_API_KEY line .env.example
+                        # shows, now with a real value), not binary garbage
+   ```
+   `git-crypt unlock` itself also fails loudly (non-zero exit, an error
+   message) if the key file is wrong or the working tree isn't clean, so a
+   silent successful return plus a readable `.env` together confirm success.
+5. **If you clone and never run `git-crypt unlock`:** this is the safe
+   default, not a bug. `.env` stays as encrypted bytes in the working tree;
+   anything that tries to read it (`python-dotenv` loading
+   `ANTHROPIC_API_KEY`, a script sourcing it directly) gets garbage or an
+   outright failure — never a silent fallback to some other credential
+   source, and never a leak to a machine that was never given the key.
+6. **If the key file is ever lost with no other copy, it's unrecoverable —
+   there is no backdoor.** The `.env` ciphertext already sitting in this
+   repo's git history can never be decrypted again without it. Don't rely
+   on the single copy at `~/.git-crypt-keys/job-tracker.key` on this one
+   Mac; keep a durable backup of it (and its `recruiting-automation.key` /
+   `comms-migration.key` siblings) somewhere outside git entirely — a
+   password manager's secure notes/file storage, or macOS Keychain, both
+   work well.
 
 ### Pending-actions React UI (LaunchAgent)
 
