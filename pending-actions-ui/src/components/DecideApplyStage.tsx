@@ -1,5 +1,5 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { memo, useEffect, useRef } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { DuplicateBadge } from './DuplicateBadge'
 import { leadAnchorId } from '../lib/links'
 import type { DecideLead, WorkflowPayload } from '../types'
@@ -18,6 +18,20 @@ function revealFolderUrl(folderPath: string | undefined): string | null {
 function viewCommunicationsUrl(company?: string, title?: string): string | null {
   if (!company?.trim() || !title?.trim()) return null
   return `viewcomms://open?company=${encodeURIComponent(company)}&title=${encodeURIComponent(title)}`
+}
+
+/** Search box filter — company/title/recruiter/email/phone, same fields as
+ * ArchivedLeadsPanel / ContactPriorityQueue / DuplicatesSkippedPanel
+ * (2026-08-19). */
+function matchesQuery(lead: DecideLead, q: string): boolean {
+  if (!q) return true
+  return (
+    lead.company.toLowerCase().includes(q) ||
+    lead.title.toLowerCase().includes(q) ||
+    (lead.recruiterName?.toLowerCase().includes(q) ?? false) ||
+    (lead.recruiterEmail?.toLowerCase().includes(q) ?? false) ||
+    (lead.recruiterPhone?.toLowerCase().includes(q) ?? false)
+  )
 }
 
 function LeadTable({
@@ -179,12 +193,49 @@ export const DecideApplyStage = memo(function DecideApplyStage({
   onViewDuplicates?: (normalizedKey: string, firstDuplicateKey?: string) => void
   highlightKey?: string | null
 }) {
+  const [query, setQuery] = useState('')
+
   const total =
     data.readyToApply.length +
     data.needsDecision.length +
     data.needsDecisionForced.length +
     data.awaitingLlmReview.length +
     data.jdUnresolved.length
+
+  // Clears a stale search term when a jump-to-lead arrives for a row the
+  // current query would otherwise hide (2026-08-19, same pattern as
+  // ArchivedLeadsPanel/ContactPriorityQueue).
+  useEffect(() => {
+    if (!highlightKey) return
+    const all = [
+      ...data.readyToApply,
+      ...data.needsDecision,
+      ...data.needsDecisionForced,
+      ...data.awaitingLlmReview,
+      ...data.jdUnresolved,
+    ]
+    if (!all.some((r) => r.normalizedKey === highlightKey)) return
+    setQuery('')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightKey, data])
+
+  const q = query.trim().toLowerCase()
+  const filtered = useMemo(
+    () => ({
+      readyToApply: data.readyToApply.filter((r) => matchesQuery(r, q)),
+      needsDecision: data.needsDecision.filter((r) => matchesQuery(r, q)),
+      needsDecisionForced: data.needsDecisionForced.filter((r) => matchesQuery(r, q)),
+      awaitingLlmReview: data.awaitingLlmReview.filter((r) => matchesQuery(r, q)),
+      jdUnresolved: data.jdUnresolved.filter((r) => matchesQuery(r, q)),
+    }),
+    [data, q],
+  )
+  const filteredTotal =
+    filtered.readyToApply.length +
+    filtered.needsDecision.length +
+    filtered.needsDecisionForced.length +
+    filtered.awaitingLlmReview.length +
+    filtered.jdUnresolved.length
 
   if (!total) {
     return <p className="empty-hint">No decide/apply work in the funnel right now.</p>
@@ -196,37 +247,52 @@ export const DecideApplyStage = memo(function DecideApplyStage({
         Decide/apply is where you read the reviews and choose pursue (generate package) or skip.
         Contact priority Send résumé only appears after the package exists on disk.
       </p>
-      <LeadTable
-        title="Ready to apply"
-        rows={data.readyToApply}
-        showApply
-        onViewDuplicates={onViewDuplicates}
-        highlightKey={highlightKey}
-      />
-      <LeadTable
-        title="Needs your decision"
-        rows={data.needsDecision}
-        onViewDuplicates={onViewDuplicates}
-        highlightKey={highlightKey}
-      />
-      <LeadTable
-        title="Needs decision (forced package)"
-        rows={data.needsDecisionForced}
-        onViewDuplicates={onViewDuplicates}
-        highlightKey={highlightKey}
-      />
-      <LeadTable
-        title="Awaiting full-LLM-review"
-        rows={data.awaitingLlmReview}
-        onViewDuplicates={onViewDuplicates}
-        highlightKey={highlightKey}
-      />
-      <LeadTable
-        title="JD unresolved"
-        rows={data.jdUnresolved}
-        onViewDuplicates={onViewDuplicates}
-        highlightKey={highlightKey}
-      />
+      <div className="archive-controls">
+        <input
+          className="archive-search"
+          type="search"
+          placeholder="Search company, title, recruiter, email, or phone…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
+      {!filteredTotal ? (
+        <p className="empty-hint">No decide/apply leads match &quot;{query}&quot;.</p>
+      ) : (
+        <>
+          <LeadTable
+            title="Ready to apply"
+            rows={filtered.readyToApply}
+            showApply
+            onViewDuplicates={onViewDuplicates}
+            highlightKey={highlightKey}
+          />
+          <LeadTable
+            title="Needs your decision"
+            rows={filtered.needsDecision}
+            onViewDuplicates={onViewDuplicates}
+            highlightKey={highlightKey}
+          />
+          <LeadTable
+            title="Needs decision (forced package)"
+            rows={filtered.needsDecisionForced}
+            onViewDuplicates={onViewDuplicates}
+            highlightKey={highlightKey}
+          />
+          <LeadTable
+            title="Awaiting full-LLM-review"
+            rows={filtered.awaitingLlmReview}
+            onViewDuplicates={onViewDuplicates}
+            highlightKey={highlightKey}
+          />
+          <LeadTable
+            title="JD unresolved"
+            rows={filtered.jdUnresolved}
+            onViewDuplicates={onViewDuplicates}
+            highlightKey={highlightKey}
+          />
+        </>
+      )}
     </div>
   )
 })

@@ -36,7 +36,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT, _safe_filename  # noqa: E402
-from job_tracker.pipeline.pending_workflow import build_workflow_payload  # noqa: E402
+from job_tracker.pipeline.pending_workflow import _recruiter_contact, build_workflow_payload  # noqa: E402
 from job_tracker.pipeline.qualifying_reply import (  # noqa: E402
     draft_qualifying_reply,
     promote_heuristic_unmatched,
@@ -521,11 +521,19 @@ def render(conn, *, output_root: Path, now: datetime, automation_state_dir: Path
         folder_path, company_folder_path, fc = _lead_folder_and_count(
             output_root, company=r["company"], title=r["title"], multi_lead=multi_lead
         )
+        # Decide/apply never carried recruiter contact info before
+        # (2026-08-19) — added so its search box can match recruiter/
+        # email/phone the same way Clarify/Send résumé/Wait and
+        # ArchivedLeadsPanel already do.
+        recruiter_name, recruiter_email, recruiter_phone, _ = _recruiter_contact(conn, r["normalized_key"])
         entry = {
             "company": r["company"],
             "title": r["title"],
             "normalizedKey": r["normalized_key"],
             "fileCount": fc,
+            "recruiterName": recruiter_name,
+            "recruiterEmail": recruiter_email,
+            "recruiterPhone": recruiter_phone,
             # Count only (2026-07-22) — the full job_conversations text is
             # NOT embedded here (unlike unmatched_communications' body/
             # preview fields below): every lead already has one, so

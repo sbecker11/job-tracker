@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from job_tracker.pipeline.models import JobConversation, JobLead, UnmatchedMessage
+from job_tracker.pipeline.models import JobContact, JobConversation, JobLead, UnmatchedMessage
 from job_tracker.pipeline.pending_workflow import build_workflow_payload
 from job_tracker.pipeline.store import (
+    add_job_contact,
     add_job_conversation,
     connect,
     mark_duplicate,
@@ -453,6 +454,33 @@ def test_archived_leads_include_duplicate_of_survivor_details(tmp_path: Path):
 
     plain_item = next(i for i in archived if i["normalizedKey"] == plain_skip.normalized_key)
     assert "duplicateOfKey" not in plain_item
+
+
+def test_archived_leads_include_earliest_recruiter_contact(tmp_path: Path):
+    """The archived-leads list should surface the earliest job_contacts row
+    for each lead (2026-08-19) so the Pending actions search box can match
+    on recruiter name/email/phone, not just company/title."""
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(company="Acme", title="Backend Engineer", source_message_id="m1", source_label="single-jd")
+    upsert_lead(conn, lead)
+    from job_tracker.pipeline.store import advance_status
+
+    advance_status(conn, lead.normalized_key, "skipped")
+    add_job_contact(
+        conn,
+        JobContact(job_key=lead.normalized_key, name="Jane Recruiter", email="jane@acme.com", phone="555-1234"),
+    )
+
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    workflow = build_workflow_payload(
+        data, conn=conn, age_days_fn=render_pending_actions._age_days, now=NOW, output_root=tmp_path
+    )
+    conn.close()
+
+    item = next(i for i in workflow["archivedLeads"] if i["normalizedKey"] == lead.normalized_key)
+    assert item["recruiterName"] == "Jane Recruiter"
+    assert item["recruiterEmail"] == "jane@acme.com"
+    assert item["recruiterPhone"] == "555-1234"
 
 
 def test_duplicate_count_surfaces_on_survivor_wherever_it_appears(tmp_path: Path):

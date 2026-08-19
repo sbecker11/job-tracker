@@ -802,7 +802,9 @@ th.num {
   padding: 7px 12px;
   font: inherit;
   font-size: 0.85rem;
-  min-width: 220px;
+  width: 100%;
+  flex: 1 1 100%;
+  box-sizing: border-box;
 }
 
 .archive-search:focus {

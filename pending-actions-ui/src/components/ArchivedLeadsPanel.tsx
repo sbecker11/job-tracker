@@ -80,7 +80,13 @@ export const ArchivedLeadsPanel = memo(function ArchivedLeadsPanel({
       if (statusFilter === 'duplicates') return Boolean(l.duplicateOfKey)
       if (statusFilter !== 'all' && l.status !== statusFilter) return false
       if (!q) return true
-      return l.company.toLowerCase().includes(q) || l.title.toLowerCase().includes(q)
+      return (
+        l.company.toLowerCase().includes(q) ||
+        l.title.toLowerCase().includes(q) ||
+        (l.recruiterName?.toLowerCase().includes(q) ?? false) ||
+        (l.recruiterEmail?.toLowerCase().includes(q) ?? false) ||
+        (l.recruiterPhone?.toLowerCase().includes(q) ?? false)
+      )
     })
   }, [leads, query, statusFilter, duplicateFilterKey])
 
@@ -142,7 +148,7 @@ export const ArchivedLeadsPanel = memo(function ArchivedLeadsPanel({
         <input
           className="archive-search"
           type="search"
-          placeholder="Search company or title…"
+          placeholder="Search company, title, recruiter, email, or phone…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />

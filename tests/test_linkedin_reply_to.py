@@ -127,9 +127,10 @@ def test_recruiter_contact_flags_linkedin_relay(tmp_path: Path):
         conn,
         JobContact(job_key=key, name="Deven Mehta", linkedin_reply_to="uuid-ui@reply.linkedin.com"),
     )
-    name, email, is_relay = _recruiter_contact(conn, key)
+    name, email, phone, is_relay = _recruiter_contact(conn, key)
     assert name == "Deven Mehta"
     assert email == "uuid-ui@reply.linkedin.com"
+    assert phone == ""
     assert is_relay is True
     conn.close()
 
@@ -155,8 +156,9 @@ def test_recruiter_contact_prefers_real_email_over_relay(tmp_path: Path):
             linkedin_reply_to="uuid-ui@reply.linkedin.com",
         ),
     )
-    name, email, is_relay = _recruiter_contact(conn, key)
+    name, email, phone, is_relay = _recruiter_contact(conn, key)
     assert name == "Deven Mehta"
     assert email.lower() == "deven.mehta@neotekus.com"
+    assert phone == ""
     assert is_relay is False
     conn.close()

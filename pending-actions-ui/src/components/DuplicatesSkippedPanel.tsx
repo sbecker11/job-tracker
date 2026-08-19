@@ -195,7 +195,14 @@ export const DuplicatesSkippedPanel = memo(function DuplicatesSkippedPanel({
       (g) =>
         g.survivorCompany.toLowerCase().includes(q) ||
         g.survivorTitle.toLowerCase().includes(q) ||
-        g.duplicates.some((d) => d.company.toLowerCase().includes(q) || d.title.toLowerCase().includes(q)),
+        g.duplicates.some(
+          (d) =>
+            d.company.toLowerCase().includes(q) ||
+            d.title.toLowerCase().includes(q) ||
+            (d.recruiterName?.toLowerCase().includes(q) ?? false) ||
+            (d.recruiterEmail?.toLowerCase().includes(q) ?? false) ||
+            (d.recruiterPhone?.toLowerCase().includes(q) ?? false),
+        ),
     )
   }, [groups, query])
 
@@ -237,7 +244,7 @@ export const DuplicatesSkippedPanel = memo(function DuplicatesSkippedPanel({
         <input
           className="archive-search"
           type="search"
-          placeholder="Search survivor or duplicate company/title…"
+          placeholder="Search survivor/duplicate company, title, recruiter, email, or phone…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />

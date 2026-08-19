@@ -567,7 +567,7 @@ def build_clarify_queue(
             thread_url=draft.thread_url,
             source_label=r["source_label"] or "",
         )
-        recruiter, email, email_is_li_relay = _recruiter_contact(conn, key)
+        recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
         reply_id = f"key:{key}"
         next_action = _next_action_clarify(
             channel=channel,
@@ -582,6 +582,7 @@ def build_clarify_queue(
                 "channel": channel,
                 "recruiterName": draft.recruiter_name or recruiter,
                 "recruiterEmail": email,
+                "recruiterPhone": phone,
                 "emailIsLinkedInRelay": email_is_li_relay,
                 "subject": subj,
                 "company": r["company"] or draft.company_guess,
@@ -626,7 +627,7 @@ def build_clarify_queue(
         unanswered_days = age_days_fn(unanswered["occurred_at"], now)
         if unanswered_days > _REPLY_DUE_MAX_AGE_DAYS:
             continue
-        recruiter, email, email_is_li_relay = _recruiter_contact(conn, key)
+        recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
         body = unanswered["body_text"] or ""
         subj = unanswered["summary"] or r["title"] or ""
         drafted = draft_qualifying_reply(body, subject=subj)
@@ -669,6 +670,7 @@ def build_clarify_queue(
                 "channel": channel,
                 "recruiterName": recruiter or drafted.recruiter_name,
                 "recruiterEmail": email,
+                "recruiterPhone": phone,
                 "emailIsLinkedInRelay": email_is_li_relay,
                 "subject": subj,
                 "company": r["company"] or drafted.company_guess,
@@ -691,42 +693,47 @@ def build_clarify_queue(
     return queue
 
 
-def _recruiter_contact(conn, job_key: str) -> tuple[str, str, bool]:
-    """Return (display_name, mailto_email, email_is_linkedin_relay).
+def _recruiter_contact(conn, job_key: str) -> tuple[str, str, str, bool]:
+    """Return (display_name, mailto_email, phone, email_is_linkedin_relay).
 
     Prefer a real non-system `email`. Fall back to `linkedin_reply_to`
     (uuid@reply.linkedin.com) so Clarify can still open a mail draft into
     the LinkedIn thread when the recruiter never left a personal address.
+
+    `phone` (2026-08-19) rides along with whichever contact this picks —
+    added so Clarify/Send résumé/Wait's "search" boxes can match on phone
+    the same way ArchivedLeadsPanel's already does, without a second query.
     """
     row = conn.execute(
         """
-        SELECT name, email, linkedin_reply_to FROM job_contacts
+        SELECT name, email, phone, linkedin_reply_to FROM job_contacts
         WHERE job_key = ?
         ORDER BY CASE WHEN role = 'recruiter' THEN 0 ELSE 1 END, first_contacted_at ASC
         """,
         (job_key,),
     ).fetchall()
-    fallback_name, fallback_li = "", ""
+    fallback_name, fallback_li, fallback_phone = "", "", ""
     for r in row:
         name = (r["name"] or "").strip()
         email = (r["email"] or "").strip()
+        phone = (r["phone"] or "").strip()
         try:
             li_reply = (r["linkedin_reply_to"] or "").strip()
         except (IndexError, KeyError):
             li_reply = ""
         if email and _is_system_email(email):
             if li_reply and not fallback_li:
-                fallback_name, fallback_li = name or email, li_reply
+                fallback_name, fallback_li, fallback_phone = name or email, li_reply, phone
             continue
         if email:
-            return name or email, email, False
+            return name or email, email, phone, False
         if li_reply and not fallback_li:
-            fallback_name, fallback_li = name, li_reply
+            fallback_name, fallback_li, fallback_phone = name, li_reply, phone
         if name and not email and not li_reply:
-            return name, "", False
+            return name, "", phone, False
     if fallback_li:
-        return fallback_name or fallback_li, fallback_li, True
-    return "", "", False
+        return fallback_name or fallback_li, fallback_li, fallback_phone, True
+    return "", "", "", False
 
 
 def _package_folder_abs(conn, *, company: str, title: str, output_root: Path) -> tuple[str, bool]:
@@ -867,7 +874,7 @@ def build_send_resume_queue(
         package_kind: str = "",
         folder_hint: str = "",
     ) -> bool:
-        recruiter, email, email_is_li_relay = _recruiter_contact(conn, key)
+        recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
         folder_abs, disk_ready = _package_folder_abs(conn, company=company, title=title, output_root=root)
         if folder_hint and not Path(folder_abs).is_dir():
             hinted = root / folder_hint
@@ -902,6 +909,7 @@ def build_send_resume_queue(
                 "normalizedKey": key,
                 "recruiterName": recruiter,
                 "recruiterEmail": email,
+                "recruiterPhone": phone,
                 "emailIsLinkedInRelay": email_is_li_relay,
                 "ageDays": age_days,
                 "folderPath": folder_abs,
@@ -1034,7 +1042,7 @@ def build_wait_schedule_queue(
         human_inbound = _human_inbound_conversations(convs)
         waiting_days = age_days_fn(r["awaiting_response_since"], now)
         follow_up_due = waiting_days >= threshold
-        recruiter, email, email_is_li_relay = _recruiter_contact(conn, key)
+        recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
         channel = _channel_from_addresses(source_label=r["source_label"] or "")
         if email and not _is_system_email(email) and not email_is_li_relay:
             channel = "email"
@@ -1060,6 +1068,7 @@ def build_wait_schedule_queue(
                 "normalizedKey": key,
                 "recruiterName": recruiter,
                 "recruiterEmail": email,
+                "recruiterPhone": phone,
                 "emailIsLinkedInRelay": email_is_li_relay,
                 "ageDays": age_days_fn(r["first_seen"], now),
                 "waitingDays": waiting_days,
@@ -1220,6 +1229,29 @@ def _list_archived_leads(conn, *, age_days_fn: Callable[[str | None, datetime], 
         ):
             survivors[s["normalized_key"]] = {"company": s["company"] or "", "title": s["title"] or ""}
 
+    # Earliest-contacted recruiter per lead (2026-08-19, for the "search
+    # company or title" box's expanded scope) — one batched query rather
+    # than N+1 per-lead lookups, since this list can run to 1000+ rows.
+    # `setdefault` keeps only the first row per job_key given the
+    # `ORDER BY job_key, first_contacted_at ASC`.
+    lead_keys = [r["normalized_key"] for r in rows]
+    contacts: dict[str, dict] = {}
+    if lead_keys:
+        ph = ",".join("?" for _ in lead_keys)
+        for c in conn.execute(
+            f"""
+            SELECT job_key, name, email, phone
+            FROM job_contacts
+            WHERE job_key IN ({ph})
+            ORDER BY job_key, first_contacted_at ASC
+            """,
+            tuple(lead_keys),
+        ):
+            contacts.setdefault(
+                c["job_key"],
+                {"name": c["name"] or "", "email": c["email"] or "", "phone": c["phone"] or ""},
+            )
+
     out: list[dict] = []
     for r in rows:
         key = r["normalized_key"]
@@ -1235,6 +1267,14 @@ def _list_archived_leads(conn, *, age_days_fn: Callable[[str | None, datetime], 
             "ageDays": age_days_fn(r["first_seen"], now),
             "commCount": comm_count,
         }
+        contact = contacts.get(key)
+        if contact:
+            if contact["name"]:
+                item["recruiterName"] = contact["name"]
+            if contact["email"]:
+                item["recruiterEmail"] = contact["email"]
+            if contact["phone"]:
+                item["recruiterPhone"] = contact["phone"]
         dup_key = r["duplicate_of_key"]
         if dup_key:
             item["duplicateOfKey"] = dup_key

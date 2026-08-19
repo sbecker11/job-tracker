@@ -27,6 +27,7 @@ export interface ClarifyItem {
   channel: Channel
   recruiterName?: string
   recruiterEmail?: string
+  recruiterPhone?: string
   /** True when recruiterEmail is uuid@reply.linkedin.com (not a personal inbox). */
   emailIsLinkedInRelay?: boolean
   subject?: string
@@ -63,6 +64,7 @@ export interface SendResumeItem {
   normalizedKey: string
   recruiterName?: string
   recruiterEmail?: string
+  recruiterPhone?: string
   emailIsLinkedInRelay?: boolean
   ageDays: number
   matchPct?: number
@@ -91,6 +93,7 @@ export interface WaitItem {
   normalizedKey: string
   recruiterName?: string
   recruiterEmail?: string
+  recruiterPhone?: string
   emailIsLinkedInRelay?: boolean
   ageDays: number
   waitingDays: number
@@ -127,6 +130,9 @@ export interface DecideLead {
   actionHint?: string
   duplicateCount?: number
   duplicateKeys?: string[]
+  recruiterName?: string
+  recruiterEmail?: string
+  recruiterPhone?: string
 }
 
 /** A lead a decision has already been made on (skipped/rejected/deleted/
@@ -156,6 +162,12 @@ export interface ArchivedLead {
    * duplicate of something else). */
   duplicateCount?: number
   duplicateKeys?: string[]
+  /** Earliest-contacted recruiter on file for this lead (job_contacts),
+   * surfaced (2026-08-19) so the search box can match on recruiter/
+   * email/phone in addition to company/title. */
+  recruiterName?: string
+  recruiterEmail?: string
+  recruiterPhone?: string
 }
 
 export interface WorkflowPayload {

@@ -1,5 +1,5 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { ChannelBadge } from './ChannelBadge'
 import { DuplicateBadge } from './DuplicateBadge'
 import { leadAnchorId } from '../lib/links'
@@ -122,6 +122,29 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
 }: Props) {
   const [expandedId, setExpandedId] = useState('')
   const [copiedId, setCopiedId] = useState('')
+  const [query, setQuery] = useState('')
+
+  // Clears a stale search term when a jump-to-lead arrives for a row the
+  // current query would otherwise hide (2026-08-19, same pattern as
+  // ArchivedLeadsPanel's highlight-vs-filter reset below).
+  useEffect(() => {
+    if (!highlightKey) return
+    if (!items.some((item) => item.normalizedKey === highlightKey)) return
+    setQuery('')
+  }, [highlightKey, items])
+
+  const visibleItems = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return items
+    return items.filter(
+      (item) =>
+        (item.company || '').toLowerCase().includes(q) ||
+        (item.title || '').toLowerCase().includes(q) ||
+        (item.recruiterName || '').toLowerCase().includes(q) ||
+        (item.recruiterEmail || '').toLowerCase().includes(q) ||
+        (item.recruiterPhone || '').toLowerCase().includes(q),
+    )
+  }, [items, query])
 
   // 2026-08-18 perf pass: "All contact" alone can run to 500+ rows — same
   // virtualization approach as ArchivedLeadsPanel's table (bounded-height,
@@ -132,7 +155,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
   // does.
   const scrollElRef = useRef<HTMLDivElement>(null)
   const rowVirtualizer = useVirtualizer({
-    count: items.length,
+    count: visibleItems.length,
     getScrollElement: () => scrollElRef.current,
     estimateSize: () => ESTIMATED_ROW_HEIGHT,
     overscan: 8,
@@ -154,7 +177,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
   // even when neither the tab nor the highlight target changed.
   useEffect(() => {
     if (highlightKey) {
-      const index = items.findIndex((item) => item.normalizedKey === highlightKey)
+      const index = visibleItems.findIndex((item) => item.normalizedKey === highlightKey)
       if (index >= 0) {
         rowVirtualizer.scrollToIndex(index, { align: 'center' })
         return
@@ -162,7 +185,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
     }
     scrollElRef.current?.scrollTo({ top: 0 })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [highlightKey, filterLabel, rowVirtualizer])
+  }, [highlightKey, filterLabel, query, rowVirtualizer])
 
   if (!items.length) {
     return (
@@ -173,10 +196,23 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
   }
 
   return (
-    <div className="priority-list-scroll" ref={scrollElRef}>
+    <div>
+      <div className="archive-controls">
+        <input
+          className="archive-search"
+          type="search"
+          placeholder="Search company, title, recruiter, email, or phone…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
+      {!visibleItems.length ? (
+        <p className="empty-hint">No {filterLabel.toLowerCase()} leads match &quot;{query}&quot;.</p>
+      ) : (
+      <div className="priority-list-scroll" ref={scrollElRef}>
       <ol className="priority-list" style={{ position: 'relative', height: rowVirtualizer.getTotalSize() }}>
         {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-          const item = items[virtualRow.index]
+          const item = visibleItems[virtualRow.index]
           const index = virtualRow.index
         const open = expandedId === item.id
         const companyHref = revealFolderUrl(item.companyFolderPath)
@@ -570,6 +606,8 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
         )
         })}
       </ol>
+      </div>
+      )}
     </div>
   )
 })

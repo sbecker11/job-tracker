@@ -43,6 +43,7 @@ export interface ContactPriorityItem {
   title: string
   recruiterName: string
   recruiterEmail?: string
+  recruiterPhone?: string
   emailIsLinkedInRelay?: boolean
   ageDays: number
   contactAttempts: number
@@ -145,6 +146,7 @@ function fromClarify(c: ClarifyItem): ContactPriorityItem {
     title: c.title || c.subject || '',
     recruiterName: c.recruiterName || '',
     recruiterEmail: c.recruiterEmail || '',
+    recruiterPhone: c.recruiterPhone || '',
     emailIsLinkedInRelay: c.emailIsLinkedInRelay,
     ageDays: c.ageDays || 0,
     contactAttempts: c.contactAttempts || 1,
@@ -175,6 +177,7 @@ function fromSendResume(s: SendResumeItem): ContactPriorityItem {
     title: s.title || '',
     recruiterName: s.recruiterName || '',
     recruiterEmail: s.recruiterEmail || '',
+    recruiterPhone: s.recruiterPhone || '',
     emailIsLinkedInRelay: s.emailIsLinkedInRelay,
     ageDays: s.ageDays || 0,
     contactAttempts: s.contactAttempts || 1,
@@ -205,6 +208,7 @@ function fromWait(w: WaitItem): ContactPriorityItem {
     title: w.title || '',
     recruiterName: w.recruiterName || '',
     recruiterEmail: w.recruiterEmail || '',
+    recruiterPhone: w.recruiterPhone || '',
     emailIsLinkedInRelay: w.emailIsLinkedInRelay,
     ageDays: w.ageDays || 0,
     contactAttempts: w.contactAttempts || 1,
