@@ -60,19 +60,51 @@ export function leadAnchorHref(normalizedKey: string): string {
  * silently no-op. Polling for an actually-laid-out element (non-empty
  * getClientRects) up to ~20 frames (~one-third of a second) instead of
  * guessing exactly how many re-renders are involved fixes that without the
- * caller needing to know that stage-and-filter-reset happens at all. */
+ * caller needing to know that stage-and-filter-reset happens at all.
+ *
+ * 2026-08-18: switched `behavior: 'smooth'` → `'auto'` (instant) after
+ * confirming the *actual* bug behind "the Duplicate of link does nothing"
+ * — with 1200+ archived rows, the target can be tens of thousands of
+ * pixels down the page, and a smooth scroll across that distance took
+ * ~2.2s in testing. The `.lead-highlight` flash (App.css) only lasts 2.5s
+ * *from click time*, before the scroll even starts — so by the time the
+ * page finished crawling down, the highlight had already faded (or was
+ * about to), leaving the user staring at an unmarked row indistinguishable
+ * from 1000+ others. It scrolled, technically, but looked completely
+ * broken. Jumping instantly removes that race entirely regardless of list
+ * size or which browser's smooth-scroll timing is in play. Also updates
+ * the URL hash (via replaceState, not a real navigation) once landed, so
+ * the address bar gives visible confirmation the click did something —
+ * restores the "real, inspectable anchor" behavior `leadAnchorHref` was
+ * meant to have (bookmarkable, right-click-able) instead of a silently
+ * JS-only jump.
+ *
+ * 2026-08-18 (later same day): the 20-frame (~330ms) polling budget above
+ * turned out to be too short for the "survivor already fully decided, so
+ * open the 1200+-row Archived panel" path — confirmed live: highlightKey
+ * was correctly set (visible as the flashed row once you scrolled/zoomed
+ * out to find it yourself) but the *actual* scroll never fired, because
+ * that panel's <details> opening plus its own filter-reset re-render of
+ * every archived row settled in ~650ms — comfortably past 20 frames'
+ * worth of polling, so `tryScroll` silently exhausted its attempts and
+ * gave up just short of the row being ready. Switched to a wall-clock
+ * deadline (2s) instead of a fixed frame count — rAF cadence isn't
+ * guaranteed to be ~16ms (a backgrounded/throttled tab can be much
+ * slower), so counting frames was measuring the wrong thing regardless of
+ * how many were allowed. */
 export function scrollToLeadRow(normalizedKey: string): void {
   const id = leadAnchorId(normalizedKey)
-  let attempts = 0
-  const maxAttempts = 20
+  const deadline = performance.now() + 2_000
   const tryScroll = () => {
     const el = document.getElementById(id)
     if (el && el.getClientRects().length > 0) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      el.scrollIntoView({ behavior: 'auto', block: 'center' })
+      if (window.location.hash !== `#${id}`) {
+        window.history.replaceState(null, '', `#${id}`)
+      }
       return
     }
-    attempts += 1
-    if (attempts < maxAttempts) requestAnimationFrame(tryScroll)
+    if (performance.now() < deadline) requestAnimationFrame(tryScroll)
   }
   requestAnimationFrame(tryScroll)
 }

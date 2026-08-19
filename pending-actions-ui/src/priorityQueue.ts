@@ -1,3 +1,4 @@
+import { leadAnchorId } from './lib/links'
 import type {
   Channel,
   ClarifyItem,
@@ -14,11 +15,25 @@ export const CONTACT_STAGE_IDS: PipelineStageId[] = [
   'wait_schedule',
 ]
 
-/** 'duplicates_skipped' is a top-level tab like the others, but its content
- * (ArchivedLead rows carrying duplicateOfKey) comes from data.archivedLeads,
- * not the clarify/send_resume/wait_schedule/decide_apply funnel — App.tsx
- * special-cases it the same way it already special-cases 'decide_apply'. */
-export type ContactFilter = 'all' | PipelineStageId | 'duplicates_skipped'
+/** 'duplicates_skipped' and 'archived' are top-level tabs like the others,
+ * but their content (ArchivedLead rows) comes from data.archivedLeads, not
+ * the clarify/send_resume/wait_schedule/decide_apply funnel — App.tsx
+ * special-cases them the same way it already special-cases 'decide_apply'.
+ *
+ * 2026-08-18: 'archived' was previously a collapsible <details> below the
+ * tabs, not a tab itself, reachable only via an `archiveOpen` boolean. That
+ * turned out to be exactly the same mistake 'duplicates_skipped' made
+ * before its own 2026-08-17 promotion (see DuplicatesSkippedPanel's
+ * comment): a survivor jump landing there had to open the <details>,
+ * re-render 1200+ archived rows, and then scroll a real (sometimes huge)
+ * distance down the page to reach it — all while racing a fixed-duration
+ * highlight flash. Confirmed live: the jump would set the highlight
+ * correctly but the scroll itself would time out before that re-render
+ * settled, landing on nothing visible. Making 'archived' a proper tab
+ * means jumping there is just `setFilter('archived')` — same panel
+ * position as every other tab, no <details>, no separately-triggered
+ * re-render to wait out. */
+export type ContactFilter = 'all' | PipelineStageId | 'duplicates_skipped' | 'archived'
 
 export interface ContactPriorityItem {
   id: string
@@ -217,17 +232,16 @@ function fromWait(w: WaitItem): ContactPriorityItem {
  * when the survivor isn't tracked in the payload at all (e.g. removed from
  * the database) — there's nowhere to jump in that case.
  *
- * 'archived' means the lead lives in data.archivedLeads (the "Archived /
- * decided leads" panel below the tabs, not one of the ContactFilter tabs
- * itself) — distinct return value so App.tsx knows to open that panel
- * instead of switching filter tabs. Added 2026-08-17 after "Go to this
- * lead" reported leads as unreachable when a survivor had itself since
- * been fully decided (e.g. applied → hired/rejected) and moved out of every
+ * 'archived' means the lead lives in data.archivedLeads — a real tab as of
+ * 2026-08-18 (see ContactFilter's comment), not a separately-opened
+ * <details> below the tabs. Added 2026-08-17 after "Go to this lead"
+ * reported leads as unreachable when a survivor had itself since been
+ * fully decided (e.g. applied → hired/rejected) and moved out of every
  * active-funnel bucket. */
 export function locateLeadTab(
   data: WorkflowPayload,
   normalizedKey: string,
-): ContactFilter | 'archived' | null {
+): ContactFilter | null {
   const inContactStage = [...data.stages.clarify, ...data.stages.sendResume, ...data.stages.waitSchedule].some(
     (i) => i.normalizedKey === normalizedKey,
   )
@@ -244,6 +258,25 @@ export function locateLeadTab(
   const inArchived = (data.archivedLeads ?? []).some((l) => l.normalizedKey === normalizedKey)
   if (inArchived) return 'archived'
   return null
+}
+
+/** Total row count across every decide/apply bucket — lives here (not in
+ * ContactFilterBar.tsx, its only caller) purely so that component file only
+ * exports components, keeping React Fast Refresh happy. */
+export function decideApplyCount(data: {
+  readyToApply: unknown[]
+  needsDecision: unknown[]
+  needsDecisionForced: unknown[]
+  awaitingLlmReview: unknown[]
+  jdUnresolved: unknown[]
+}): number {
+  return (
+    data.readyToApply.length +
+    data.needsDecision.length +
+    data.needsDecisionForced.length +
+    data.awaitingLlmReview.length +
+    data.jdUnresolved.length
+  )
 }
 
 /** Every normalizedKey present anywhere in `data` — contact-stage items,
@@ -273,11 +306,40 @@ export function allLeadKeys(data: WorkflowPayload): Set<string> {
   return keys
 }
 
+/** Reverse-lookup for a URL fragment produced by `leadAnchorId` — used to
+ * restore a lead's location (which tab, or the Archived panel) when the
+ * page is loaded/reloaded/opened in a new tab with a `#lead-...` hash
+ * already in the address bar, e.g. a pasted or bookmarked link that a
+ * previous "Duplicate of" / "Go to this lead" click produced (App.tsx's
+ * onJumpToSurvivor/onViewDuplicates only ever wired up the *in-app click*
+ * case — a fresh navigation straight to that URL had no equivalent
+ * restoration logic, which is the actual explanation behind "the
+ * duplicate-of link's address does nothing" reports that turned out to be
+ * about pasting/reloading that URL rather than clicking inside an
+ * already-mounted page). `leadAnchorId`'s character-collapsing isn't
+ * cleanly invertible (multiple distinct separators all become `-`), so
+ * this scans every real key actually present in `data` and matches by
+ * recomputing each candidate's own anchor id, rather than trying to parse
+ * the id back into "company::title". */
+export function findKeyForAnchorId(data: WorkflowPayload, anchorId: string): string | null {
+  for (const key of allLeadKeys(data)) {
+    if (leadAnchorId(key) === anchorId) return key
+  }
+  return null
+}
+
 export function filterContactQueue(
   items: ContactPriorityItem[],
   filter: ContactFilter,
 ): ContactPriorityItem[] {
-  if (filter === 'all' || filter === 'decide_apply') return items
+  // 'duplicates_skipped' / 'archived' render their own dedicated panel
+  // (App.tsx) sourced from data.archivedLeads, not this contact-priority
+  // list — this function's result goes unused for those two, but return
+  // early rather than let `i.stage === filter` (never true for either)
+  // silently produce a misleading empty array.
+  if (filter === 'all' || filter === 'decide_apply' || filter === 'duplicates_skipped' || filter === 'archived') {
+    return items
+  }
   return items.filter((i) => i.stage === filter)
 }
 

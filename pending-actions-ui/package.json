@@ -11,6 +11,7 @@
     "regen": "cd .. && .venv/bin/python scripts/render_pending_actions.py --no-rescore"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.14.10",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router-dom": "^7.18.2"

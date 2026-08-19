@@ -36,20 +36,4 @@ export function ContactFilterBar({ options, active, onSelect }: Props) {
   )
 }
 
-export function decideApplyCount(data: {
-  readyToApply: unknown[]
-  needsDecision: unknown[]
-  needsDecisionForced: unknown[]
-  awaitingLlmReview: unknown[]
-  jdUnresolved: unknown[]
-}): number {
-  return (
-    data.readyToApply.length +
-    data.needsDecision.length +
-    data.needsDecisionForced.length +
-    data.awaitingLlmReview.length +
-    data.jdUnresolved.length
-  )
-}
-
 export type { PipelineStageId }

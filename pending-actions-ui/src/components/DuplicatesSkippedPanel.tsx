@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import { formatDecidedAt, leadAnchorHref, leadAnchorId, revealFolderUrl, viewCommunicationsUrl } from '../lib/links'
 import type { ArchivedLead } from '../types'
 
@@ -166,7 +166,8 @@ function DuplicateGroupCard({
   )
 }
 
-export function DuplicatesSkippedPanel({
+// Memoized — see 2026-08-18 perf pass note on ContactPriorityQueue.
+export const DuplicatesSkippedPanel = memo(function DuplicatesSkippedPanel({
   leads,
   focusSurvivorKey,
   highlightKey,
@@ -256,4 +257,4 @@ export function DuplicatesSkippedPanel({
       {!filteredGroups.length && <p className="empty-hint">No duplicate sets match "{query}".</p>}
     </div>
   )
-}
+})

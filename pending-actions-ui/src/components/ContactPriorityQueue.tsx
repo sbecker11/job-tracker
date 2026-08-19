@@ -1,8 +1,20 @@
-import { useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
+import { memo, useEffect, useRef, useState } from 'react'
 import { ChannelBadge } from './ChannelBadge'
 import { DuplicateBadge } from './DuplicateBadge'
 import { leadAnchorId } from '../lib/links'
 import { replyAckKey, type ContactPriorityItem } from '../priorityQueue'
+
+/** Rough starting estimate (collapsed row: rank + title/badges row + next-
+ * action line + meta line, plus padding) — corrected per-row once rendered
+ * via rowVirtualizer.measureElement, so "Show steps" expand/collapse still
+ * lays out correctly (2026-08-18 perf pass, same approach as
+ * ArchivedLeadsPanel's table virtualization). */
+const ESTIMATED_ROW_HEIGHT = 132
+/** Baked into each row's measured height as reserved trailing space, since
+ * absolutely-positioned virtualized items can't use the previous flex
+ * `gap: 8px` (that only applies to in-flow siblings). */
+const ROW_GAP = 8
 
 const STAGE_LABEL: Record<string, string> = {
   clarify: 'Clarify',
@@ -94,7 +106,11 @@ interface Props {
   highlightKey?: string | null
 }
 
-export function ContactPriorityQueue({
+// Memoized: this list can run to hundreds of rows, and App re-renders every
+// second to keep the "last generated ... ago" clock live — without memo,
+// every one of those ticks would re-render and re-diff the entire list even
+// though its own props never changed (2026-08-18 perf pass).
+export const ContactPriorityQueue = memo(function ContactPriorityQueue({
   items,
   filterLabel,
   onReplySent,
@@ -107,6 +123,47 @@ export function ContactPriorityQueue({
   const [expandedId, setExpandedId] = useState('')
   const [copiedId, setCopiedId] = useState('')
 
+  // 2026-08-18 perf pass: "All contact" alone can run to 500+ rows — same
+  // virtualization approach as ArchivedLeadsPanel's table (bounded-height,
+  // independently-scrolling box; only rows currently in view + overscan are
+  // mounted). Rows here vary in height a lot more (collapsed vs. "Show
+  // steps" expanded), so this relies more heavily on measureElement's
+  // automatic ResizeObserver-driven remeasurement than the archived table
+  // does.
+  const scrollElRef = useRef<HTMLDivElement>(null)
+  const rowVirtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => scrollElRef.current,
+    estimateSize: () => ESTIMATED_ROW_HEIGHT,
+    overscan: 8,
+  })
+
+  // Single effect owning all "where should this list be scrolled to right
+  // now" decisions — jump-to-target takes priority, falling back to
+  // resetting scroll on a tab/filter switch (so a much shorter list doesn't
+  // start scrolled past its own end). These *must* live in one effect, not
+  // two separate ones: a "jump to lead" always changes filterLabel (it's
+  // only reachable by switching tabs into this component fresh) and
+  // highlightKey together in the same commit, so a second, later-declared
+  // effect resetting to top on filterLabel would run right after this one's
+  // scrollToIndex and silently undo it every time (2026-08-18, found while
+  // verifying the "All contact" virtualization — a genuine race, not a
+  // testing/animation-timing artifact). Deliberately omits `items` from the
+  // dep array — it's read fresh via closure regardless, and including it
+  // would also re-run (and reset scroll) on every 60s background refresh
+  // even when neither the tab nor the highlight target changed.
+  useEffect(() => {
+    if (highlightKey) {
+      const index = items.findIndex((item) => item.normalizedKey === highlightKey)
+      if (index >= 0) {
+        rowVirtualizer.scrollToIndex(index, { align: 'center' })
+        return
+      }
+    }
+    scrollElRef.current?.scrollTo({ top: 0 })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightKey, filterLabel, rowVirtualizer])
+
   if (!items.length) {
     return (
       <p className="empty-hint">
@@ -116,8 +173,11 @@ export function ContactPriorityQueue({
   }
 
   return (
-    <ol className="priority-list">
-      {items.map((item, index) => {
+    <div className="priority-list-scroll" ref={scrollElRef}>
+      <ol className="priority-list" style={{ position: 'relative', height: rowVirtualizer.getTotalSize() }}>
+        {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+          const item = items[virtualRow.index]
+          const index = virtualRow.index
         const open = expandedId === item.id
         const companyHref = revealFolderUrl(item.companyFolderPath)
         const titleHref = revealFolderUrl(item.folderPath)
@@ -142,6 +202,19 @@ export function ContactPriorityQueue({
             key={item.id}
             id={item.normalizedKey ? leadAnchorId(item.normalizedKey) : undefined}
             data-lead-key={item.normalizedKey || undefined}
+            data-index={virtualRow.index}
+            ref={rowVirtualizer.measureElement}
+            className="priority-row-slot"
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              transform: `translateY(${virtualRow.start}px)`,
+              paddingBottom: ROW_GAP,
+            }}
+          >
+          <div
             className={`priority-row${open ? ' open' : ''}${item.followUpDue ? ' follow-up-due' : ''}${item.replyDue ? ' reply-due' : ''}${highlighted ? ' lead-highlight' : ''}`}
           >
             <div className="priority-main">
@@ -492,9 +565,11 @@ export function ContactPriorityQueue({
                 </ol>
               </div>
             )}
+          </div>
           </li>
         )
-      })}
-    </ol>
+        })}
+      </ol>
+    </div>
   )
-}
+})

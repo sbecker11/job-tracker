@@ -2,6 +2,7 @@
   color-scheme: dark;
   --bg: #0c0e12;
   --panel: #14171e;
+  --panel-translucent: rgba(12, 14, 18, 0.92);
   --elevated: #1a1e27;
   --border: #2a2e37;
   --text: #e6e8ec;
@@ -284,6 +285,31 @@ a.channel-email {
   cursor: wait;
 }
 
+/** Fixed at the bottom of the viewport (see App.tsx) so every long tab —
+ * Contact priority, Decide/apply, Duplicates skipped, Archived/decided —
+ * has a quick way back to the header/tab bar without scrolling by hand. */
+.back-to-top {
+  position: fixed;
+  bottom: 18px;
+  right: 18px;
+  z-index: 20;
+  appearance: none;
+  border: 1px solid var(--accent);
+  background: #171a21;
+  color: var(--text);
+  border-radius: 999px;
+  padding: 9px 16px;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+.back-to-top:hover {
+  background: var(--accent-soft);
+}
+
 .regen-btn {
   gap: 8px;
 }
@@ -373,6 +399,24 @@ a.channel-email {
   border-radius: 8px;
 }
 
+/* Archived/decided leads (ArchivedLeadsPanel) can run to 1000+ rows — this
+ * variant gets its own bounded-height, independently vertically-scrolling
+ * box so @tanstack/react-virtual only ever has to mount the rows currently
+ * scrolled into view (+ overscan), not the whole table at once. A nested
+ * scrollbar (this box scrolls separately from the outer .contact-priority
+ * panel) is the trade-off for keeping the virtualizer's scroll math simple
+ * (2026-08-18). */
+.table-scroll-virtual {
+  overflow-y: auto;
+  max-height: min(65vh, 640px);
+}
+
+.table-scroll-virtual thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -408,7 +452,7 @@ th.num {
   position: sticky;
   top: 0;
   z-index: 30;
-  background: rgba(12, 14, 18, 0.92);
+  background: var(--panel-translucent);
   backdrop-filter: blur(10px);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -447,17 +491,22 @@ th.num {
 .filter-bar {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin: 0 0 14px;
+  align-items: flex-end;
+  gap: 3px;
+  margin: 0 0 16px;
+  border-bottom: 1px solid var(--border);
 }
 
 .filter-chip {
   appearance: none;
+  position: relative;
+  top: 1px;
   border: 1px solid var(--border);
-  background: var(--elevated);
-  color: var(--text);
-  border-radius: 999px;
-  padding: 6px 12px;
+  border-bottom: none;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  border-radius: 9px 9px 0 0;
+  padding: 7px 13px 8px;
   font: inherit;
   font-size: 0.82rem;
   cursor: pointer;
@@ -468,11 +517,16 @@ th.num {
 
 .filter-chip:hover {
   border-color: var(--accent);
+  color: var(--text);
 }
 
 .filter-chip.active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 650;
+  background: var(--panel-translucent);
+  border-color: var(--border);
+  border-bottom: 1px solid var(--panel-translucent);
+  box-shadow: inset 0 2px 0 0 var(--accent);
 }
 
 .filter-chip.empty {
@@ -485,14 +539,27 @@ th.num {
   color: #c5cef5;
 }
 
+/* Contact priority queue (ContactPriorityQueue) can run to 500+ rows —
+ * same bounded-height, independently-scrolling + @tanstack/react-virtual
+ * treatment as ArchivedLeadsPanel's table (2026-08-18 perf pass). */
+.priority-list-scroll {
+  overflow-y: auto;
+  max-height: min(65vh, 640px);
+}
+
 .priority-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
 }
+
+/* Absolutely-positioned virtualized row wrapper (position/transform set
+ * inline per-row in ContactPriorityQueue.tsx) — .priority-row below keeps
+ * all of its existing visual styling as a plain in-flow child of this
+ * slot. The old flex `gap: 8px` doesn't apply to absolutely positioned
+ * siblings, so each slot reserves that as its own padding-bottom instead
+ * (included in measureElement's measured height, unlike a margin would
+ * be). */
 
 .priority-row {
   border: 1px solid var(--border);
@@ -718,27 +785,6 @@ th.num {
   margin-top: 4px;
 }
 
-.archive-details {
-  margin-top: 20px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 14px 16px;
-  background: var(--panel);
-}
-
-.archive-details summary {
-  cursor: pointer;
-  font-weight: 650;
-  font-size: 1.02rem;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.archive-body {
-  margin-top: 14px;
-}
-
 .archive-controls {
   display: flex;
   flex-wrap: wrap;
@@ -832,9 +878,13 @@ th.num {
   font-family: inherit;
   font-weight: 600;
   line-height: 1.4;
-  color: #7a5b00;
+  /* 2026-08-18: was #7a5b00 (a dark amber meant for a light background) —
+     nearly illegible against this app's dark theme. Match the same
+     bright-text-on-tinted-dark-background pattern .channel-badge uses
+     (e.g. .channel-email/.channel-linkedin) instead. */
+  color: var(--warn);
   background: rgba(201, 162, 39, 0.18);
-  border: 1px solid rgba(201, 162, 39, 0.4);
+  border: 1px solid rgba(201, 162, 39, 0.45);
   text-decoration: none;
   white-space: nowrap;
   cursor: pointer;
@@ -852,14 +902,21 @@ th.num {
 /** Flashed on a lead's row after jumping to it from the Duplicates skipped
  * tab's "Go to this lead" link — the row is already normally visible
  * (no closed-container scroll guessing), so a plain CSS animation is
- * enough to draw the eye to it. */
+ * enough to draw the eye to it.
+ *
+ * 2026-08-18: bumped 2.5s -> 4.5s (and the matching JS auto-clear timeout
+ * in App.tsx) to outlast scrollToLeadRow's up-to-2s settle-and-scroll
+ * polling deadline (links.ts) with real margin — the highlight starts at
+ * click time, not once the row is actually in view, so a short flash can
+ * fully fade before a slow-to-render row (e.g. the 1200+-row Archived
+ * panel opening) ever scrolls into the viewport. */
 .lead-highlight {
-  animation: lead-highlight-flash 2.5s ease-out;
+  animation: lead-highlight-flash 4.5s ease-out;
 }
 
 @keyframes lead-highlight-flash {
   0%,
-  35% {
+  20% {
     background: rgba(201, 162, 39, 0.22);
     outline: 2px solid rgba(201, 162, 39, 0.55);
     outline-offset: 2px;

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArchivedLeadsPanel } from './components/ArchivedLeadsPanel'
-import { ContactFilterBar, decideApplyCount } from './components/ContactFilterBar'
+import { ContactFilterBar } from './components/ContactFilterBar'
 import { ContactPriorityQueue } from './components/ContactPriorityQueue'
 import { DecideApplyStage } from './components/DecideApplyStage'
 import { DuplicatesSkippedPanel } from './components/DuplicatesSkippedPanel'
@@ -10,7 +10,9 @@ import {
   allLeadKeys,
   buildContactPriorityQueue,
   contactQueueCounts,
+  decideApplyCount,
   filterContactQueue,
+  findKeyForAnchorId,
   locateLeadTab,
   replyAckKey,
   type ContactFilter,
@@ -143,10 +145,6 @@ export default function App() {
   /** Set after jumping from a duplicate's "Go to this lead" link back to
    * the survivor's row — briefly flashes + scrolls to it. */
   const [highlightKey, setHighlightKey] = useState<string | null>(null)
-  /** Controls the "Archived / decided leads" <details> — forced open when
-   * "Go to this lead" targets a survivor that's no longer in the active
-   * funnel (it was itself fully decided since). */
-  const [archiveOpen, setArchiveOpen] = useState(false)
 
   useEffect(() => {
     const id = window.setInterval(() => setNowMs(Date.now()), 1000)
@@ -169,6 +167,35 @@ export default function App() {
       cancelled = true
     }
   }, [])
+
+  /** Restore a lead's location from a `#lead-...` URL hash that's already
+   * present when the page first loads — e.g. a pasted/bookmarked link a
+   * previous "Duplicate of" / "Go to this lead" click produced. Those
+   * click handlers (onJumpToSurvivor/onViewDuplicates below) only ever
+   * worked while the app was already mounted; a *fresh* navigation
+   * straight to that same URL had no equivalent restoration logic, which
+   * turned out to be the real explanation behind "the duplicate-of link's
+   * address does nothing" reports — they were reloading/pasting the URL,
+   * not clicking inside an already-open page, and the browser's native
+   * "jump to this id" only fires once at initial load, before React has
+   * rendered the target row (or before the right tab/panel is even open).
+   * Runs once, the first time `data` loads — not on every later
+   * background refresh (which would otherwise yank the user back here
+   * every 60s; see BACKGROUND_REFRESH_MS above). */
+  const initialHashHandledRef = useRef(false)
+  useEffect(() => {
+    if (!data || initialHashHandledRef.current) return
+    initialHashHandledRef.current = true
+    const hash = window.location.hash
+    if (!hash.startsWith('#lead-')) return
+    const key = findKeyForAnchorId(data, hash.slice(1))
+    if (!key) return
+    const tab = locateLeadTab(data, key)
+    if (!tab) return
+    setHighlightKey(key)
+    setFilter(tab)
+    scrollToLeadRow(key)
+  }, [data])
 
   useEffect(() => {
     if (!regenerating && !replyScanningId && !triagingImap) return
@@ -241,7 +268,9 @@ export default function App() {
 
   useEffect(() => {
     if (!highlightKey) return
-    const id = window.setTimeout(() => setHighlightKey(null), 2500)
+    // Kept in sync with .lead-highlight's animation-duration in App.css —
+    // see that rule's 2026-08-18 comment for why this is 4.5s, not 2.5s.
+    const id = window.setTimeout(() => setHighlightKey(null), 4500)
     return () => window.clearTimeout(id)
   }, [highlightKey])
 
@@ -271,21 +300,29 @@ export default function App() {
 
   /** "N duplicates" badge on any lead row → switch to the Duplicates
    * skipped tab (still showing every group, not just this one), auto-expand
-   * this lead's group, and scroll straight to its first duplicate's row. */
-  const onViewDuplicates = (normalizedKey: string, firstDuplicateKey?: string) => {
+   * this lead's group, and scroll straight to its first duplicate's row.
+   *
+   * useCallback (2026-08-18 perf pass): this is handed down as a prop to
+   * the now-memoized ContactPriorityQueue/DecideApplyStage/ArchivedLeadsPanel
+   * (each of which can run to hundreds/thousands of rows) — without a stable
+   * identity here, App's 1-second `nowMs` tick would hand those components a
+   * "new" callback every render and defeat the memo, re-diffing the entire
+   * list every second regardless of whether anything it shows changed. */
+  const onViewDuplicates = useCallback((normalizedKey: string, firstDuplicateKey?: string) => {
     setFilter('duplicates_skipped')
     setDuplicatesFocusKey(normalizedKey)
     setHighlightKey(firstDuplicateKey ?? null)
     if (firstDuplicateKey) scrollToLeadRow(firstDuplicateKey)
-  }
+  }, [])
 
   /** "Go to this lead" link on a duplicate's card (Duplicates skipped tab)
    * → switch back to wherever the survivor actually lives and flash it.
    * The survivor may have itself since been fully decided (applied →
    * hired/rejected/etc.) and moved out of every active-funnel bucket into
-   * "Archived / decided leads" — that panel is a <details>, not a tab, so
-   * it gets opened via archiveOpen rather than setFilter. */
-  const onJumpToSurvivor = (normalizedKey: string) => {
+   * the "Archived / decided leads" tab — a real ContactFilter tab (see its
+   * 2026-08-18 comment in priorityQueue.ts), so this is just setFilter
+   * like any other tab now, not a separately-opened <details>. */
+  const onJumpToSurvivor = useCallback((normalizedKey: string) => {
     if (!data) return
     const tab = locateLeadTab(data, normalizedKey)
     if (!tab) {
@@ -296,13 +333,9 @@ export default function App() {
     }
     setDuplicatesFocusKey(null)
     setHighlightKey(normalizedKey)
-    if (tab === 'archived') {
-      setArchiveOpen(true)
-    } else {
-      setFilter(tab)
-    }
+    setFilter(tab)
     scrollToLeadRow(normalizedKey)
-  }
+  }, [data])
 
   const onRegenerate = () => {
     if (busy) return
@@ -329,11 +362,7 @@ export default function App() {
     const tab = locateLeadTab(payload, key)
     setDuplicatesFocusKey(null)
     setHighlightKey(key)
-    if (tab === 'archived') {
-      setArchiveOpen(true)
-    } else if (tab) {
-      setFilter(tab)
-    }
+    if (tab) setFilter(tab)
     scrollToLeadRow(key)
   }
 
@@ -345,14 +374,17 @@ export default function App() {
     fireCustomUrl(TRIAGE_IMAP_HREF)
   }
 
-  const onReplySent = (item: ContactPriorityItem) => {
-    const ackKey = replyAckKey(item)
-    if (busy || replySentDone[ackKey]) return
-    setError('')
-    setReplyScanningId(item.id)
-    setReplyScanningAckKey(ackKey)
-    fireCustomUrl(REPLY_SENT_HREF)
-  }
+  const onReplySent = useCallback(
+    (item: ContactPriorityItem) => {
+      const ackKey = replyAckKey(item)
+      if (busy || replySentDone[ackKey]) return
+      setError('')
+      setReplyScanningId(item.id)
+      setReplyScanningAckKey(ackKey)
+      fireCustomUrl(REPLY_SENT_HREF)
+    },
+    [busy, replySentDone],
+  )
 
   const priorityAll = useMemo(
     () => (data ? buildContactPriorityQueue(data) : []),
@@ -402,6 +434,12 @@ export default function App() {
         label: '🔁 Duplicates skipped',
         count: data.archivedLeads?.filter((l) => l.duplicateOfKey).length ?? 0,
         hint: 'Leads skipped specifically because they duplicated another lead — grouped by survivor',
+      },
+      {
+        id: 'archived' as const,
+        label: 'Archived / decided',
+        count: data.archivedLeads?.length ?? 0,
+        hint: 'Off the active funnel — already decided against, closed out, or already applied',
       },
     ]
   }, [counts, data])
@@ -477,10 +515,12 @@ export default function App() {
               <p className="panel-action">
                 {filter === 'duplicates_skipped'
                   ? 'Leads skipped specifically because they duplicated another lead, grouped by the survivor.'
-                  : 'Ranked by recruiter contact attempts, then age. Read YOUR ACTION on each row before using the buttons. Digests / ATS alerts are excluded — use Decide/apply for those.'}
+                  : filter === 'archived'
+                    ? 'Off the active funnel above — already decided against, closed out, or already applied — still browsable here for their stored message history.'
+                    : 'Ranked by recruiter contact attempts, then age. Read YOUR ACTION on each row before using the buttons. Digests / ATS alerts are excluded — use Decide/apply for those.'}
               </p>
             </div>
-            {filter !== 'duplicates_skipped' && (
+            {filter !== 'duplicates_skipped' && filter !== 'archived' && (
               <span className="priority-total">
                 {filter === 'decide_apply' ? decideApplyCount(data.stages.decideApply) : filtered.length}{' '}
                 shown
@@ -518,6 +558,12 @@ export default function App() {
               onClearFocus={() => setDuplicatesFocusKey(null)}
               onJumpToSurvivor={onJumpToSurvivor}
             />
+          ) : filter === 'archived' ? (
+            <ArchivedLeadsPanel
+              leads={data.archivedLeads ?? []}
+              onViewDuplicates={onViewDuplicates}
+              highlightKey={highlightKey}
+            />
           ) : (
             <ContactPriorityQueue
               items={filtered}
@@ -533,27 +579,31 @@ export default function App() {
         </section>
       )}
 
-      {data && (
-        <details
-          className="archive-details"
-          open={archiveOpen}
-          onToggle={(e) => setArchiveOpen(e.currentTarget.open)}
-        >
-          <summary>
-            Archived / decided leads{' '}
-            <span className="pill">{data.archivedLeads?.length ?? 0}</span>
-          </summary>
-          <div className="archive-body">
-            <ArchivedLeadsPanel
-              leads={data.archivedLeads ?? []}
-              onViewDuplicates={onViewDuplicates}
-              highlightKey={highlightKey}
-            />
-          </div>
-        </details>
-      )}
-
       {!data && !error && <p className="loading">Loading workflow…</p>}
+
+      {/* Fixed, always rendered regardless of `filter` — every tab (Contact
+       * priority, Decide/apply, Duplicates skipped, Archived/decided) can
+       * run to a very long list, and there's otherwise no way back to the
+       * tab bar / header short of scrolling all the way back up by hand.
+       * Instant, not smooth — same reasoning as scrollToLeadRow (links.ts):
+       * the point is the tab bar becomes clickable immediately, not
+       * eventually once a multi-second scroll animation finishes. */}
+      <button
+        type="button"
+        className="back-to-top"
+        onClick={() => {
+          window.scrollTo({ top: 0, behavior: 'auto' })
+          // .contact-priority scrolls internally (max-height + overflow:
+          // auto — see App.css) independently of the window, so a long list
+          // scrolled deep in-panel left the tab bar/head off-screen even
+          // after the window-level scroll above landed at the top. Reset
+          // that inner scrollTop too (2026-08-18).
+          document.querySelector('.contact-priority')?.scrollTo({ top: 0, behavior: 'auto' })
+        }}
+        title="Scroll back to the top — makes the tab bar visible and clickable again"
+      >
+        ↑ Back to top
+      </button>
     </div>
   )
 }

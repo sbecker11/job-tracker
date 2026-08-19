@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+#
+# pre-commit — block commits that contain secrets or junk files.
+#
+# Scans ONLY what is staged (what is actually about to be committed), so it
+# matches the real commit, not your whole working tree. Two finding classes:
+#
+#   SECRET  -> hard block. Content that looks like a credential, OR a
+#              secret-class filename (.env, *.pem, *.key, id_rsa, ...).
+#   JUNK    -> block. OS/editor/build artifacts that don't belong in history
+#              (.DS_Store, __pycache__/, node_modules/, venv/, ...).
+#
+# Bypass options:
+#   - False-positive secret on a line? Append a pragma to that line:
+#         something = "not-really-a-secret"   # pragma: allowlist secret
+#   - Intentionally committing a flagged file? Unstage the others, or as a
+#     last resort run:  git commit --no-verify   (skips ALL hooks — use sparingly)
+#
+# Install (per repo):
+#   cp pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+# Or version it and point git at it:
+#   mkdir -p scripts && cp pre-commit scripts/pre-commit && chmod +x scripts/pre-commit
+#   git config core.hooksPath scripts
+#
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Patterns — edit these to taste
+# ---------------------------------------------------------------------------
+
+# Content patterns that indicate a likely secret (matched case-insensitively).
+SECRET_CONTENT_PATTERNS=(
+  '-----BEGIN (RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----'
+  'AKIA[0-9A-Z]{16}'                                   # AWS access key id
+  'aws_secret_access_key[[:space:]]*[=:]'
+  'AIza[0-9A-Za-z_-]{35}'                              # Google API key
+  'xox[baprs]-[0-9A-Za-z-]{10,}'                       # Slack token
+  'gh[pousr]_[0-9A-Za-z]{20,}'                         # GitHub token
+  '(password|passwd|pwd|secret|api[_-]?key|client[_-]?secret|access[_-]?token)[[:space:]]*[=:][[:space:]]*["'"'"']?[^[:space:]"'"'"']'  # pragma: allowlist secret
+  'smtp[^[:space:]]*[[:space:]]*[=:].*(pass|pwd)'      # smtp password lines  # pragma: allowlist secret
+  'bearer[[:space:]]+[A-Za-z0-9._-]{20,}'              # bearer token
+  '://[^/[:space:]:@]+:[^/[:space:]:@]+@'              # user:pass@host in URL
+  '(recovery|backup)[[:space:]_-]*code'                # 2FA recovery codes  # pragma: allowlist secret
+)
+
+# Secret-class FILES (by path). Block regardless of content.
+SECRET_FILE_PATTERNS=(
+  '(^|/)\.env($|\.)'      # .env, .env.local, .env.production ...
+  '\.pem$'
+  '\.p12$'
+  '\.pfx$'
+  '(^|/)id_rsa$'
+  '(^|/)id_ed25519$'
+  '(^|/)id_dsa$'
+  '\.keystore$'
+  '(^|/)credentials$'     # aws-style credentials file
+)
+# Note: '*.key' is intentionally NOT auto-blocked because public keys and some
+# config files legitimately use it. Add '\.key$' here if you want it blocked.
+
+# Exact filenames (basename match) that are exempt from SECRET_FILE_PATTERNS
+# above even though they match one of those patterns — e.g. template/example
+# files that intentionally look like a secret-class file but hold no real
+# secret values.
+SECRET_FILE_ALLOWLIST=(
+  '.env.example'
+)
+
+# JUNK files (by path). Block; these belong in .gitignore.
+JUNK_FILE_PATTERNS=(
+  '(^|/)\.DS_Store$'
+  '(^|/)Thumbs\.db$'
+  '(^|/)desktop\.ini$'
+  '(^|/)__pycache__/'
+  '\.py[co]$'
+  '(^|/)\.venv/'
+  '(^|/)venv/'
+  '(^|/)env/'
+  '(^|/)node_modules/'
+  '(^|/)\.idea/'
+  '(^|/)\.vscode/'
+  '\.log$'
+  '\.sw[op]$'
+  '~$'
+  '(^|/)dist/'
+  '(^|/)build/'
+  '\.egg-info/'
+)
+
+# ---------------------------------------------------------------------------
+# Setup
+# ---------------------------------------------------------------------------
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  RED=$'\033[31m'; YEL=$'\033[33m'; GRN=$'\033[32m'; BOLD=$'\033[1m'; RST=$'\033[0m'
+else
+  RED=""; YEL=""; GRN=""; BOLD=""; RST=""
+fi
+
+secret_hits=0
+junk_hits=0
+
+note_secret() { secret_hits=$((secret_hits+1)); printf '%s  SECRET%s  %s\n' "$RED" "$RST" "$1"; }
+note_junk()   { junk_hits=$((junk_hits+1));   printf '%s  JUNK  %s  %s\n' "$YEL" "$RST" "$1"; }
+
+# Staged, added/copied/modified files (NUL-delimited for spaces in names).
+# Portable read loop instead of `mapfile -d ''` — mapfile is a bash-4+
+# builtin and macOS ships bash 3.2 (Apple hasn't upgraded it for licensing
+# reasons since ~2007), so `mapfile` silently doesn't exist there and every
+# invocation of this hook failed with "command not found" instead of
+# actually scanning anything (found 2026-08-18 while installing this hook
+# into two sibling repos — it had never worked on this machine).
+FILES=()
+while IFS= read -r -d '' f; do
+  FILES+=("$f")
+done < <(git diff --cached --name-only --diff-filter=ACM -z)
+
+if [ "${#FILES[@]}" -eq 0 ]; then
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Scan
+# ---------------------------------------------------------------------------
+
+for f in "${FILES[@]}"; do
+  [ -z "$f" ] && continue
+
+  # 1) secret-class filename (unless explicitly allowlisted by basename)
+  base_f="$(basename -- "$f")"
+  is_allowlisted=0
+  for allowed in "${SECRET_FILE_ALLOWLIST[@]}"; do
+    if [ "$base_f" = "$allowed" ]; then
+      is_allowlisted=1
+      break
+    fi
+  done
+  if [ "$is_allowlisted" -eq 0 ]; then
+    for pat in "${SECRET_FILE_PATTERNS[@]}"; do
+      if printf '%s' "$f" | grep -Eiq -- "$pat"; then
+        note_secret "secret-class file: $f"
+        break
+      fi
+    done
+  fi
+
+  # 2) junk filename
+  for pat in "${JUNK_FILE_PATTERNS[@]}"; do
+    if printf '%s' "$f" | grep -Eq -- "$pat"; then
+      note_junk "$f"
+      break
+    fi
+  done
+
+  # 3) secret content in the ADDED lines only
+  #    (drop diff headers, strip leading '+', drop allowlisted lines)
+  added="$(git diff --cached -U0 --diff-filter=ACM -- "$f" \
+            | grep -E '^\+' | grep -Ev '^\+\+\+' \
+            | sed 's/^+//' \
+            | grep -Eiv 'pragma:?[[:space:]_-]*allowlist[[:space:]_-]*secret' || true)"
+  [ -z "$added" ] && continue
+
+  for pat in "${SECRET_CONTENT_PATTERNS[@]}"; do
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      # Truncate the echoed line so we don't spew the whole secret to the terminal.
+      snippet="${line:0:80}"
+      note_secret "$f: matched /$pat/ -> ${snippet}"
+    done < <(printf '%s\n' "$added" | grep -Ei -- "$pat" || true)
+  done
+done
+
+# ---------------------------------------------------------------------------
+# Verdict
+# ---------------------------------------------------------------------------
+
+if [ "$secret_hits" -eq 0 ] && [ "$junk_hits" -eq 0 ]; then
+  printf '%spre-commit: clean — no secrets or junk in staged changes.%s\n' "$GRN" "$RST"
+  exit 0
+fi
+
+echo
+printf '%s%spre-commit blocked this commit.%s\n' "$BOLD" "$RED" "$RST"
+[ "$secret_hits" -gt 0 ] && printf '  %d possible secret finding(s).\n' "$secret_hits"
+[ "$junk_hits" -gt 0 ]   && printf '  %d junk file(s).\n' "$junk_hits"
+echo
+echo "What to do:"
+echo "  - Junk files:    git restore --staged <file>   then add them to .gitignore"
+echo "  - Real secret:   remove it, move the value to an untracked .env / secret store,"  # pragma: allowlist secret
+echo "                   and rotate the credential if it was ever real."
+echo "  - False alarm:   add  '# pragma: allowlist secret'  to that line, or"
+echo "                   git restore --staged the misflagged file."
+echo "  - Override all:  git commit --no-verify   (skips every hook — use sparingly)"
+exit 1
