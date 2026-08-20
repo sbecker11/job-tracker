@@ -54,8 +54,35 @@ _SHARED_ENV = (
     if _WORKSPACE_ROOT_OVERRIDE
     else _PROJECT_ROOT_ENV.parent.parent / ".env"
 )
-load_dotenv(_PROJECT_ROOT_ENV)
-load_dotenv(_SHARED_ENV)
+def _safe_load_dotenv(path: Path) -> None:
+    """`load_dotenv`, tolerant of a still-git-crypt-encrypted `.env`.
+
+    A git-crypt-encrypted `.env` that hasn't been `git-crypt unlock`ed yet
+    (a fresh clone with no key registered, or CI, which never has the key
+    at all) checks out as raw AES-256 ciphertext, not valid UTF-8 text.
+    Without this, python-dotenv's parser raises UnicodeDecodeError — and
+    since this module-level load runs at package-import time, that crashed
+    *every* CLI invocation and every test file that imports job_tracker
+    (observed 2026-08-19: all 55 test files failing identically in CI right
+    after `.env` was git-crypt-encrypted). The README already promises this
+    exact scenario is "the safe default, not a bug" — this makes that
+    actually true instead of a hard crash.
+    """
+    try:
+        load_dotenv(path)
+    except UnicodeDecodeError:
+        pass
+
+
+def _safe_dotenv_values(path: Path) -> dict:
+    try:
+        return dotenv_values(path)
+    except UnicodeDecodeError:
+        return {}
+
+
+_safe_load_dotenv(_PROJECT_ROOT_ENV)
+_safe_load_dotenv(_SHARED_ENV)
 
 
 def _log_env_key_source(key: str) -> None:
@@ -73,9 +100,9 @@ def _log_env_key_source(key: str) -> None:
     # as the source when it actually contributed nothing.
     if os.environ.get("JOB_TRACKER_LOG_ENV_SOURCE") != "1":
         return
-    if dotenv_values(_PROJECT_ROOT_ENV).get(key) == value:
+    if _safe_dotenv_values(_PROJECT_ROOT_ENV).get(key) == value:
         source = f"local .env ({_PROJECT_ROOT_ENV})"
-    elif dotenv_values(_SHARED_ENV).get(key) == value:
+    elif _safe_dotenv_values(_SHARED_ENV).get(key) == value:
         source = f"shared .env ({_SHARED_ENV})"
     else:
         source = "pre-existing shell/process environment"
