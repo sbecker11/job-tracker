@@ -1,5 +1,7 @@
 # job-tracker — Cursor project instructions
 
+**Humans:** [`README.md`](README.md) · [`PRIMER.md`](PRIMER.md) · umbrella [`docs/WORKSPACE.md`](docs/WORKSPACE.md).
+
 Job-search **processing** pipeline: Gmail → classify → ATS JD resolve → score →
 store → (on pursue) résumé/cover-letter packages.
 
