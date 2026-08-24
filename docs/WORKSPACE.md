@@ -121,12 +121,17 @@ cd "$WORKSPACE/job-tracker" && source .venv/bin/activate
 
 | Goal | Command |
 |------|---------|
+| **Monday briefing (decide now)** | `cd recruiting-automation && ./monday.sh` |
 | Health check | `cd recruiting-automation && ./status.sh` |
 | Restart after HALT | `./install.sh` (clears halt; safe to re-run) |
 | Stop on purpose | `./stop.sh` |
 | Coverage rollup | `./report-coverage.sh` (workspace root) |
 | Re-exclude `.env` from Time Machine | `./tm-exclude-env-files.sh` |
 | Candidate / package rules | `~/CLAUDE.md` (never fork into AGENTS.md) |
+
+`./monday.sh` refreshes pending-actions data and prints decision queues ranked
+for **interview likelihood** (direct-recruiter, reply-due, match %, packages
+ready) — aimed at zero dead-time between lead arrival and action.
 
 ## Layout
 

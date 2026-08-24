@@ -46,6 +46,7 @@ mark-package-sent = "job_tracker.cli.mark_package_sent:main"
 merge-leads = "job_tracker.cli.merge_leads:main"
 triage-imap-inbox = "job_tracker.cli.triage_imap_inbox:main"
 backfill-post-application-signals = "job_tracker.cli.backfill_post_application_signals:main"
+monday-report = "job_tracker.cli.monday_report:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-cov>=5.0"]

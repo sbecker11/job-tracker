@@ -353,12 +353,31 @@ PIPELINE_STAGES = (
 
 
 def _priority_sort_key(item: dict) -> tuple:
-    # Unreplied recruiter messages first, then attempts / age.
+    """Sort for least dead-time + highest interview likelihood.
+
+    1. Reply-due recruiter threads first (clock is running on the relationship)
+    2. Confirmed direct-recruiter outreach (human pitch ≫ cold digest)
+    3. More contact attempts / longer unanswered
+    4. Higher match % when present
+    """
     reply_rank = 0 if item.get("replyDue") else 1
+    dro = item.get("directRecruiterOutreach")
+    if dro is True or dro == 1 or dro == "yes":
+        dro_rank = 0
+    elif dro is False or dro == 0 or dro == "no":
+        dro_rank = 2
+    else:
+        dro_rank = 1
     unanswered = int(item.get("unansweredDays") or item.get("ageDays") or 0)
+    try:
+        match = -float(item.get("matchPct") or item.get("llmMatchPct") or 0)
+    except (TypeError, ValueError):
+        match = 0.0
     return (
         reply_rank,
+        dro_rank,
         -int(item.get("contactAttempts") or 0),
+        match,
         -unanswered,
         (item.get("company") or "").lower(),
     )
@@ -873,6 +892,8 @@ def build_send_resume_queue(
         apply_url: str = "",
         package_kind: str = "",
         folder_hint: str = "",
+        direct_recruiter: bool | None = None,
+        match_pct: float | None = None,
     ) -> bool:
         recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
         folder_abs, disk_ready = _package_folder_abs(conn, company=company, title=title, output_root=root)
@@ -926,6 +947,8 @@ def build_send_resume_queue(
                 "actionHint": next_action,
                 "nextAction": next_action,
                 "markSentUrl": f"mps://mark?key={quote(key, safe='')}&channel={channel}",
+                "directRecruiterOutreach": direct_recruiter,
+                "matchPct": match_pct,
             }
         if not item["gmailUrl"] or not item["threadUrl"]:
             enrich_item_reply_links(item, conn=conn)
@@ -968,6 +991,8 @@ def build_send_resume_queue(
                 apply_url=lead.get("applyUrl") or "",
                 package_kind=label,
                 folder_hint=lead.get("folderPath") or "",
+                direct_recruiter=lead.get("directRecruiter"),
+                match_pct=lead.get("matchPct"),
             )
 
     for r in conn.execute(
@@ -994,6 +1019,16 @@ def build_send_resume_queue(
         )
         if not asked:
             continue
+        dro_row = conn.execute(
+            "SELECT direct_recruiter_outreach, llm_match_pct, match_pct FROM job_leads WHERE normalized_key = ?",
+            (key,),
+        ).fetchone()
+        dro = None if dro_row is None or dro_row["direct_recruiter_outreach"] is None else bool(
+            dro_row["direct_recruiter_outreach"]
+        )
+        match_pct = None
+        if dro_row is not None:
+            match_pct = dro_row["llm_match_pct"] if dro_row["llm_match_pct"] is not None else dro_row["match_pct"]
         _append_item(
             key=key,
             company=r["company"] or "",
@@ -1002,6 +1037,8 @@ def build_send_resume_queue(
             age_days=age_days_fn(r["first_seen"], now),
             contact_attempts=len(human_inbound),
             asked=True,
+            direct_recruiter=dro,
+            match_pct=match_pct,
         )
 
     queue.sort(key=_priority_sort_key)

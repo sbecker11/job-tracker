@@ -52,6 +52,7 @@ python scripts/triage_recruiter_inbox.py --dry-run --inbox-batch-message-cap 5
 
 | Goal | Command |
 |------|---------|
+| **Monday briefing** | `../recruiting-automation/monday.sh` (or `python scripts/monday_report.py`) |
 | End-to-end primer | See [`PRIMER.md`](PRIMER.md) |
 | Triage recruiter inbox (dry-run) | `python scripts/triage_recruiter_inbox.py --dry-run --inbox-batch-message-cap 10` |
 | List pursue leads | `python scripts/list_leads.py --verdict pursue` |
