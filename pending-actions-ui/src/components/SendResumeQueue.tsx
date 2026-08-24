@@ -12,8 +12,17 @@ export function SendResumeQueue({ items }: { items: SendResumeItem[] }) {
     return <p className="empty-hint">No résumé-send actions waiting.</p>
   }
 
+  const readyCount = items.filter((i) => i.packageReady).length
+  const missingCount = items.length - readyCount
+
   return (
     <div className="card-list">
+      {readyCount > 0 && (
+        <p className="hint-line">
+          <strong>{readyCount}</strong> package{readyCount === 1 ? '' : 's'} ready to send
+          {missingCount > 0 ? ` · ${missingCount} still need generation on disk` : ''}
+        </p>
+      )}
       {items.map((item) => (
         <article key={item.normalizedKey} className="action-card">
           <header className="action-card-head">

@@ -220,6 +220,10 @@ def _next_commands(*, unmatched: int, awaiting: int, packages: int, halted: bool
         cmds.append("python scripts/process_awaiting_llm_review.py --limit 5   # finish scoring high-gate leads")
     if packages:
         cmds.append("open http://127.0.0.1:3174/   # Send résumé / Decide-apply stages")
+    cmds.append("python scripts/audit_label_drift.py")
+    cmds.append("python scripts/scan_rejection_backlog.py")
+    cmds.append("python scripts/spend_report.py")
+    cmds.append("python scripts/quiet_jobs_report.py")
     cmds.append("python scripts/resync_labels.py --dry-run   # label↔DB trust check")
     cmds.append("python scripts/render_pending_actions.py --no-rescore   # refresh UI JSON")
     return cmds
@@ -322,6 +326,36 @@ def main(argv: list[str] | None = None) -> int:
     if snap["schedule"]["halted"]:
         return 2
     return 0
+
+
+def build_kpi_counts(
+    *,
+    db_path: Path = DEFAULT_DB_PATH,
+    output_root: Path = _DEFAULT_OUTPUT_ROOT,
+    state_dir: Path | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Lightweight KPI dict for status.sh / run_cycle footer (no lead lists)."""
+    workspace = Path(
+        __import__("os").environ.get(
+            "RECRUITING_AUTOMATION_WORKSPACE_ROOT",
+            str(Path.home() / "workspace-recruiting-automation"),
+        )
+    )
+    resolved_state = state_dir or (workspace / "recruiting-automation" / "state")
+    snap = build_monday_snapshot(
+        db_path=db_path,
+        output_root=output_root,
+        state_dir=resolved_state,
+        now=now,
+        top_n=0,
+    )
+    return {
+        "generatedAt": snap["generatedAt"],
+        "schedule": snap["schedule"],
+        "counts": snap["counts"],
+        "llmReviewGatePct": snap["llmReviewGatePct"],
+    }
 
 
 if __name__ == "__main__":

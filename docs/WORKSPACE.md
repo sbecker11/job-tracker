@@ -47,6 +47,44 @@ brew install git-crypt
 # Python 3.11+ recommended; each sibling uses its own .venv
 ```
 
+### GitHub remotes (SSH)
+
+`git push` / `git pull` use whatever URL is configured as `origin`. If you see
+`Username for 'https://github.com':`, the remote is **HTTPS** — your SSH key is
+ignored until you switch to an SSH URL (`git@github.com:...`).
+
+**Test SSH:**
+
+```bash
+ssh -T git@github.com
+```
+
+**Check remotes:**
+
+```bash
+for r in comms-migration job-tracker recruiting-automation; do
+  echo "=== $r ==="
+  git -C "$WORKSPACE/$r" remote -v
+done
+```
+
+**Fix all three siblings** (run on mini1, mini2, or any machine with clones):
+
+```bash
+git -C "$WORKSPACE/job-tracker" remote set-url origin git@github.com:sbecker11/job-tracker.git
+git -C "$WORKSPACE/comms-migration" remote set-url origin git@github.com:sbecker11/comms-migration.git
+git -C "$WORKSPACE/recruiting-automation" remote set-url origin git@github.com:sbecker11/recruiting-automation.git
+```
+
+**One-time push** without changing `origin`:
+
+```bash
+git push git@github.com:sbecker11/<repo>.git HEAD:main
+```
+
+Step 1 below clones with SSH URLs already; this section is for existing clones
+that still point at `https://github.com/...`.
+
 ### 1. Clone the three siblings side-by-side
 
 ```bash
@@ -132,6 +170,30 @@ cd "$WORKSPACE/job-tracker" && source .venv/bin/activate
 `./monday.sh` refreshes pending-actions data and prints decision queues ranked
 for **interview likelihood** (direct-recruiter, reply-due, match %, packages
 ready) — aimed at zero dead-time between lead arrival and action.
+
+## KPIs (Phase 0 baseline)
+
+Track weekly (or whenever tuning the pipeline). `./status.sh` prints a live
+snapshot; `./status.sh --json` emits machine-readable KPIs for scripts.
+
+| KPI | Source | Healthy target |
+|-----|--------|----------------|
+| Minutes/day in Gmail for recruiting | Manual (weekly) | Trending toward 0 |
+| Unmatched communications | `status.sh` / `./monday.sh` | 0 — clarify immediately |
+| Awaiting full LLM review | `status.sh` / `./monday.sh` | Low; none > 3 days old |
+| Packages ready to send | `status.sh` / pending-actions UI | Act same day |
+| Waiting on them (stale) | `status.sh` | Follow up when threshold hit |
+| Label↔DB drift | `resync_labels.py --dry-run` | 0 would-relabel rows |
+| Framework sync | `verify_framework_sync.py` | OK (no drift vs `~/CLAUDE.md`) |
+| HALT incidents / week | `logs/run-*.log` | 0 after reliability work |
+| $ / pursue package / week | LLM logs (Phase 4) | TBD |
+
+Guardrails wired in Phase 0:
+
+```bash
+cd job-tracker && python scripts/verify_framework_sync.py   # CLAUDE.md ↔ framework.yaml
+cd recruiting-automation && ./status.sh                     # schedule + KPI queues
+```
 
 ## Layout
 

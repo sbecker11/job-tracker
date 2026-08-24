@@ -31,6 +31,23 @@ echo "=== job-tracker coverage ==="
 echo "Python: $PY"
 echo
 
+echo "--- framework ↔ CLAUDE.md sync ---"
+if "$PY" -c "import job_tracker.cli.verify_framework_sync" 2>/dev/null; then
+  if [[ -f "$HOME/CLAUDE.md" ]]; then
+    "$PY" "$ROOT/scripts/verify_framework_sync.py" || framework_rc=$?
+    framework_rc=${framework_rc:-0}
+    if (( framework_rc != 0 )); then
+      echo "error: framework.yaml drift vs ~/CLAUDE.md — fix before merging." >&2
+      exit "$framework_rc"
+    fi
+  else
+    echo "skip: ~/CLAUDE.md not present on this machine"
+  fi
+else
+  echo "skip: verify_framework_sync not importable"
+fi
+echo
+
 set +e
 "$PY" -m pytest tests/ \
   --cov=job_tracker \

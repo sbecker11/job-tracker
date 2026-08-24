@@ -616,3 +616,65 @@ reflects its CURRENT state, not just a snapshot from whenever it was first
 seen. What's left un-labeled or still carrying `NeedsFollowup` /
 `NEEDS_REVIEW` is, by construction, exactly what still needs a human look —
 either directly in Gmail or via `var/pending-actions.html`.
+
+---
+
+## Backfill playbook (Phase 2)
+
+Use after a multi-day HALT, new forward, or historical mailbox gap. See
+[`docs/MAILBOX_COVERAGE.md`](docs/MAILBOX_COVERAGE.md) for which address each
+step covers.
+
+**1. Classify historical mail (comms-migration)**
+
+```bash
+cd ../comms-migration && source .venv/bin/activate
+python scripts/run_classifier.py --account recruiting_funnel --limit 500 --dry-run
+python scripts/run_classifier.py --account personal_hub --limit 200 --dry-run
+# drop --dry-run when output looks right
+```
+
+**2. Triage backlog (job-tracker)**
+
+```bash
+cd ../job-tracker && source .venv/bin/activate
+python scripts/triage_recruiter_inbox.py --dry-run --newer-than 30 --inbox-batch-message-cap 50
+python scripts/triage_recruiter_inbox.py --newer-than 30 --inbox-batch-message-cap 30 --llm-fallback
+python scripts/triage_recruiter_inbox.py --account personal_hub --newer-than 90 --llm-fallback
+python scripts/triage_imap_inbox.py --imap-prefix SPEXTURE --newer-than 90 --llm-fallback
+```
+
+**3. LinkedIn / Sent catch-up**
+
+```bash
+python scripts/scan_communications.py --llm-fallback --include-sent --newer-than 14
+```
+
+**4. Rejection backlog (archived SKIP / missed matches)**
+
+```bash
+python scripts/scan_rejection_backlog.py              # preview
+python scripts/scan_rejection_backlog.py --apply --yes  # after review
+```
+
+**5. Post-application signals on stored conversations**
+
+```bash
+python scripts/backfill_post_application_signals.py --dry-run
+python scripts/backfill_post_application_signals.py
+```
+
+**6. LLM-review sweep + label trust**
+
+```bash
+python scripts/process_awaiting_llm_review.py --limit 20
+python scripts/audit_label_drift.py
+python scripts/resync_labels.py --dry-run
+python scripts/resync_labels.py
+```
+
+**7. Refresh decision surfaces**
+
+```bash
+cd ../recruiting-automation && ./monday.sh
+```

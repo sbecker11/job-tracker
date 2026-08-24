@@ -7,6 +7,7 @@ from pathlib import Path
 
 from job_tracker.cli.monday_report import (
     _interview_likelihood_score,
+    build_kpi_counts,
     build_monday_snapshot,
     render_text,
 )
@@ -79,3 +80,19 @@ def test_build_monday_snapshot_counts(tmp_path: Path):
     text = render_text(snap)
     assert "MONDAY v1" in text
     assert "Acme" in text
+
+
+def test_build_kpi_counts_lightweight(tmp_path: Path):
+    db = tmp_path / "leads.db"
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "last_ok_cycle").write_text(str(int(datetime.now(timezone.utc).timestamp())))
+
+    conn = connect(db)
+    conn.commit()
+    conn.close()
+
+    kpi = build_kpi_counts(db_path=db, output_root=tmp_path / "packages", state_dir=state)
+    assert "counts" in kpi
+    assert kpi["counts"]["unmatchedCommunications"] == 0
+    assert kpi["schedule"]["halted"] is False
