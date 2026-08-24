@@ -1,5 +1,7 @@
 import { memo, useMemo, useState } from 'react'
+import { AllTabsToggle } from './AllTabsToggle'
 import { formatDecidedAt, leadAnchorHref, leadAnchorId, revealFolderUrl, viewCommunicationsUrl } from '../lib/links'
+import type { GlobalSearchResult } from '../priorityQueue'
 import type { ArchivedLead } from '../types'
 
 interface DuplicateGroup {
@@ -173,6 +175,8 @@ export const DuplicatesSkippedPanel = memo(function DuplicatesSkippedPanel({
   highlightKey,
   onClearFocus,
   onJumpToSurvivor,
+  searchIndex = [],
+  onJumpToResult,
 }: {
   leads: ArchivedLead[]
   /** Which group to auto-expand + visually mark as "jumped to" — every
@@ -184,6 +188,9 @@ export const DuplicatesSkippedPanel = memo(function DuplicatesSkippedPanel({
   highlightKey?: string | null
   onClearFocus?: () => void
   onJumpToSurvivor?: (key: string) => void
+  /** Cross-tab search — see AllTabsToggle. */
+  searchIndex?: GlobalSearchResult[]
+  onJumpToResult?: (result: GlobalSearchResult) => void
 }) {
   const [query, setQuery] = useState('')
 
@@ -248,6 +255,9 @@ export const DuplicatesSkippedPanel = memo(function DuplicatesSkippedPanel({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
+        {onJumpToResult && (
+          <AllTabsToggle query={query} searchIndex={searchIndex} onJumpToResult={onJumpToResult} />
+        )}
       </div>
       <div className="dup-groups">
         {filteredGroups.map((g, i) => (

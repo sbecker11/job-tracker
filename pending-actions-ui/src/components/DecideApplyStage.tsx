@@ -1,7 +1,9 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { AllTabsToggle } from './AllTabsToggle'
 import { DuplicateBadge } from './DuplicateBadge'
 import { leadAnchorId } from '../lib/links'
+import type { GlobalSearchResult } from '../priorityQueue'
 import type { DecideLead, WorkflowPayload } from '../types'
 
 /** Rough single-line row estimate — see ArchivedLeadsPanel's identical
@@ -188,10 +190,15 @@ export const DecideApplyStage = memo(function DecideApplyStage({
   data,
   onViewDuplicates,
   highlightKey,
+  searchIndex = [],
+  onJumpToResult,
 }: {
   data: WorkflowPayload['stages']['decideApply']
   onViewDuplicates?: (normalizedKey: string, firstDuplicateKey?: string) => void
   highlightKey?: string | null
+  /** Cross-tab search — see AllTabsToggle. */
+  searchIndex?: GlobalSearchResult[]
+  onJumpToResult?: (result: GlobalSearchResult) => void
 }) {
   const [query, setQuery] = useState('')
 
@@ -255,6 +262,9 @@ export const DecideApplyStage = memo(function DecideApplyStage({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
+        {onJumpToResult && (
+          <AllTabsToggle query={query} searchIndex={searchIndex} onJumpToResult={onJumpToResult} />
+        )}
       </div>
       {!filteredTotal ? (
         <p className="empty-hint">No decide/apply leads match &quot;{query}&quot;.</p>

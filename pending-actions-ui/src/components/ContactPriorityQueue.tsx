@@ -1,9 +1,10 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { AllTabsToggle } from './AllTabsToggle'
 import { ChannelBadge } from './ChannelBadge'
 import { DuplicateBadge } from './DuplicateBadge'
 import { leadAnchorId } from '../lib/links'
-import { replyAckKey, type ContactPriorityItem } from '../priorityQueue'
+import { replyAckKey, type ContactPriorityItem, type GlobalSearchResult } from '../priorityQueue'
 
 /** Rough starting estimate (collapsed row: rank + title/badges row + next-
  * action line + meta line, plus padding) — corrected per-row once rendered
@@ -104,6 +105,9 @@ interface Props {
   /** Briefly flash + scroll to the row for this key (set after jumping in
    * from the Duplicates skipped tab's "Duplicate of" link). */
   highlightKey?: string | null
+  /** Cross-tab search — see AllTabsToggle. */
+  searchIndex?: GlobalSearchResult[]
+  onJumpToResult?: (result: GlobalSearchResult) => void
 }
 
 // Memoized: this list can run to hundreds of rows, and App re-renders every
@@ -119,6 +123,8 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
   replyScanBusy = false,
   onViewDuplicates,
   highlightKey,
+  searchIndex = [],
+  onJumpToResult,
 }: Props) {
   const [expandedId, setExpandedId] = useState('')
   const [copiedId, setCopiedId] = useState('')
@@ -205,6 +211,9 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
+        {onJumpToResult && (
+          <AllTabsToggle query={query} searchIndex={searchIndex} onJumpToResult={onJumpToResult} />
+        )}
       </div>
       {!visibleItems.length ? (
         <p className="empty-hint">No {filterLabel.toLowerCase()} leads match &quot;{query}&quot;.</p>
@@ -453,6 +462,12 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                   <pre className="draft">{item.draftReply}</pre>
                 ) : (
                   <p className="empty-hint">No generated draft — reply from the thread/inbox.</p>
+                )}
+                {item.messageBody?.trim() && (
+                  <details className="original-message">
+                    <summary>Original message from {item.recruiterName || 'recruiter'}</summary>
+                    <pre className="draft original-message-body">{item.messageBody}</pre>
+                  </details>
                 )}
               </div>
             )}

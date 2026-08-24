@@ -69,6 +69,8 @@ export interface ContactPriorityItem {
   kind: string
   duplicateCount?: number
   duplicateKeys?: string[]
+  /** Full inbound message text — clarify rows only (see ClarifyItem). */
+  messageBody?: string
 }
 
 const STAGE_RANK: Record<string, number> = {
@@ -151,6 +153,7 @@ function fromClarify(c: ClarifyItem): ContactPriorityItem {
     ageDays: c.ageDays || 0,
     contactAttempts: c.contactAttempts || 1,
     draftReply: c.draftReply,
+    messageBody: c.messageBody,
     threadUrl: c.threadUrl,
     gmailUrl: c.gmailUrl,
     messageId: c.messageId,
@@ -363,4 +366,128 @@ export function contactQueueCounts(items: ContactPriorityItem[]): Record<string,
 /** Stable id for the inbound the row is answering — used to lock Reply sent. */
 export function replyAckKey(item: ContactPriorityItem): string {
   return item.messageId || item.replyId || item.id
+}
+
+/** One entry in the cross-tab "All tabs" search index (see AllTabsToggle) —
+ * every lead anywhere in the payload, tagged with which tab actually shows
+ * it, so a search typed into any one tab's box can surface a hit that
+ * actually lives in a different tab and jump straight there. */
+export interface GlobalSearchResult {
+  normalizedKey: string
+  company: string
+  title: string
+  recruiterName?: string
+  recruiterEmail?: string
+  recruiterPhone?: string
+  status?: string
+  tab: ContactFilter
+}
+
+/** Builds the cross-tab index once per data refresh (App.tsx memoizes on
+ * `data`) — deliberately keyed/deduped by normalizedKey, first occurrence
+ * wins (contact stages checked before decide/apply before archived), so a
+ * lead present in more than one bucket (shouldn't normally happen, but
+ * cheaper to guard than assume) only shows once. Items with no
+ * normalizedKey (e.g. an `unmatched` clarify row with nothing extracted
+ * yet) are skipped — there's no anchor to jump to and nothing to key on. */
+export function buildGlobalSearchIndex(data: WorkflowPayload): GlobalSearchResult[] {
+  const out: GlobalSearchResult[] = []
+  const seen = new Set<string>()
+  const push = (r: Omit<GlobalSearchResult, 'normalizedKey'> & { normalizedKey?: string }) => {
+    if (!r.normalizedKey || seen.has(r.normalizedKey)) return
+    seen.add(r.normalizedKey)
+    out.push(r as GlobalSearchResult)
+  }
+
+  for (const c of data.stages.clarify) {
+    push({
+      normalizedKey: c.normalizedKey,
+      company: c.company || '',
+      title: c.title || c.subject || '',
+      recruiterName: c.recruiterName,
+      recruiterEmail: c.recruiterEmail,
+      recruiterPhone: c.recruiterPhone,
+      tab: 'clarify',
+    })
+  }
+  for (const s of data.stages.sendResume) {
+    push({
+      normalizedKey: s.normalizedKey,
+      company: s.company,
+      title: s.title,
+      recruiterName: s.recruiterName,
+      recruiterEmail: s.recruiterEmail,
+      recruiterPhone: s.recruiterPhone,
+      tab: 'send_resume',
+    })
+  }
+  for (const w of data.stages.waitSchedule) {
+    push({
+      normalizedKey: w.normalizedKey,
+      company: w.company,
+      title: w.title,
+      recruiterName: w.recruiterName,
+      recruiterEmail: w.recruiterEmail,
+      recruiterPhone: w.recruiterPhone,
+      tab: 'wait_schedule',
+    })
+  }
+  const da = data.stages.decideApply
+  for (const r of [
+    ...da.readyToApply,
+    ...da.needsDecision,
+    ...da.needsDecisionForced,
+    ...da.awaitingLlmReview,
+    ...da.jdUnresolved,
+  ]) {
+    push({
+      normalizedKey: r.normalizedKey,
+      company: r.company,
+      title: r.title,
+      recruiterName: r.recruiterName,
+      recruiterEmail: r.recruiterEmail,
+      recruiterPhone: r.recruiterPhone,
+      status: r.verdict,
+      tab: 'decide_apply',
+    })
+  }
+  for (const l of data.archivedLeads ?? []) {
+    push({
+      normalizedKey: l.normalizedKey,
+      company: l.company,
+      title: l.title,
+      recruiterName: l.recruiterName,
+      recruiterEmail: l.recruiterEmail,
+      recruiterPhone: l.recruiterPhone,
+      status: l.status,
+      tab: 'archived',
+    })
+  }
+  return out
+}
+
+/** Same field set as every per-tab local search (company/title/recruiter
+ * name/email/phone) — capped at `limit` matches so a broad query (e.g. a
+ * one-letter typo) can't render a dropdown of hundreds of rows. */
+export function searchGlobalIndex(
+  index: GlobalSearchResult[],
+  query: string,
+  limit = 20,
+): GlobalSearchResult[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return []
+  const out: GlobalSearchResult[] = []
+  for (const r of index) {
+    const hit =
+      r.company.toLowerCase().includes(q) ||
+      r.title.toLowerCase().includes(q) ||
+      (r.recruiterName || '').toLowerCase().includes(q) ||
+      (r.recruiterEmail || '').toLowerCase().includes(q) ||
+      (r.recruiterPhone || '').toLowerCase().includes(q)
+    if (hit) {
+      out.push(r)
+      if (out.length >= limit) break
+    }
+  }
+  return out
 }

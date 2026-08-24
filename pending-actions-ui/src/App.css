@@ -359,6 +359,25 @@ a.channel-email {
   color: var(--muted);
 }
 
+.original-message {
+  margin-top: 10px;
+}
+
+.original-message > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.8rem;
+  user-select: none;
+}
+
+.original-message > summary:hover {
+  color: var(--text);
+}
+
+.original-message-body {
+  margin-top: 8px;
+}
+
 .banner {
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -802,14 +821,92 @@ th.num {
   padding: 7px 12px;
   font: inherit;
   font-size: 0.85rem;
-  width: 100%;
-  flex: 1 1 100%;
+  /* Grows to fill the row but leaves room for the "All tabs" checkbox (and,
+   * on the Archived tab, its status filter chips) to share the same line —
+   * shrinks to its own min-width and wraps below on a narrow window. */
+  flex: 1 1 220px;
+  min-width: 160px;
   box-sizing: border-box;
 }
 
 .archive-search:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* Checkbox next to every tab's own search box (AllTabsToggle) — docked at
+ * the far right of the same row via margin-left: auto; whatever else shares
+ * that row (filter-bar chips on the Archived tab) wraps below if it doesn't
+ * fit. */
+.all-tabs-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 0.8rem;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.all-tabs-toggle input[type='checkbox'] {
+  cursor: pointer;
+}
+
+/* Cross-tab result dropdown rendered by AllTabsToggle once its checkbox is
+ * on — a block, not an absolutely-positioned overlay, since it lives inline
+ * within each tab's own .archive-controls (flex-wrap: wrap already breaks
+ * it onto its own row via flex-basis 100% below). */
+.global-search-results {
+  flex: 1 1 100%;
+  background: var(--elevated, #171b24);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.global-search-results ul {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+}
+
+.global-search-result {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  appearance: none;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 10px;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.global-search-result:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.global-search-result-main {
+  font-size: 0.85rem;
+}
+
+.global-search-result-meta {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.global-search-empty {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 0.8rem;
+  color: var(--muted);
 }
 
 .status-skipped {

@@ -9,6 +9,7 @@ import { scrollToLeadRow } from './lib/links'
 import {
   allLeadKeys,
   buildContactPriorityQueue,
+  buildGlobalSearchIndex,
   contactQueueCounts,
   decideApplyCount,
   filterContactQueue,
@@ -17,6 +18,7 @@ import {
   replyAckKey,
   type ContactFilter,
   type ContactPriorityItem,
+  type GlobalSearchResult,
 } from './priorityQueue'
 import type { WorkflowPayload } from './types'
 import './App.css'
@@ -337,6 +339,18 @@ export default function App() {
     scrollToLeadRow(normalizedKey)
   }, [data])
 
+  /** Cross-tab search index (AllTabsToggle, next to every tab's own search
+   * box) — the target tab is already known per-entry (buildGlobalSearchIndex),
+   * so this doesn't need locateLeadTab's re-derivation like onJumpToSurvivor
+   * above. */
+  const searchIndex = useMemo(() => (data ? buildGlobalSearchIndex(data) : []), [data])
+  const onJumpToResult = useCallback((result: GlobalSearchResult) => {
+    setDuplicatesFocusKey(null)
+    setHighlightKey(result.normalizedKey)
+    setFilter(result.tab)
+    scrollToLeadRow(result.normalizedKey)
+  }, [])
+
   const onRegenerate = () => {
     if (busy) return
     setError('')
@@ -548,6 +562,8 @@ export default function App() {
                 data={data.stages.decideApply}
                 onViewDuplicates={onViewDuplicates}
                 highlightKey={highlightKey}
+                searchIndex={searchIndex}
+                onJumpToResult={onJumpToResult}
               />
             </div>
           ) : filter === 'duplicates_skipped' ? (
@@ -557,12 +573,16 @@ export default function App() {
               highlightKey={highlightKey}
               onClearFocus={() => setDuplicatesFocusKey(null)}
               onJumpToSurvivor={onJumpToSurvivor}
+              searchIndex={searchIndex}
+              onJumpToResult={onJumpToResult}
             />
           ) : filter === 'archived' ? (
             <ArchivedLeadsPanel
               leads={data.archivedLeads ?? []}
               onViewDuplicates={onViewDuplicates}
               highlightKey={highlightKey}
+              searchIndex={searchIndex}
+              onJumpToResult={onJumpToResult}
             />
           ) : (
             <ContactPriorityQueue
@@ -574,6 +594,8 @@ export default function App() {
               replyScanBusy={busy}
               onViewDuplicates={onViewDuplicates}
               highlightKey={highlightKey}
+              searchIndex={searchIndex}
+              onJumpToResult={onJumpToResult}
             />
           )}
         </section>
