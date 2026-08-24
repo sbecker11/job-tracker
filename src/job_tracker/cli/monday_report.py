@@ -220,6 +220,10 @@ def _next_commands(*, unmatched: int, awaiting: int, packages: int, halted: bool
         cmds.append("python scripts/process_awaiting_llm_review.py --limit 5   # finish scoring high-gate leads")
     if packages:
         cmds.append("open http://127.0.0.1:3174/   # Send résumé / Decide-apply stages")
+    cmds.append("python scripts/audit_label_drift.py")
+    cmds.append("python scripts/scan_rejection_backlog.py")
+    cmds.append("python scripts/spend_report.py")
+    cmds.append("python scripts/quiet_jobs_report.py")
     cmds.append("python scripts/resync_labels.py --dry-run   # label↔DB trust check")
     cmds.append("python scripts/render_pending_actions.py --no-rescore   # refresh UI JSON")
     return cmds

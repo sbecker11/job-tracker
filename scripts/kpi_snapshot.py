@@ -16,8 +16,9 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from job_tracker.cli.monday_report import build_kpi_counts  # noqa: E402
+from job_tracker.cli.spend_report import build_spend_summary  # noqa: E402
 from job_tracker.cli.verify_framework_sync import verify_framework_sync  # noqa: E402
-from job_tracker.pipeline.store import DEFAULT_DB_PATH  # noqa: E402
+from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect  # noqa: E402
 
 
 def _label_drift_count() -> int | None:
@@ -49,11 +50,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     ap.add_argument("--state-dir", type=Path, default=None)
     ap.add_argument("--check-label-drift", action="store_true")
+    ap.add_argument("--check-spend", action="store_true")
     ap.add_argument("--check-framework", action="store_true")
     ap.add_argument("--claude-md", type=Path, default=None)
     args = ap.parse_args(argv)
 
     payload: dict = {"kpis": build_kpi_counts(db_path=args.db, state_dir=args.state_dir)}
+
+    if args.check_spend:
+        conn = connect(args.db)
+        try:
+            payload["spend"] = build_spend_summary(conn)
+        finally:
+            conn.close()
 
     if args.check_label_drift:
         payload["labelDriftWouldRelabel"] = _label_drift_count()

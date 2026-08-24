@@ -54,6 +54,11 @@ python scripts/triage_recruiter_inbox.py --dry-run --inbox-batch-message-cap 5
 |------|---------|
 | **Monday briefing** | `../recruiting-automation/monday.sh` (or `python scripts/monday_report.py`) |
 | Framework ↔ CLAUDE.md sync | `python scripts/verify_framework_sync.py` |
+| Label↔DB drift audit | `python scripts/audit_label_drift.py` |
+| Rejection backlog scan | `python scripts/scan_rejection_backlog.py` |
+| Spend rollup | `python scripts/spend_report.py` |
+| Quiet jobs report | `python scripts/quiet_jobs_report.py` |
+| Offer comparison | `python scripts/offer_comparison.py` |
 | End-to-end primer | See [`PRIMER.md`](PRIMER.md) |
 | Triage recruiter inbox (dry-run) | `python scripts/triage_recruiter_inbox.py --dry-run --inbox-batch-message-cap 10` |
 | List pursue leads | `python scripts/list_leads.py --verdict pursue` |

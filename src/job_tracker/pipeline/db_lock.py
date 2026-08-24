@@ -61,9 +61,18 @@ def acquire(
     wait_seconds=0 (the default) matches an unattended launchd tick: skip
     immediately rather than let ticks pile up behind each other."""
     deadline = time.monotonic() + max(0.0, wait_seconds)
+    started = time.monotonic()
     while True:
         fh = try_acquire(lock_path)
         if fh is not None:
+            waited = time.monotonic() - started
+            if waited >= 1.0:
+                import sys
+
+                print(
+                    f"[db_lock] acquired {lock_path.name} after {waited:.1f}s wait",
+                    file=sys.stderr,
+                )
             return fh
         if time.monotonic() >= deadline:
             return None

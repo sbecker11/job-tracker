@@ -58,25 +58,15 @@ from job_tracker.email.gmail_reader import (
     get_gmail_service_writable,
     list_message_ids,
 )
-from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect, get_lead_labeling_info, list_processed_messages_with_leads
-from job_tracker.pipeline.triage import NEEDS_REVIEW, PURSUE, SKIP, decide_outcome_from_verdicts
+from job_tracker.pipeline.label_drift import compute_label_drift
+from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect, list_processed_messages_with_leads
+from job_tracker.pipeline.triage import NEEDS_REVIEW, PURSUE, SKIP
 
 _OUTCOME_LABEL_NAMES = {
     PURSUE: gmail_writer.PURSUE_LABEL,
     SKIP: gmail_writer.SKIP_LABEL,
     NEEDS_REVIEW: gmail_writer.NEEDS_REVIEW_LABEL,
 }
-
-
-def _effective_lead_verdict(row) -> str:
-    """`llm_verdict` (the full JD Match Framework review) if one has run,
-    else the free rule-based `verdict`. Any value outside {"pursue",
-    "review", "pass"} — in practice only the special "REVIEW NEEDED" marker
-    (an unresolvable JD, see PRIMER.md) — is folded into "review" so it
-    still maps onto one of the three Gmail outcome labels rather than being
-    silently dropped from the verdict set."""
-    verdict = row["llm_verdict"] or row["verdict"] or "review"
-    return verdict if verdict in ("pursue", "review", "pass") else "review"
 
 
 def _current_label_map(service) -> dict[str, str]:
@@ -118,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         current_labels = _current_label_map(service)
+        drift_entries, checked, skipped_non_gmail = compute_label_drift(conn, current_labels)
 
         label_ids: dict[str, str] = {}
         if not args.dry_run:
@@ -125,47 +116,24 @@ def main(argv: list[str] | None = None) -> int:
                 outcome: gmail_writer.get_or_create_label(service, name) for outcome, name in _OUTCOME_LABEL_NAMES.items()
             }
 
-        checked = 0
         changed = 0
-        skipped_non_gmail = 0
-        for entry in processed:
-            message_id = entry["message_id"]
-            # IMAP-sourced messages (spexture.com mailbox, or LinkedIn replies
-            # ingested via IMAP) are namespaced "imap:<Message-Id>" or
-            # "imap-uid:<folder>:<uid>" by imap_reader.parse_rfc822_message —
-            # see triage_imap_inbox.py's module docstring. They were never
-            # Gmail-labeled in the first place, so passing one to Gmail's
-            # messages.modify 400s with "Invalid id value" (verified live
-            # 2026-07-30, tripped the HALT sentinel). Nothing to resync here;
-            # skip before it ever reaches the Gmail API.
-            if message_id.startswith("imap:") or message_id.startswith("imap-uid:"):
-                skipped_non_gmail += 1
-                continue
-            lead_rows = get_lead_labeling_info(conn, entry["lead_keys"])
-            if not lead_rows:
-                # Every linked lead has since been deleted — nothing left to
-                # resync against; leave whatever label is already there.
-                continue
-            checked += 1
-            verdicts = {_effective_lead_verdict(row) for row in lead_rows.values()}
-            desired_outcome, reason = decide_outcome_from_verdicts(verdicts)
-            current_outcome = current_labels.get(message_id, entry["outcome"])
-
-            if desired_outcome == current_outcome:
-                continue
-
+        for entry in drift_entries:
             changed += 1
             print(
-                f"[{'would relabel' if args.dry_run else 'relabeling'}] {message_id}: "
-                f"{current_outcome} -> {desired_outcome} ({reason})"
+                f"[{'would relabel' if args.dry_run else 'relabeling'}] {entry.message_id}: "
+                f"{entry.current_outcome} -> {entry.desired_outcome} ({entry.reason})"
             )
             if args.dry_run:
                 continue
 
-            desired_label_id = label_ids[desired_outcome]
-            stale_label_ids = [lid for outcome, lid in label_ids.items() if outcome != desired_outcome]
+            desired_label_id = label_ids[entry.desired_outcome]
+            stale_label_ids = [lid for outcome, lid in label_ids.items() if outcome != entry.desired_outcome]
             gmail_writer.label_and_archive(
-                service, message_id, desired_label_id, remove_label_ids=stale_label_ids, archive=False
+                service,
+                entry.message_id,
+                desired_label_id,
+                remove_label_ids=stale_label_ids,
+                archive=False,
             )
 
         verb = "would need relabeling" if args.dry_run else "were relabeled"

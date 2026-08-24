@@ -48,6 +48,12 @@ triage-imap-inbox = "job_tracker.cli.triage_imap_inbox:main"
 backfill-post-application-signals = "job_tracker.cli.backfill_post_application_signals:main"
 monday-report = "job_tracker.cli.monday_report:main"
 verify-framework-sync = "job_tracker.cli.verify_framework_sync:main"
+audit-label-drift = "job_tracker.cli.audit_label_drift:main"
+scan-rejection-backlog = "job_tracker.cli.scan_rejection_backlog:main"
+spend-report = "job_tracker.cli.spend_report:main"
+quiet-jobs-report = "job_tracker.cli.quiet_jobs_report:main"
+offer-comparison = "job_tracker.cli.offer_comparison:main"
+market-withdrawal-draft = "job_tracker.cli.market_withdrawal_draft:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-cov>=5.0"]
