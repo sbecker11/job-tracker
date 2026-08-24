@@ -133,6 +133,30 @@ cd "$WORKSPACE/job-tracker" && source .venv/bin/activate
 for **interview likelihood** (direct-recruiter, reply-due, match %, packages
 ready) — aimed at zero dead-time between lead arrival and action.
 
+## KPIs (Phase 0 baseline)
+
+Track weekly (or whenever tuning the pipeline). `./status.sh` prints a live
+snapshot; `./status.sh --json` emits machine-readable KPIs for scripts.
+
+| KPI | Source | Healthy target |
+|-----|--------|----------------|
+| Minutes/day in Gmail for recruiting | Manual (weekly) | Trending toward 0 |
+| Unmatched communications | `status.sh` / `./monday.sh` | 0 — clarify immediately |
+| Awaiting full LLM review | `status.sh` / `./monday.sh` | Low; none > 3 days old |
+| Packages ready to send | `status.sh` / pending-actions UI | Act same day |
+| Waiting on them (stale) | `status.sh` | Follow up when threshold hit |
+| Label↔DB drift | `resync_labels.py --dry-run` | 0 would-relabel rows |
+| Framework sync | `verify_framework_sync.py` | OK (no drift vs `~/CLAUDE.md`) |
+| HALT incidents / week | `logs/run-*.log` | 0 after reliability work |
+| $ / pursue package / week | LLM logs (Phase 4) | TBD |
+
+Guardrails wired in Phase 0:
+
+```bash
+cd job-tracker && python scripts/verify_framework_sync.py   # CLAUDE.md ↔ framework.yaml
+cd recruiting-automation && ./status.sh                     # schedule + KPI queues
+```
+
 ## Layout
 
 ```

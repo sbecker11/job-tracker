@@ -415,7 +415,13 @@ export default function App() {
         id: 'send_resume' as const,
         label: 'Send résumé',
         count: counts.send_resume || 0,
-        hint: 'Send package to the recruiter',
+        hint: (() => {
+          const ready = data.stages.sendResume.filter((s) => s.packageReady).length
+          const total = data.stages.sendResume.length
+          if (!total) return 'Send package to the recruiter'
+          if (ready === total) return `${ready} package${ready === 1 ? '' : 's'} ready on disk — send now`
+          return `${ready}/${total} packages ready on disk — generate missing docs before sending`
+        })(),
       },
       {
         id: 'wait_schedule' as const,

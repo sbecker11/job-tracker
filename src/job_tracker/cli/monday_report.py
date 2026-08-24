@@ -324,5 +324,35 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def build_kpi_counts(
+    *,
+    db_path: Path = DEFAULT_DB_PATH,
+    output_root: Path = _DEFAULT_OUTPUT_ROOT,
+    state_dir: Path | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Lightweight KPI dict for status.sh / run_cycle footer (no lead lists)."""
+    workspace = Path(
+        __import__("os").environ.get(
+            "RECRUITING_AUTOMATION_WORKSPACE_ROOT",
+            str(Path.home() / "workspace-recruiting-automation"),
+        )
+    )
+    resolved_state = state_dir or (workspace / "recruiting-automation" / "state")
+    snap = build_monday_snapshot(
+        db_path=db_path,
+        output_root=output_root,
+        state_dir=resolved_state,
+        now=now,
+        top_n=0,
+    )
+    return {
+        "generatedAt": snap["generatedAt"],
+        "schedule": snap["schedule"],
+        "counts": snap["counts"],
+        "llmReviewGatePct": snap["llmReviewGatePct"],
+    }
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
