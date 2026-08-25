@@ -86,8 +86,6 @@ export interface SendResumeItem {
   contactAttempts: number
   resumeRequested?: boolean
   packageReady?: boolean
-  /** Tri-state from job_leads.direct_recruiter_outreach. */
-  directRecruiterOutreach?: boolean | null
   draftReply?: string
   markSentUrl?: string
   actionHint?: string

@@ -589,7 +589,8 @@ def build_clarify_queue(
         latest = inbound[-1]
         body = latest["body_text"] or ""
         subj = latest["summary"] or r["title"] or ""
-        draft = draft_qualifying_reply(body, subject=subj)
+        recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
+        draft = draft_qualifying_reply(body, subject=subj, known_recruiter_name=recruiter)
         if not draft.thread_url and not draft.recruiter_name and not _has_human_recruiter_on_file(conn, key):
             continue
         gaps = draft.gaps
@@ -601,7 +602,6 @@ def build_clarify_queue(
             thread_url=draft.thread_url,
             source_label=r["source_label"] or "",
         )
-        recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
         reply_id = f"key:{key}"
         next_action = _next_action_clarify(
             channel=channel,
@@ -665,7 +665,7 @@ def build_clarify_queue(
         recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
         body = unanswered["body_text"] or ""
         subj = unanswered["summary"] or r["title"] or ""
-        drafted = draft_qualifying_reply(body, subject=subj)
+        drafted = draft_qualifying_reply(body, subject=subj, known_recruiter_name=recruiter)
         gaps = drafted.gaps
         still_needs_clarifiers = any(
             (

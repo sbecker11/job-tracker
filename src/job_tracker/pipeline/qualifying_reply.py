@@ -195,8 +195,18 @@ def detect_pitch_gaps(text: str, *, subject: str = "") -> PitchGaps:
     return gaps
 
 
-def draft_qualifying_reply(text: str, *, subject: str = "") -> QualifyingDraft:
-    name = extract_linkedin_sender_name(text)
+def draft_qualifying_reply(text: str, *, subject: str = "", known_recruiter_name: str = "") -> QualifyingDraft:
+    """`known_recruiter_name` (added 2026-08-25): when the caller already has
+    a confirmed name for this recruiter on file (`job_contacts.name`, via
+    `pending_workflow._recruiter_contact`), pass it here so the greeting uses
+    it instead of relying solely on this function's own regex/signature
+    extraction from the raw message text — that extraction is tuned for
+    LinkedIn InMail chrome ("Name\\nReply\\n") and a plain email's sign-off
+    often doesn't match it, silently falling back to a bare "Hi," even
+    though the lead's contact card already has the right name (surfaced by
+    a PurpleLab/Carlos Delgado lead whose reply greeted no one by name)."""
+    extracted_name = extract_linkedin_sender_name(text)
+    name = known_recruiter_name.strip() or extracted_name
     first = name.split()[0] if name else ""
     # Drop trailing initial like "Evan" from "Evan T."
     if first.endswith("."):

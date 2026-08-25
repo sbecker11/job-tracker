@@ -63,8 +63,6 @@ export interface ContactPriorityItem {
   applyUrl?: string
   packageReady?: boolean
   resumeRequested?: boolean
-  directRecruiterOutreach?: boolean | null
-  matchPct?: number
   markSentUrl?: string
   actionHint?: string
   nextAction?: string
@@ -81,15 +79,8 @@ const STAGE_RANK: Record<string, number> = {
   wait_schedule: 2,
 }
 
-function droRank(item: ContactPriorityItem): number {
-  const dro = item.directRecruiterOutreach
-  if (dro === true) return 0
-  if (dro === false) return 2
-  return 1
-}
-
-function sortKey(item: ContactPriorityItem): [number, number, number, number, number, number, string] {
-  // Mirror pending_workflow._priority_sort_key: reply-due → direct recruiter → attempts → match → age.
+function sortKey(item: ContactPriorityItem): [number, number, number, number, string] {
+  // Recruiter waiting on Shawn (replyDue) beats overdue Wait follow-ups.
   const urgency = item.replyDue ? 0 : item.followUpDue ? 1 : 2
   const recency =
     item.unansweredDays != null
@@ -97,12 +88,9 @@ function sortKey(item: ContactPriorityItem): [number, number, number, number, nu
       : item.waitingDays != null
         ? item.waitingDays
         : item.ageDays
-  const match = -(item.matchPct ?? 0)
   return [
     urgency,
-    droRank(item),
     -item.contactAttempts,
-    match,
     -recency,
     STAGE_RANK[item.stage] ?? 9,
     (item.company || item.recruiterName || '').toLowerCase(),
@@ -204,8 +192,6 @@ function fromSendResume(s: SendResumeItem): ContactPriorityItem {
     gmailUrl: s.gmailUrl,
     packageReady: s.packageReady,
     resumeRequested: s.resumeRequested,
-    directRecruiterOutreach: s.directRecruiterOutreach,
-    matchPct: s.matchPct,
     draftReply: s.draftReply,
     markSentUrl: s.markSentUrl,
     actionHint: s.actionHint,
