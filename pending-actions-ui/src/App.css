@@ -1233,3 +1233,45 @@ th.num {
 .cycle-step-incomplete .cycle-step-time {
   color: var(--accent);
 }
+
+/* "Manage lead" status control (see ManageLeadStatus.tsx) — rendered on
+ * every tab's rows (Clarify/Send résumé/Wait/Decide-apply/Duplicates
+ * skipped/Archived) so a lead's status/reason can be corrected without a
+ * database edit. */
+.manage-lead {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.manage-lead-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.manage-lead-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.manage-lead-field select {
+  font-size: 0.8rem;
+  padding: 3px 4px;
+}
+
+.manage-lead-reason {
+  font-size: 0.8rem;
+  padding: 4px 6px;
+  min-width: 14rem;
+  flex: 1 1 auto;
+}

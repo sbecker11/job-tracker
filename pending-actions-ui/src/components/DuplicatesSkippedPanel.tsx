@@ -1,5 +1,6 @@
 import { memo, useMemo, useState } from 'react'
 import { AllTabsToggle } from './AllTabsToggle'
+import { ManageLeadStatus } from './ManageLeadStatus'
 import { formatDecidedAt, leadAnchorHref, leadAnchorId, revealFolderUrl, viewCommunicationsUrl } from '../lib/links'
 import type { GlobalSearchResult } from '../priorityQueue'
 import type { ArchivedLead } from '../types'
@@ -159,6 +160,7 @@ function DuplicateGroupCard({
                 ) : (
                   <span className="muted">No messages</span>
                 )}
+                <ManageLeadStatus normalizedKey={d.normalizedKey} currentStatus={d.status} />
               </td>
             </tr>
           ))}

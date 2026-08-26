@@ -43,6 +43,7 @@ review-direct-recruiter-outreach = "job_tracker.cli.review_direct_recruiter_outr
 set-direct-recruiter-outreach = "job_tracker.cli.set_direct_recruiter_outreach:main"
 dismiss-linkedin-reply = "job_tracker.cli.dismiss_linkedin_reply:main"
 mark-package-sent = "job_tracker.cli.mark_package_sent:main"
+set-lead-status = "job_tracker.cli.set_lead_status:main"
 merge-leads = "job_tracker.cli.merge_leads:main"
 triage-imap-inbox = "job_tracker.cli.triage_imap_inbox:main"
 backfill-post-application-signals = "job_tracker.cli.backfill_post_application_signals:main"

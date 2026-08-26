@@ -2,6 +2,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { AllTabsToggle } from './AllTabsToggle'
 import { DuplicateBadge } from './DuplicateBadge'
+import { ManageLeadStatus } from './ManageLeadStatus'
 import { formatDecidedAt, leadAnchorId, revealFolderUrl, viewCommunicationsUrl } from '../lib/links'
 import type { GlobalSearchResult } from '../priorityQueue'
 import type { ArchivedLead } from '../types'
@@ -309,6 +310,7 @@ export const ArchivedLeadsPanel = memo(function ArchivedLeadsPanel({
                     ) : (
                       <span className="muted">No messages</span>
                     )}
+                    <ManageLeadStatus normalizedKey={l.normalizedKey} currentStatus={l.status} />
                   </td>
                 </tr>
               )

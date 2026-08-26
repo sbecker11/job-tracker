@@ -3,6 +3,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { AllTabsToggle } from './AllTabsToggle'
 import { ChannelBadge } from './ChannelBadge'
 import { DuplicateBadge } from './DuplicateBadge'
+import { ManageLeadStatus } from './ManageLeadStatus'
 import { leadAnchorId } from '../lib/links'
 import { replyAckKey, type ContactPriorityItem, type GlobalSearchResult } from '../priorityQueue'
 
@@ -423,6 +424,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     {copiedId === item.id ? 'Copied' : 'Copy follow-up'}
                   </button>
                 )}
+                <ManageLeadStatus normalizedKey={item.normalizedKey} />
               </div>
             </div>
 

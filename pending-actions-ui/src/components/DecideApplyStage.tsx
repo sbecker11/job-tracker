@@ -2,6 +2,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { AllTabsToggle } from './AllTabsToggle'
 import { DuplicateBadge } from './DuplicateBadge'
+import { ManageLeadStatus } from './ManageLeadStatus'
 import { leadAnchorId } from '../lib/links'
 import type { GlobalSearchResult } from '../priorityQueue'
 import type { DecideLead, WorkflowPayload } from '../types'
@@ -157,6 +158,7 @@ function LeadTable({
                           History
                         </a>
                       )}
+                      <ManageLeadStatus normalizedKey={r.normalizedKey} />
                     </div>
                   </td>
                   {showApply && (
