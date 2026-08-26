@@ -194,6 +194,8 @@ export const DecideApplyStage = memo(function DecideApplyStage({
   highlightKey,
   searchIndex = [],
   onJumpToResult,
+  allTabsSearch = false,
+  onAllTabsSearchChange,
 }: {
   data: WorkflowPayload['stages']['decideApply']
   onViewDuplicates?: (normalizedKey: string, firstDuplicateKey?: string) => void
@@ -201,6 +203,9 @@ export const DecideApplyStage = memo(function DecideApplyStage({
   /** Cross-tab search — see AllTabsToggle. */
   searchIndex?: GlobalSearchResult[]
   onJumpToResult?: (result: GlobalSearchResult) => void
+  /** Lifted to App.tsx (2026-08-26) — see AllTabsToggle's comment. */
+  allTabsSearch?: boolean
+  onAllTabsSearchChange?: (value: boolean) => void
 }) {
   const [query, setQuery] = useState('')
 
@@ -264,8 +269,14 @@ export const DecideApplyStage = memo(function DecideApplyStage({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        {onJumpToResult && (
-          <AllTabsToggle query={query} searchIndex={searchIndex} onJumpToResult={onJumpToResult} />
+        {onJumpToResult && onAllTabsSearchChange && (
+          <AllTabsToggle
+            query={query}
+            searchIndex={searchIndex}
+            onJumpToResult={onJumpToResult}
+            allTabs={allTabsSearch}
+            onAllTabsChange={onAllTabsSearchChange}
+          />
         )}
       </div>
       {!filteredTotal ? (

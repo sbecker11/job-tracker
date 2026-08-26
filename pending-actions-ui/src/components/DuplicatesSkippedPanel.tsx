@@ -179,6 +179,8 @@ export const DuplicatesSkippedPanel = memo(function DuplicatesSkippedPanel({
   onJumpToSurvivor,
   searchIndex = [],
   onJumpToResult,
+  allTabsSearch = false,
+  onAllTabsSearchChange,
 }: {
   leads: ArchivedLead[]
   /** Which group to auto-expand + visually mark as "jumped to" — every
@@ -193,6 +195,9 @@ export const DuplicatesSkippedPanel = memo(function DuplicatesSkippedPanel({
   /** Cross-tab search — see AllTabsToggle. */
   searchIndex?: GlobalSearchResult[]
   onJumpToResult?: (result: GlobalSearchResult) => void
+  /** Lifted to App.tsx (2026-08-26) — see AllTabsToggle's comment. */
+  allTabsSearch?: boolean
+  onAllTabsSearchChange?: (value: boolean) => void
 }) {
   const [query, setQuery] = useState('')
 
@@ -257,8 +262,14 @@ export const DuplicatesSkippedPanel = memo(function DuplicatesSkippedPanel({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        {onJumpToResult && (
-          <AllTabsToggle query={query} searchIndex={searchIndex} onJumpToResult={onJumpToResult} />
+        {onJumpToResult && onAllTabsSearchChange && (
+          <AllTabsToggle
+            query={query}
+            searchIndex={searchIndex}
+            onJumpToResult={onJumpToResult}
+            allTabs={allTabsSearch}
+            onAllTabsChange={onAllTabsSearchChange}
+          />
         )}
       </div>
       <div className="dup-groups">

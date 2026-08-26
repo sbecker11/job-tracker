@@ -109,6 +109,11 @@ interface Props {
   /** Cross-tab search — see AllTabsToggle. */
   searchIndex?: GlobalSearchResult[]
   onJumpToResult?: (result: GlobalSearchResult) => void
+  /** "All tabs" checkbox state — lifted to App.tsx (2026-08-26) so it
+   * survives a tab switch instead of resetting; see AllTabsToggle's
+   * comment for why this can't be this component's own local state. */
+  allTabsSearch?: boolean
+  onAllTabsSearchChange?: (value: boolean) => void
 }
 
 // Memoized: this list can run to hundreds of rows, and App re-renders every
@@ -126,6 +131,8 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
   highlightKey,
   searchIndex = [],
   onJumpToResult,
+  allTabsSearch = false,
+  onAllTabsSearchChange,
 }: Props) {
   const [expandedId, setExpandedId] = useState('')
   const [copiedId, setCopiedId] = useState('')
@@ -212,8 +219,14 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        {onJumpToResult && (
-          <AllTabsToggle query={query} searchIndex={searchIndex} onJumpToResult={onJumpToResult} />
+        {onJumpToResult && onAllTabsSearchChange && (
+          <AllTabsToggle
+            query={query}
+            searchIndex={searchIndex}
+            onJumpToResult={onJumpToResult}
+            allTabs={allTabsSearch}
+            onAllTabsChange={onAllTabsSearchChange}
+          />
         )}
       </div>
       {!visibleItems.length ? (

@@ -38,6 +38,8 @@ export const ArchivedLeadsPanel = memo(function ArchivedLeadsPanel({
   highlightKey,
   searchIndex = [],
   onJumpToResult,
+  allTabsSearch = false,
+  onAllTabsSearchChange,
 }: {
   leads: ArchivedLead[]
   onViewDuplicates?: (normalizedKey: string, firstDuplicateKey?: string) => void
@@ -49,6 +51,9 @@ export const ArchivedLeadsPanel = memo(function ArchivedLeadsPanel({
   /** Cross-tab search — see AllTabsToggle. */
   searchIndex?: GlobalSearchResult[]
   onJumpToResult?: (result: GlobalSearchResult) => void
+  /** Lifted to App.tsx (2026-08-26) — see AllTabsToggle's comment. */
+  allTabsSearch?: boolean
+  onAllTabsSearchChange?: (value: boolean) => void
 }) {
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -160,8 +165,14 @@ export const ArchivedLeadsPanel = memo(function ArchivedLeadsPanel({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        {onJumpToResult && (
-          <AllTabsToggle query={query} searchIndex={searchIndex} onJumpToResult={onJumpToResult} />
+        {onJumpToResult && onAllTabsSearchChange && (
+          <AllTabsToggle
+            query={query}
+            searchIndex={searchIndex}
+            onJumpToResult={onJumpToResult}
+            allTabs={allTabsSearch}
+            onAllTabsChange={onAllTabsSearchChange}
+          />
         )}
         <div className="filter-bar">
           <button

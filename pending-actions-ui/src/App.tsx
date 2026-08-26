@@ -126,6 +126,13 @@ export default function App() {
   const [data, setData] = useState<WorkflowPayload | null>(null)
   const [error, setError] = useState('')
   const [filter, setFilter] = useState<ContactFilter>('all')
+  // Lifted here (2026-08-26), not owned by AllTabsToggle itself — each tab
+  // below mounts a *different* component (ContactPriorityQueue /
+  // DecideApplyStage / DuplicatesSkippedPanel / ArchivedLeadsPanel) via the
+  // ternary further down, so a checkbox with its own local useState would
+  // silently reset to unchecked every time `filter` changes tabs. See
+  // AllTabsToggle's own comment for the confirmed-live bug this caused.
+  const [allTabsSearch, setAllTabsSearch] = useState(false)
   const [regenerating, setRegenerating] = useState(false)
   const [replyScanningId, setReplyScanningId] = useState('')
   /** Ack key captured at click — locked only after scan finishes. */
@@ -564,6 +571,8 @@ export default function App() {
                 highlightKey={highlightKey}
                 searchIndex={searchIndex}
                 onJumpToResult={onJumpToResult}
+                allTabsSearch={allTabsSearch}
+                onAllTabsSearchChange={setAllTabsSearch}
               />
             </div>
           ) : filter === 'duplicates_skipped' ? (
@@ -575,6 +584,8 @@ export default function App() {
               onJumpToSurvivor={onJumpToSurvivor}
               searchIndex={searchIndex}
               onJumpToResult={onJumpToResult}
+              allTabsSearch={allTabsSearch}
+              onAllTabsSearchChange={setAllTabsSearch}
             />
           ) : filter === 'archived' ? (
             <ArchivedLeadsPanel
@@ -583,6 +594,8 @@ export default function App() {
               highlightKey={highlightKey}
               searchIndex={searchIndex}
               onJumpToResult={onJumpToResult}
+              allTabsSearch={allTabsSearch}
+              onAllTabsSearchChange={setAllTabsSearch}
             />
           ) : (
             <ContactPriorityQueue
@@ -596,6 +609,8 @@ export default function App() {
               highlightKey={highlightKey}
               searchIndex={searchIndex}
               onJumpToResult={onJumpToResult}
+              allTabsSearch={allTabsSearch}
+              onAllTabsSearchChange={setAllTabsSearch}
             />
           )}
         </section>
