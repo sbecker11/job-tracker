@@ -1,7 +1,10 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { AllTabsToggle } from './AllTabsToggle'
 import { DuplicateBadge } from './DuplicateBadge'
+import { ManageLeadStatus } from './ManageLeadStatus'
 import { formatDecidedAt, leadAnchorId, revealFolderUrl, viewCommunicationsUrl } from '../lib/links'
+import type { GlobalSearchResult } from '../priorityQueue'
 import type { ArchivedLead } from '../types'
 
 /** Rough single-line row height (px) — just a starting estimate; actual
@@ -33,6 +36,10 @@ export const ArchivedLeadsPanel = memo(function ArchivedLeadsPanel({
   leads,
   onViewDuplicates,
   highlightKey,
+  searchIndex = [],
+  onJumpToResult,
+  allTabsSearch = false,
+  onAllTabsSearchChange,
 }: {
   leads: ArchivedLead[]
   onViewDuplicates?: (normalizedKey: string, firstDuplicateKey?: string) => void
@@ -41,6 +48,12 @@ export const ArchivedLeadsPanel = memo(function ArchivedLeadsPanel({
    * "Go to this lead" learning to land here for survivors that were
    * themselves later fully decided). */
   highlightKey?: string | null
+  /** Cross-tab search — see AllTabsToggle. */
+  searchIndex?: GlobalSearchResult[]
+  onJumpToResult?: (result: GlobalSearchResult) => void
+  /** Lifted to App.tsx (2026-08-26) — see AllTabsToggle's comment. */
+  allTabsSearch?: boolean
+  onAllTabsSearchChange?: (value: boolean) => void
 }) {
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -152,6 +165,15 @@ export const ArchivedLeadsPanel = memo(function ArchivedLeadsPanel({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
+        {onJumpToResult && onAllTabsSearchChange && (
+          <AllTabsToggle
+            query={query}
+            searchIndex={searchIndex}
+            onJumpToResult={onJumpToResult}
+            allTabs={allTabsSearch}
+            onAllTabsChange={onAllTabsSearchChange}
+          />
+        )}
         <div className="filter-bar">
           <button
             type="button"
@@ -299,6 +321,7 @@ export const ArchivedLeadsPanel = memo(function ArchivedLeadsPanel({
                     ) : (
                       <span className="muted">No messages</span>
                     )}
+                    <ManageLeadStatus normalizedKey={l.normalizedKey} currentStatus={l.status} />
                   </td>
                 </tr>
               )

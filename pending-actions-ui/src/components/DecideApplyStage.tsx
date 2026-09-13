@@ -1,7 +1,10 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { AllTabsToggle } from './AllTabsToggle'
 import { DuplicateBadge } from './DuplicateBadge'
+import { ManageLeadStatus } from './ManageLeadStatus'
 import { leadAnchorId } from '../lib/links'
+import type { GlobalSearchResult } from '../priorityQueue'
 import type { DecideLead, WorkflowPayload } from '../types'
 
 /** Rough single-line row estimate — see ArchivedLeadsPanel's identical
@@ -155,6 +158,7 @@ function LeadTable({
                           History
                         </a>
                       )}
+                      <ManageLeadStatus normalizedKey={r.normalizedKey} />
                     </div>
                   </td>
                   {showApply && (
@@ -188,10 +192,20 @@ export const DecideApplyStage = memo(function DecideApplyStage({
   data,
   onViewDuplicates,
   highlightKey,
+  searchIndex = [],
+  onJumpToResult,
+  allTabsSearch = false,
+  onAllTabsSearchChange,
 }: {
   data: WorkflowPayload['stages']['decideApply']
   onViewDuplicates?: (normalizedKey: string, firstDuplicateKey?: string) => void
   highlightKey?: string | null
+  /** Cross-tab search — see AllTabsToggle. */
+  searchIndex?: GlobalSearchResult[]
+  onJumpToResult?: (result: GlobalSearchResult) => void
+  /** Lifted to App.tsx (2026-08-26) — see AllTabsToggle's comment. */
+  allTabsSearch?: boolean
+  onAllTabsSearchChange?: (value: boolean) => void
 }) {
   const [query, setQuery] = useState('')
 
@@ -255,6 +269,15 @@ export const DecideApplyStage = memo(function DecideApplyStage({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
+        {onJumpToResult && onAllTabsSearchChange && (
+          <AllTabsToggle
+            query={query}
+            searchIndex={searchIndex}
+            onJumpToResult={onJumpToResult}
+            allTabs={allTabsSearch}
+            onAllTabsChange={onAllTabsSearchChange}
+          />
+        )}
       </div>
       {!filteredTotal ? (
         <p className="empty-hint">No decide/apply leads match &quot;{query}&quot;.</p>

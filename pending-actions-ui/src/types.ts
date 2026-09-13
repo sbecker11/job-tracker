@@ -37,6 +37,16 @@ export interface ClarifyItem {
   /** Gmail deep-link pinned to shawnbecker.recruiting@gmail.com (authuser=). */
   gmailUrl?: string
   draftReply?: string
+  /** Full inbound recruiter message this clarify row is answering — not just
+   * the drafted reply. Added 2026-08-23: for `kind: "unmatched"` rows in
+   * particular (no company/title extracted, so no JD/no-LLM/full-LLM review
+   * docs exist yet either), this was previously the *only* place the actual
+   * pitch text lived on disk (var/pending-actions.json's
+   * unmatchedCommunications array), with no way to see it from this card at
+   * all — surfaced via ContactPriorityQueue's "Show steps" detail. LinkedIn's
+   * invisible tracking-pixel padding (U+034F runs) is already stripped
+   * server-side (pending_workflow.clean_message_body_for_display). */
+  messageBody?: string
   ageDays: number
   messageId?: string
   normalizedKey?: string
@@ -76,8 +86,6 @@ export interface SendResumeItem {
   contactAttempts: number
   resumeRequested?: boolean
   packageReady?: boolean
-  /** Tri-state from job_leads.direct_recruiter_outreach. */
-  directRecruiterOutreach?: boolean | null
   draftReply?: string
   markSentUrl?: string
   actionHint?: string

@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${ROOT}/../.." && pwd)"
 UI_DIR="${REPO_ROOT}/pending-actions-ui"
 VITE="${UI_DIR}/node_modules/.bin/vite"
+HOST="${PENDING_ACTIONS_UI_HOST:-127.0.0.1}"
 PORT="${PENDING_ACTIONS_UI_PORT:-3174}"
 
 # Prefer a real node binary (launchd has a minimal PATH; nvm isn't sourced).
@@ -52,4 +53,4 @@ fi
 
 export PATH="$(dirname "${NODE_BIN}"):${PATH}"
 cd "${UI_DIR}"
-exec "${NODE_BIN}" "${VITE}" --host 127.0.0.1 --port "${PORT}" --strictPort
+exec "${NODE_BIN}" "${VITE}" --host "${HOST}" --port "${PORT}" --strictPort

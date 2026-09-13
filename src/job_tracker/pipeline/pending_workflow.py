@@ -27,6 +27,20 @@ _OUTREACH_MAX_AGE_DAYS = 14
 # Re-export for callers/tests that imported these from pending_workflow.
 _GMAIL_API_ID_RE = re.compile(r"^[0-9a-f]{10,}$", re.I)
 
+# LinkedIn notification emails pad their invisible tracking pixel area with
+# runs of COMBINING GRAPHEME JOINER (U+034F) — harmless in the raw stored
+# body, but renders as a wall of visible dots if ever put in front of a
+# user (2026-08-23, surfaced when a Clarify-queue row's message history
+# turned out to be readable in the raw JSON but not exposed in the React
+# UI at all). Stripped only for display; the stored `body_text` in
+# job_conversations/unmatched_messages is left untouched.
+_LINKEDIN_COMBINING_JOINER = "\u034f"
+
+
+def clean_message_body_for_display(text: str) -> str:
+    """Strip LinkedIn's invisible tracking-pixel padding for on-screen display."""
+    return (text or "").replace(_LINKEDIN_COMBINING_JOINER, "")
+
 
 def _gmail_api_id_for_conversations(convs: list, preferred: str = "") -> str:
     """Pick a hex Gmail API id for the last recruiter-side message when possible.
@@ -536,6 +550,7 @@ def build_clarify_queue(
                 "title": m.get("titleGuess") or "",
                 "threadUrl": thread,
                 "draftReply": draft,
+                "messageBody": clean_message_body_for_display(body),
                 "ageDays": m.get("ageDays") or 0,
                 "messageId": mid,
                 "replyId": reply_id,
@@ -574,7 +589,8 @@ def build_clarify_queue(
         latest = inbound[-1]
         body = latest["body_text"] or ""
         subj = latest["summary"] or r["title"] or ""
-        draft = draft_qualifying_reply(body, subject=subj)
+        recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
+        draft = draft_qualifying_reply(body, subject=subj, known_recruiter_name=recruiter)
         if not draft.thread_url and not draft.recruiter_name and not _has_human_recruiter_on_file(conn, key):
             continue
         gaps = draft.gaps
@@ -586,7 +602,6 @@ def build_clarify_queue(
             thread_url=draft.thread_url,
             source_label=r["source_label"] or "",
         )
-        recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
         reply_id = f"key:{key}"
         next_action = _next_action_clarify(
             channel=channel,
@@ -608,6 +623,7 @@ def build_clarify_queue(
                 "title": r["title"] or draft.title_guess,
                 "threadUrl": draft.thread_url,
                 "draftReply": draft.body,
+                "messageBody": clean_message_body_for_display(body),
                 "ageDays": age,
                 "messageId": latest["message_id"] or "",
                 "normalizedKey": key,
@@ -649,7 +665,7 @@ def build_clarify_queue(
         recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
         body = unanswered["body_text"] or ""
         subj = unanswered["summary"] or r["title"] or ""
-        drafted = draft_qualifying_reply(body, subject=subj)
+        drafted = draft_qualifying_reply(body, subject=subj, known_recruiter_name=recruiter)
         gaps = drafted.gaps
         still_needs_clarifiers = any(
             (
@@ -696,6 +712,7 @@ def build_clarify_queue(
                 "title": r["title"] or drafted.title_guess,
                 "threadUrl": drafted.thread_url or _thread_url_for_lead(convs),
                 "draftReply": draft_body,
+                "messageBody": clean_message_body_for_display(body),
                 "ageDays": age_days_fn(r["first_seen"], now),
                 "messageId": unanswered["message_id"] or "",
                 "normalizedKey": key,

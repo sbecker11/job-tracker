@@ -259,6 +259,15 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # docstring. NULL ("not yet reviewed") by default; only ever set by a
     # human via scripts/review_direct_recruiter_outreach.py.
     ("job_leads", "direct_recruiter_outreach", "ALTER TABLE job_leads ADD COLUMN direct_recruiter_outreach INTEGER"),
+    # Free-text human notes (added 2026-08-26, formalizing append_lead_note()
+    # below) — several prior sessions had already hand-patched this column
+    # onto the one production var/leads.db via a one-off raw ALTER TABLE, but
+    # it was never added here, so any *other* leads.db (every test DB, and
+    # any freshly-installed machine) never had it at all. Backfilling it into
+    # the migration list makes append_lead_note()/set-lead-status work
+    # anywhere `connect()` runs, not just on the one DB that got patched by
+    # hand.
+    ("job_leads", "notes", "ALTER TABLE job_leads ADD COLUMN notes TEXT"),
     ("job_contacts", "phone", "ALTER TABLE job_contacts ADD COLUMN phone TEXT"),
     # LinkedIn per-thread email bridge (2026-08-11) — Reply-To on hit-reply
     # notifications (uuid@reply.linkedin.com). Mailto + outbound Sent match
@@ -721,6 +730,31 @@ def advance_status(
         )
     conn.commit()
     return True
+
+
+def append_lead_note(
+    conn: sqlite3.Connection, normalized_key: str, note: str, *, when: str | None = None
+) -> None:
+    """Append a timestamped line to `job_leads.notes` (added 2026-08-26 —
+    every prior "add a note explaining X" request had been hand-rolled as a
+    one-off raw SQL UPDATE, e.g. the Thyme Care/PurpleLab status corrections,
+    with no shared helper and no guarantee of appending vs. clobbering
+    whatever was already there). Preserves existing notes; each entry is its
+    own `[timestamp] note` line, newest last, matching the format those
+    ad-hoc updates already used by hand.
+    """
+    stamped = f"[{when or utc_now_iso()}] {note}"
+    existing = conn.execute(
+        "SELECT notes FROM job_leads WHERE normalized_key = ?", (normalized_key,)
+    ).fetchone()
+    if existing is None:
+        raise ValueError(f"no lead found with normalized_key={normalized_key!r}")
+    prior = (existing["notes"] or "").strip()
+    combined = f"{prior}\n{stamped}" if prior else stamped
+    conn.execute(
+        "UPDATE job_leads SET notes = ? WHERE normalized_key = ?", (combined, normalized_key)
+    )
+    conn.commit()
 
 
 def mark_duplicate(

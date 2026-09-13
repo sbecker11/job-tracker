@@ -9,6 +9,7 @@ import { scrollToLeadRow } from './lib/links'
 import {
   allLeadKeys,
   buildContactPriorityQueue,
+  buildGlobalSearchIndex,
   contactQueueCounts,
   decideApplyCount,
   filterContactQueue,
@@ -17,6 +18,7 @@ import {
   replyAckKey,
   type ContactFilter,
   type ContactPriorityItem,
+  type GlobalSearchResult,
 } from './priorityQueue'
 import type { WorkflowPayload } from './types'
 import './App.css'
@@ -124,6 +126,13 @@ export default function App() {
   const [data, setData] = useState<WorkflowPayload | null>(null)
   const [error, setError] = useState('')
   const [filter, setFilter] = useState<ContactFilter>('all')
+  // Lifted here (2026-08-26), not owned by AllTabsToggle itself — each tab
+  // below mounts a *different* component (ContactPriorityQueue /
+  // DecideApplyStage / DuplicatesSkippedPanel / ArchivedLeadsPanel) via the
+  // ternary further down, so a checkbox with its own local useState would
+  // silently reset to unchecked every time `filter` changes tabs. See
+  // AllTabsToggle's own comment for the confirmed-live bug this caused.
+  const [allTabsSearch, setAllTabsSearch] = useState(false)
   const [regenerating, setRegenerating] = useState(false)
   const [replyScanningId, setReplyScanningId] = useState('')
   /** Ack key captured at click — locked only after scan finishes. */
@@ -337,6 +346,18 @@ export default function App() {
     scrollToLeadRow(normalizedKey)
   }, [data])
 
+  /** Cross-tab search index (AllTabsToggle, next to every tab's own search
+   * box) — the target tab is already known per-entry (buildGlobalSearchIndex),
+   * so this doesn't need locateLeadTab's re-derivation like onJumpToSurvivor
+   * above. */
+  const searchIndex = useMemo(() => (data ? buildGlobalSearchIndex(data) : []), [data])
+  const onJumpToResult = useCallback((result: GlobalSearchResult) => {
+    setDuplicatesFocusKey(null)
+    setHighlightKey(result.normalizedKey)
+    setFilter(result.tab)
+    scrollToLeadRow(result.normalizedKey)
+  }, [])
+
   const onRegenerate = () => {
     if (busy) return
     setError('')
@@ -415,13 +436,7 @@ export default function App() {
         id: 'send_resume' as const,
         label: 'Send résumé',
         count: counts.send_resume || 0,
-        hint: (() => {
-          const ready = data.stages.sendResume.filter((s) => s.packageReady).length
-          const total = data.stages.sendResume.length
-          if (!total) return 'Send package to the recruiter'
-          if (ready === total) return `${ready} package${ready === 1 ? '' : 's'} ready on disk — send now`
-          return `${ready}/${total} packages ready on disk — generate missing docs before sending`
-        })(),
+        hint: 'Send package to the recruiter',
       },
       {
         id: 'wait_schedule' as const,
@@ -554,6 +569,10 @@ export default function App() {
                 data={data.stages.decideApply}
                 onViewDuplicates={onViewDuplicates}
                 highlightKey={highlightKey}
+                searchIndex={searchIndex}
+                onJumpToResult={onJumpToResult}
+                allTabsSearch={allTabsSearch}
+                onAllTabsSearchChange={setAllTabsSearch}
               />
             </div>
           ) : filter === 'duplicates_skipped' ? (
@@ -563,12 +582,20 @@ export default function App() {
               highlightKey={highlightKey}
               onClearFocus={() => setDuplicatesFocusKey(null)}
               onJumpToSurvivor={onJumpToSurvivor}
+              searchIndex={searchIndex}
+              onJumpToResult={onJumpToResult}
+              allTabsSearch={allTabsSearch}
+              onAllTabsSearchChange={setAllTabsSearch}
             />
           ) : filter === 'archived' ? (
             <ArchivedLeadsPanel
               leads={data.archivedLeads ?? []}
               onViewDuplicates={onViewDuplicates}
               highlightKey={highlightKey}
+              searchIndex={searchIndex}
+              onJumpToResult={onJumpToResult}
+              allTabsSearch={allTabsSearch}
+              onAllTabsSearchChange={setAllTabsSearch}
             />
           ) : (
             <ContactPriorityQueue
@@ -580,6 +607,10 @@ export default function App() {
               replyScanBusy={busy}
               onViewDuplicates={onViewDuplicates}
               highlightKey={highlightKey}
+              searchIndex={searchIndex}
+              onJumpToResult={onJumpToResult}
+              allTabsSearch={allTabsSearch}
+              onAllTabsSearchChange={setAllTabsSearch}
             />
           )}
         </section>

@@ -1,5 +1,8 @@
 import { memo, useMemo, useState } from 'react'
+import { AllTabsToggle } from './AllTabsToggle'
+import { ManageLeadStatus } from './ManageLeadStatus'
 import { formatDecidedAt, leadAnchorHref, leadAnchorId, revealFolderUrl, viewCommunicationsUrl } from '../lib/links'
+import type { GlobalSearchResult } from '../priorityQueue'
 import type { ArchivedLead } from '../types'
 
 interface DuplicateGroup {
@@ -157,6 +160,7 @@ function DuplicateGroupCard({
                 ) : (
                   <span className="muted">No messages</span>
                 )}
+                <ManageLeadStatus normalizedKey={d.normalizedKey} currentStatus={d.status} />
               </td>
             </tr>
           ))}
@@ -173,6 +177,10 @@ export const DuplicatesSkippedPanel = memo(function DuplicatesSkippedPanel({
   highlightKey,
   onClearFocus,
   onJumpToSurvivor,
+  searchIndex = [],
+  onJumpToResult,
+  allTabsSearch = false,
+  onAllTabsSearchChange,
 }: {
   leads: ArchivedLead[]
   /** Which group to auto-expand + visually mark as "jumped to" — every
@@ -184,6 +192,12 @@ export const DuplicatesSkippedPanel = memo(function DuplicatesSkippedPanel({
   highlightKey?: string | null
   onClearFocus?: () => void
   onJumpToSurvivor?: (key: string) => void
+  /** Cross-tab search — see AllTabsToggle. */
+  searchIndex?: GlobalSearchResult[]
+  onJumpToResult?: (result: GlobalSearchResult) => void
+  /** Lifted to App.tsx (2026-08-26) — see AllTabsToggle's comment. */
+  allTabsSearch?: boolean
+  onAllTabsSearchChange?: (value: boolean) => void
 }) {
   const [query, setQuery] = useState('')
 
@@ -248,6 +262,15 @@ export const DuplicatesSkippedPanel = memo(function DuplicatesSkippedPanel({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
+        {onJumpToResult && onAllTabsSearchChange && (
+          <AllTabsToggle
+            query={query}
+            searchIndex={searchIndex}
+            onJumpToResult={onJumpToResult}
+            allTabs={allTabsSearch}
+            onAllTabsChange={onAllTabsSearchChange}
+          />
+        )}
       </div>
       <div className="dup-groups">
         {filteredGroups.map((g, i) => (

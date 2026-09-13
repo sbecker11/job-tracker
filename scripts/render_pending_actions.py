@@ -36,7 +36,11 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT, _safe_filename  # noqa: E402
-from job_tracker.pipeline.pending_workflow import _recruiter_contact, build_workflow_payload  # noqa: E402
+from job_tracker.pipeline.pending_workflow import (  # noqa: E402
+    _recruiter_contact,
+    build_workflow_payload,
+    clean_message_body_for_display,
+)
 from job_tracker.pipeline.qualifying_reply import (  # noqa: E402
     draft_qualifying_reply,
     promote_heuristic_unmatched,
@@ -787,6 +791,7 @@ def _build_linkedin_reply_queue(
                 "title": m.get("titleGuess") or "",
                 "threadUrl": m.get("threadUrl") or "",
                 "draftReply": m.get("draftReply") or "",
+                "messageBody": clean_message_body_for_display(m.get("body") or ""),
                 "ageDays": m.get("ageDays") or 0,
                 "messageId": m.get("messageId") or "",
             }
@@ -838,6 +843,7 @@ def _build_linkedin_reply_queue(
                 "title": r["title"] or draft.title_guess,
                 "threadUrl": thread,
                 "draftReply": draft.body,
+                "messageBody": clean_message_body_for_display(body),
                 "ageDays": age,
                 "messageId": inbound["message_id"] or "",
                 "normalizedKey": r["normalized_key"],
