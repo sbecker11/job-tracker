@@ -49,7 +49,7 @@ def test_repo_root_and_account_paths(monkeypatch, tmp_path: Path):
     assert gmail_reader.default_token_path() == tmp_path / "t.json"
     assert gmail_reader.default_token_path(writable=True) == tmp_path / "tm.json"
     # named account ignores env overrides
-    assert "personal_hub" in str(gmail_reader.default_credentials_path("personal_hub"))
+    assert "other_account" in str(gmail_reader.default_credentials_path("other_account"))
 
 
 def test_default_paths_prefer_config_then_local(monkeypatch, tmp_path: Path):
@@ -247,7 +247,16 @@ def test_get_gmail_service_refresh_then_relogin(monkeypatch, tmp_path: Path):
         SimpleNamespace(build=lambda *a, **k: built),
     )
 
-    svc = gmail_reader.get_gmail_service(creds_file, token_file, account="personal_hub")
+    svc = gmail_reader.get_gmail_service(creds_file, token_file, account="other_account")
     assert svc is built
     assert state["refreshed"] is True
     assert token_file.read_text() == '{"ok":true}'
+
+
+def test_get_gmail_service_rejects_personal_hub(tmp_path: Path):
+    import pytest
+
+    with pytest.raises(ValueError, match="pass through unaffected"):
+        gmail_reader.get_gmail_service(
+            tmp_path / "c.json", tmp_path / "t.json", account="personal_hub"
+        )

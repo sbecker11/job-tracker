@@ -132,8 +132,8 @@ done
 
 Follow each sibling README:
 
-- `comms-migration` — `~/.config/comms-classifier/{personal_hub,recruiting_funnel}/`
-- `job-tracker` — `~/.config/job-tracker/` (+ optional `personal_hub/`)
+- `comms-migration` — `~/.config/comms-classifier/recruiting_funnel/`
+- `job-tracker` — `~/.config/job-tracker/`
 
 Always dry-run before the first live Gmail write.
 
@@ -149,7 +149,7 @@ cd "$WORKSPACE/recruiting-automation"
 
 ```bash
 cd "$WORKSPACE/comms-migration" && source .venv/bin/activate
-python scripts/run_classifier.py --account personal_hub --dry-run --limit 5
+python scripts/run_classifier.py --account recruiting_funnel --dry-run --limit 5
 
 cd "$WORKSPACE/job-tracker" && source .venv/bin/activate
 # see job-tracker/PRIMER.md for the end-to-end sequence

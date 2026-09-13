@@ -27,8 +27,8 @@ script ever sees it). Whatever the cause, an `in:inbox`-scoped query turns
 that into a silent, permanent dead end — this repo's own `-label:JobTracker/*`
 exclusions already prevent reprocessing already-triaged mail, so dropping
 `in:inbox` costs nothing and closes the gap. This makes the default query's
-behavior consistent with the `--account personal_hub` query, which never
-required `in:inbox` for the same reason.
+behavior consistent with other archived-mail pickup; the default query already
+does not require `in:inbox` for that reason.
 
 Every triaged message gets a JobTracker/* outcome label, but archiving
 (removing INBOX) is conditional for one case: a message that also carries
@@ -377,14 +377,10 @@ def main(argv: list[str] | None = None) -> int:
         "--account",
         choices=KNOWN_ACCOUNTS,
         help="Triage a named account other than the default recruiting funnel "
-        "(credentials/token resolved from ~/.config/job-tracker/<account>/ unless "
-        "--credentials/--token override). E.g. --account personal_hub to catch up on "
-        "job-lead mail that landed on scbboston@gmail.com — including historical "
-        "backlog from before the recruiting funnel forwards existed (see "
-        "comms-migration's routing-inventory.md). The default query already doesn't "
-        "require `in:inbox` (see DEFAULT_QUERY's docstring note), so no query override "
-        "is needed just because that mail may be archived/read; this account does need "
-        "its own one-time gmail.modify consent the first time you run this without --dry-run.",
+        "(credentials/token under ~/.config/job-tracker/<account>/). "
+        "No extra accounts are registered — personal_hub / scbboston@gmail.com "
+        "is left untouched. The default query already does not require "
+        "`in:inbox` (see DEFAULT_QUERY).",
     )
     ap.add_argument("--credentials", type=Path, default=None)
     ap.add_argument("--token", type=Path, default=None)

@@ -220,33 +220,15 @@ Credentials live **outside the repo** at `~/.config/job-tracker/` (never pushed 
    ```
 7. First fetch opens a browser; token caches to `~/.config/job-tracker/token.json`.
 
-### Optional: also read `scbboston@gmail.com` (personal hub)
+### `scbboston@gmail.com` (personal hub) — not processed
 
-Recruiter/job mail sometimes lands in the personal hub instead of the
-recruiting funnel. [`comms-migration`](https://github.com/sbecker11/comms-migration)'s
-`classifier/` labels that mail `Category/recruiter_job` there and archives
-it out of the inbox (as of 2026-07-04) — this repo polls by label, not
-inbox location (`is:unread` with no `in:inbox`), so archiving on the
-comms-migration side never hides anything from this pipeline. It picks up
-the exact same classify → extract → resolve → score → store pipeline
-without ever touching the rest of your personal inbox, and with no manual
-forwarding step.
+As of 2026-09-13, job-tracker and comms-migration **do not** read, label,
+triage, or otherwise process `scbboston@gmail.com` / `personal_hub`. That
+mailbox is left untouched. Recruiting mail must arrive via
+`shawnbecker.recruiting@gmail.com` (or Spexture/iCloud IMAP paths).
 
-This needs its own one-time OAuth consent for `scbboston@gmail.com`
-(job-tracker only ever requests read-only access, so it can't reuse
-comms-migration's broader `gmail.modify` token even for the same account):
-
-```bash
-mkdir -p ~/.config/job-tracker/personal_hub
-cp ~/Downloads/client_secret_*.json ~/.config/job-tracker/personal_hub/credentials.json
-# First run opens a browser — sign in as scbboston@gmail.com.
-python scripts/run_pipeline.py --dry-run --account personal_hub \
-  --query "label:Category/recruiter_job is:unread" --limit 20
-```
-
-Run comms-migration's classifier first (or on a schedule) so the label
-exists before job-tracker polls it — this repo never applies that label
-itself.
+Historical note: an optional `--account personal_hub` path used to poll
+`Category/recruiter_job` there; that account is now in `BLOCKED_ACCOUNTS`.
 
 ### Historical backlog: job-lead mail from before the recruiting funnel existed
 
@@ -1105,6 +1087,10 @@ Gmail-specific:
 # hierarchy separator is ".", so everything nests under INBOX like the
 # account's own INBOX.Archive/INBOX.Sent already do).
 python scripts/triage_imap_inbox.py --imap-prefix SPEXTURE --llm-fallback
+
+# Optional: sbecker11@icloud.com (same mailbox as @mac.com / @me.com).
+# Needs ICLOUD_IMAP_* + an Apple app-specific password. Does not move mail.
+python scripts/triage_imap_inbox.py --imap-prefix ICLOUD --personal-mailbox --newer-than 14 --llm-fallback
 ```
 
 Two branches per message, mirroring the Gmail-side split:

@@ -27,19 +27,25 @@ CONFIG_DIR = Path.home() / ".config" / "job-tracker"
 
 # Additional named accounts this reader can pull from, beyond the default
 # recruiting-funnel account above. Each gets its own credentials/token pair
-# under CONFIG_DIR/<account>/, and its own one-time OAuth consent — job-
-# tracker only ever requests read-only access, so it needs its own token
-# even for an account comms-migration's classifier already has (broader)
-# gmail.modify access to.
+# under CONFIG_DIR/<account>/, and its own one-time OAuth consent.
 #
-# `personal_hub` (scbboston@gmail.com) exists to close a gap: recruiter/job
-# mail sometimes lands there instead of the recruiting funnel. comms-
-# migration's classifier labels it `Category/recruiter_job` there but never
-# moves it; pointing job-tracker at this account with
-# `--query "label:Category/recruiter_job is:unread"` lets it pick up exactly
-# that pre-filtered set through the normal pipeline, without ever touching
-# the rest of the personal inbox.
-KNOWN_ACCOUNTS = ("personal_hub",)
+# Empty as of 2026-09-13: `personal_hub` (`scbboston@gmail.com`) is no longer
+# processed by job-tracker or comms-migration — that mailbox must pass through
+# untouched. Path helpers still accept an arbitrary account name for tests /
+# future accounts, but CLI `--account` choices come from this tuple only.
+KNOWN_ACCOUNTS: tuple[str, ...] = ()
+
+# Names that must never be passed to Gmail read/write CLIs in this repo.
+BLOCKED_ACCOUNTS = frozenset({"personal_hub"})
+
+
+def reject_blocked_account(account: str | None) -> None:
+    """Raise ValueError if `account` targets a mailbox we leave untouched."""
+    if account and account in BLOCKED_ACCOUNTS:
+        raise ValueError(
+            f"account {account!r} is not processed by job-tracker "
+            "(scbboston@gmail.com / personal_hub must pass through unaffected)"
+        )
 
 
 def repo_root() -> Path:
@@ -108,6 +114,7 @@ def get_gmail_service(
     cached under the old scope won't gain new permissions just because a
     wider scope is requested here; Google will 403 the write call instead.
     """
+    reject_blocked_account(account)
     _require_google_libs()
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
@@ -309,8 +316,10 @@ def fetch_unread(
     `account`, when set, reads from a named account registered in
     KNOWN_ACCOUNTS instead of the default recruiting-funnel account
     (credentials/token resolved from CONFIG_DIR/<account>/ unless overridden
-    by credentials_path/token_path).
+    by credentials_path/token_path). Blocked accounts (see BLOCKED_ACCOUNTS)
+    raise ValueError.
     """
+    reject_blocked_account(account)
     credentials_path = credentials_path or default_credentials_path(account)
     token_path = token_path or default_token_path(account)
     service = get_gmail_service(credentials_path, token_path, account=account)

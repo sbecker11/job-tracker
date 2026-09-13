@@ -11,11 +11,6 @@ import type { CycleStepTiming } from '../types'
  * only the stable leading text needs to agree. */
 const CYCLE_STEPS: { matchPrefix: string; title: string; detail: string }[] = [
   {
-    matchPrefix: 'comms-migration: classify personal_hub',
-    title: 'Classify — personal_hub',
-    detail: 'Classifies new mail on the personal_hub Gmail account (live, with LLM fallback).',
-  },
-  {
     matchPrefix: 'comms-migration: classify recruiting_funnel',
     title: 'Classify — recruiting_funnel',
     detail:

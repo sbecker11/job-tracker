@@ -97,7 +97,7 @@ def run_steps(*, db: Path, skip_classify: bool) -> list[str]:
             errors.append(f"{label} exited {rc}")
 
     if not skip_classify and COMMS_REPO.is_dir() and Path(comms_py).is_file():
-        # Rules + LLM for brand-new senders on personal hub (Abhinav-class).
+        # Rules + LLM for brand-new senders on the recruiting funnel.
         # Tight newer-than / limit so a 3-minute tick cannot chew the backlog.
         note(
             _run(
@@ -105,7 +105,7 @@ def run_steps(*, db: Path, skip_classify: bool) -> list[str]:
                     comms_py,
                     "scripts/run_classifier.py",
                     "--account",
-                    "personal_hub",
+                    "recruiting_funnel",
                     "--newer-than",
                     "1",
                     "--limit",
@@ -115,59 +115,49 @@ def run_steps(*, db: Path, skip_classify: bool) -> list[str]:
                 cwd=COMMS_REPO,
                 timeout=120,
             ),
-            "classify personal_hub",
+            "classify recruiting_funnel",
         )
 
-    for account_args, label in (
-        ([], "scan recruiting"),
-        (["--account", "personal_hub"], "scan personal_hub"),
-    ):
-        note(
-            _run(
-                [
-                    jt_py,
-                    "scripts/scan_communications.py",
-                    "--db",
-                    str(db),
-                    "--include-sent",
-                    "--newer-than",
-                    "1",
-                    "--limit",
-                    "40",
-                    *account_args,
-                ],
-                cwd=REPO_ROOT,
-                timeout=120,
-            ),
-            label,
-        )
+    note(
+        _run(
+            [
+                jt_py,
+                "scripts/scan_communications.py",
+                "--db",
+                str(db),
+                "--include-sent",
+                "--newer-than",
+                "1",
+                "--limit",
+                "40",
+            ],
+            cwd=REPO_ROOT,
+            timeout=120,
+        ),
+        "scan recruiting",
+    )
 
-    for account_args, label in (
-        ([], "triage recruiting"),
-        (["--account", "personal_hub"], "triage personal_hub"),
-    ):
-        note(
-            _run(
-                [
-                    jt_py,
-                    "scripts/triage_recruiter_inbox.py",
-                    "--db",
-                    str(db),
-                    "--newer-than",
-                    "1",
-                    "--inbox-batch-message-cap",
-                    "12",
-                    "--inbox-batch-wall-budget-secs",
-                    "45",
-                    "--no-generate",
-                    "--offline",
-                    *account_args,
-                ],
-                cwd=REPO_ROOT,
-                timeout=90,
-            ),
-            label,
-        )
+    note(
+        _run(
+            [
+                jt_py,
+                "scripts/triage_recruiter_inbox.py",
+                "--db",
+                str(db),
+                "--newer-than",
+                "1",
+                "--inbox-batch-message-cap",
+                "12",
+                "--inbox-batch-wall-budget-secs",
+                "45",
+                "--no-generate",
+                "--offline",
+            ],
+            cwd=REPO_ROOT,
+            timeout=90,
+        ),
+        "triage recruiting",
+    )
 
     note(
         _run(
@@ -189,6 +179,31 @@ def run_steps(*, db: Path, skip_classify: bool) -> list[str]:
             timeout=90,
         ),
         "triage spexture imap",
+    )
+
+    note(
+        _run(
+            [
+                jt_py,
+                "scripts/triage_imap_inbox.py",
+                "--db",
+                str(db),
+                "--imap-prefix",
+                "ICLOUD",
+                "--personal-mailbox",
+                "--newer-than",
+                "3",
+                "--inbox-batch-message-cap",
+                "12",
+                "--inbox-batch-wall-budget-secs",
+                "45",
+                "--no-generate",
+                "--offline",
+            ],
+            cwd=REPO_ROOT,
+            timeout=90,
+        ),
+        "triage icloud imap",
     )
 
     note(

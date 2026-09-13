@@ -42,7 +42,7 @@ Already-triaged mail  →  re-derive outcome from CURRENT lead verdict(s)  →  
 ## Prerequisites (one-time, already done in this environment)
 
 - Gmail OAuth for `shawnbecker.recruiting@gmail.com`: `~/.config/job-tracker/credentials.json` + `token.json` — present.
-- Optional second account `personal_hub` (`scbboston@gmail.com`, reads `Category/recruiter_job` mail comms-migration's classifier applies there): `~/.config/job-tracker/personal_hub/` — present.
+- `scbboston@gmail.com` / `personal_hub` is **not** processed (left untouched as of 2026-09-13).
 - `ANTHROPIC_API_KEY` in `.env` — required for Stage 2 and Stage 4 (both call the LLM). Without it, only Stage 1's keyword scoring works.
 - Candidate profile / JD Match Framework: `~/CLAUDE.md` (dealbreakers, not-dealbreakers, skills vocabulary, banned terms, contact info) and `config/framework.yaml` (the same framework, machine-readable, used by the keyword scorer; LLM evaluate also honors `not_dealbreakers` via `_EVAL_SYSTEM_PROMPT`). Keep these two in sync if the framework changes. In particular: US citizen / no-sponsorship JD requirements are ✅ fit at evaluation; packages still omit work-auth language (§4 rule 11).
 - `var/leads.db` — SQLite dedup store, created automatically on first run. Already has real data from prior runs.
@@ -56,10 +56,6 @@ Activate the venv first: `source .venv/bin/activate` (from the repo root).
 ```bash
 # Recruiting funnel (default account), last 30 days, up to 50 messages
 python scripts/run_pipeline.py --dry-run --newer-than 30 --limit 50
-
-# Also pick up recruiter_job mail comms-migration routed to the personal hub
-python scripts/run_pipeline.py --dry-run --account personal_hub \
-  --query "label:Category/recruiter_job is:unread" --limit 20
 ```
 
 - `--dry-run` here means "read Gmail read-only" (doesn't mark messages read/archived) — it still fully classifies, extracts, resolves JDs against live ATS boards, keyword-scores, and **writes to `var/leads.db`**. This is the normal way to run it.
@@ -630,7 +626,6 @@ step covers.
 ```bash
 cd ../comms-migration && source .venv/bin/activate
 python scripts/run_classifier.py --account recruiting_funnel --limit 500 --dry-run
-python scripts/run_classifier.py --account personal_hub --limit 200 --dry-run
 # drop --dry-run when output looks right
 ```
 
@@ -640,8 +635,8 @@ python scripts/run_classifier.py --account personal_hub --limit 200 --dry-run
 cd ../job-tracker && source .venv/bin/activate
 python scripts/triage_recruiter_inbox.py --dry-run --newer-than 30 --inbox-batch-message-cap 50
 python scripts/triage_recruiter_inbox.py --newer-than 30 --inbox-batch-message-cap 30 --llm-fallback
-python scripts/triage_recruiter_inbox.py --account personal_hub --newer-than 90 --llm-fallback
 python scripts/triage_imap_inbox.py --imap-prefix SPEXTURE --newer-than 90 --llm-fallback
+python scripts/triage_imap_inbox.py --imap-prefix ICLOUD --personal-mailbox --newer-than 14 --llm-fallback
 ```
 
 **3. LinkedIn / Sent catch-up**

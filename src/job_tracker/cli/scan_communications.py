@@ -96,6 +96,7 @@ from job_tracker.email.gmail_reader import (
     get_gmail_service,
     get_gmail_service_writable,
     list_message_ids,
+    reject_blocked_account,
 )
 from job_tracker.email.models import EmailMessage, ExtractedRole
 from job_tracker.pipeline.comms_match import match_message_to_job
@@ -505,6 +506,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
+
+    try:
+        reject_blocked_account(args.account)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
     credentials_path = args.credentials or default_credentials_path(args.account)
     label_ids: dict[str, str] | None = None

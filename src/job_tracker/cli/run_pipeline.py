@@ -100,10 +100,9 @@ def main(argv: list[str] | None = None) -> int:
         "--account",
         choices=KNOWN_ACCOUNTS,
         help="Read from a named account other than the default recruiting funnel "
-        "(credentials/token resolved from ~/.config/job-tracker/<account>/ unless "
-        "--credentials/--token override). E.g. --account personal_hub "
-        "--query 'label:Category/recruiter_job is:unread' to pick up recruiter mail "
-        "comms-migration's classifier flagged on scbboston@gmail.com.",
+        "(credentials/token under ~/.config/job-tracker/<account>/). "
+        "No extra accounts are registered — personal_hub / scbboston@gmail.com "
+        "is left untouched.",
     )
     ap.add_argument("--db", type=Path, default=DEFAULT_DB_PATH, help=f"Leads DB path (default: {DEFAULT_DB_PATH})")
     ap.add_argument(

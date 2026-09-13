@@ -92,12 +92,12 @@ def test_default_credentials_path_no_account_uses_config_root(monkeypatch):
 
 def test_default_credentials_path_with_account_uses_subdirectory(monkeypatch):
     monkeypatch.delenv("JOB_TRACKER_GMAIL_CREDENTIALS", raising=False)
-    assert default_credentials_path("personal_hub") == CONFIG_DIR / "personal_hub" / "credentials.json"
+    assert default_credentials_path("other_account") == CONFIG_DIR / "other_account" / "credentials.json"
 
 
 def test_default_token_path_with_account_uses_subdirectory(monkeypatch):
     monkeypatch.delenv("JOB_TRACKER_GMAIL_TOKEN", raising=False)
-    assert default_token_path("personal_hub") == CONFIG_DIR / "personal_hub" / "token.json"
+    assert default_token_path("other_account") == CONFIG_DIR / "other_account" / "token.json"
 
 
 def test_env_override_ignored_when_account_is_set(monkeypatch):
@@ -105,8 +105,17 @@ def test_env_override_ignored_when_account_is_set(monkeypatch):
     # funnel path — an explicit account must not be silently redirected by a
     # leftover env var meant for the default account.
     monkeypatch.setenv("JOB_TRACKER_GMAIL_CREDENTIALS", "/tmp/should-not-be-used.json")
-    assert default_credentials_path("personal_hub") == CONFIG_DIR / "personal_hub" / "credentials.json"
+    assert default_credentials_path("other_account") == CONFIG_DIR / "other_account" / "credentials.json"
     monkeypatch.delenv("JOB_TRACKER_GMAIL_CREDENTIALS", raising=False)
+
+
+def test_personal_hub_is_blocked():
+    from job_tracker.email.gmail_reader import reject_blocked_account
+    import pytest
+
+    with pytest.raises(ValueError, match="pass through unaffected"):
+        reject_blocked_account("personal_hub")
+    reject_blocked_account(None)  # default recruiting funnel is fine
 
 
 def test_html_fallback_strips_style_and_script_blocks():

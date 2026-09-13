@@ -13,14 +13,14 @@ Ref: [`comms-migration/routing-inventory.md`](../comms-migration/routing-invento
 
 | Step | Repo | Command | What it reads |
 |------|------|---------|---------------|
-| 1 | comms-migration | `run_classifier.py --account personal_hub` | `scbboston@gmail.com` |
-| 2 | comms-migration | `run_classifier.py --account recruiting_funnel` (+ spam sweep) | `shawnbecker.recruiting@gmail.com` |
-| 3 | job-tracker | `triage_recruiter_inbox.py` | recruiting funnel Gmail (`Category/recruiter_job`) |
-| 4 | job-tracker | `scan_communications.py` | LinkedIn replies (`Category/social`) + Sent folder |
-| 5 | job-tracker | `triage_imap_inbox.py --imap-prefix SPEXTURE` | `shawn.becker@spexture.com` (Hostinger IMAP) |
-| 6 | job-tracker | `process_awaiting_llm_review.py` | DB only (stuck high-gate leads) |
-| 7 | job-tracker | `resync_labels.py` | Gmail JobTracker/* vs DB verdicts |
-| 8 | job-tracker | `render_pending_actions.py` | DB → static UI JSON |
+| 1 | comms-migration | `run_classifier.py --account recruiting_funnel` (+ spam sweep) | `shawnbecker.recruiting@gmail.com` |
+| 2 | job-tracker | `triage_recruiter_inbox.py` | recruiting funnel Gmail (`Category/recruiter_job`) |
+| 3 | job-tracker | `scan_communications.py` | LinkedIn replies (`Category/social`) + Sent folder |
+| 4 | job-tracker | `triage_imap_inbox.py --imap-prefix SPEXTURE` | `shawn.becker@spexture.com` (Hostinger IMAP) |
+| 4b | job-tracker | `triage_imap_inbox.py --imap-prefix ICLOUD --personal-mailbox` | `sbecker11@icloud.com` (same mailbox as @mac.com / @me.com) |
+| 5 | job-tracker | `process_awaiting_llm_review.py` | DB only (stuck high-gate leads) |
+| 6 | job-tracker | `resync_labels.py` | Gmail JobTracker/* vs DB verdicts |
+| 7 | job-tracker | `render_pending_actions.py` | DB → static UI JSON |
 
 Fast tick (every 3 min): `comms_fast_cycle.py` — lightweight inbox check, shares DB lock with hourly steps.
 
@@ -34,8 +34,8 @@ Fast tick (every 3 min): `comms_fast_cycle.py` — lightweight inbox check, shar
 | `shawn.becker@spexture.com` | Hostinger → IMAP | triage_imap_inbox | Gmail API never sees this |
 | `scb_boston@yahoo.com` | Forward → recruiting funnel | classify → triage | Verified 2026-07-04 |
 | `sbecker@alum.mit.edu` | Forward → recruiting funnel | classify → triage | Verified 2026-07-04; check alumni backlog once |
-| `shawn.becker@spexture.com` (Hostinger copy) | Hostinger mailbox | triage_imap | keep-a-copy backup on forwarder |
-| `scbboston@gmail.com` | Personal hub (no auto-forward to funnel) | classify personal_hub only | Job mail here needs `triage_recruiter_inbox --account personal_hub` or manual forward |
+| `sbecker11@icloud.com` (`@mac.com`, `@me.com`) | iCloud IMAP (same INBOX) | triage_imap_inbox `--personal-mailbox` | **Needs Apple app-specific password** in `ICLOUD_IMAP_PASSWORD`. Not a Gmail forward. Mail stays in iCloud INBOX. |
+| `scbboston@gmail.com` | Personal hub | **Not processed** (removed 2026-09-13) | Mailbox left untouched — no classify, scan, or triage |
 | LinkedIn InMail replies | `Category/social` on funnel | scan_communications | Not triage_recruiter_inbox |
 | Sent-folder replies | Gmail Sent | scan_communications `--include-sent` | Tier-1 match only |
 | Archives / old SKIP rejections | Gmail All Mail | **Phase 2:** `scan_rejection_backlog.py` | Not live triage; run weekly or after HALT gap |
