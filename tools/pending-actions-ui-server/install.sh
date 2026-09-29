@@ -5,12 +5,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${ROOT}/../.." && pwd)"
 LABEL="com.sbecker11.job-tracker.pending-actions-ui"
+API_LABEL="com.sbecker11.job-tracker.find-mail-api"
 PLIST_PATH="${HOME}/Library/LaunchAgents/${LABEL}.plist"
+API_PLIST_PATH="${HOME}/Library/LaunchAgents/${API_LABEL}.plist"
 RUN_SH="${ROOT}/run.sh"
+API_RUN="${ROOT}/run-api.sh"
 LOG_DIR="${REPO_ROOT}/pending-actions-ui/logs"
 
 mkdir -p "${LOG_DIR}"
-chmod +x "${RUN_SH}"
+chmod +x "${RUN_SH}" "${API_RUN}"
 
 # Resolve node at install time and bake into the plist environment.
 NODE_BIN=""
@@ -59,14 +62,47 @@ cat >"${PLIST_PATH}" <<EOF
 </plist>
 EOF
 
+cat >"${API_PLIST_PATH}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${API_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${API_RUN}</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${REPO_ROOT}</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>${LOG_DIR}/find-mail-api.launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>${LOG_DIR}/find-mail-api.launchd.err.log</string>
+</dict>
+</plist>
+EOF
+
 launchctl bootout "gui/$(id -u)/${LABEL}" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$(id -u)" "${PLIST_PATH}"
+launchctl bootout "gui/$(id -u)/${API_LABEL}" >/dev/null 2>&1 || true
+launchctl bootstrap "gui/$(id -u)" "${API_PLIST_PATH}"
 
 echo "Installed: ${PLIST_PATH}"
+echo "           ${API_PLIST_PATH}"
 echo "Label:     ${LABEL}"
+echo "API label: ${API_LABEL}"
 echo "Node:      ${NODE_BIN}"
 echo "UI:        http://127.0.0.1:3174/"
+echo "Find-mail: http://127.0.0.1:3175/api/find-mail?q="
 echo "Logs:      ${LOG_DIR}/launchd.{out,err}.log"
+echo "           ${LOG_DIR}/find-mail-api.launchd.{out,err}.log"
 echo ""
 echo "Starts at login/reboot (RunAtLoad) and restarts if it dies (KeepAlive)."
 echo "Stop with: ${ROOT}/stop.sh"

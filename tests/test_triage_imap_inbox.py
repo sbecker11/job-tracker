@@ -71,7 +71,10 @@ def mock_imap(monkeypatch):
     monkeypatch.setattr(
         imap_cli,
         "ImapAccount",
-        SimpleNamespace(from_env=lambda prefix: SimpleNamespace(host="h", port=993, user="u", password="p")),  # pragma: allowlist secret
+        SimpleNamespace(
+            from_env=lambda prefix: SimpleNamespace(host="h", port=993, user="u", password="p"),  # pragma: allowlist secret
+            from_env_if_configured=lambda prefix: SimpleNamespace(host="h", port=993, user="u", password="p"),  # pragma: allowlist secret
+        ),
     )
     monkeypatch.setattr(imap_cli, "connect", lambda account: fake_conn)
     monkeypatch.setattr(imap_cli, "ensure_folder", lambda conn, folder: None)
@@ -417,3 +420,83 @@ def test_triage_imap_error_continues(monkeypatch, mock_imap, tmp_path: Path, cap
     err = capsys.readouterr().err
     assert "ERROR" in err
     assert "errored" in err
+
+
+def test_personal_mailbox_and_newer_than_are_recognized(monkeypatch, mock_imap, tmp_path: Path):
+    """Regression: run_cycle.sh passed these flags and argparse exited 2, HALTing the schedule."""
+    monkeypatch.setattr(imap_cli, "list_message_uids", lambda *a, **k: [])
+    rc = imap_main(
+        [
+            "--imap-prefix",
+            "ICLOUD",
+            "--personal-mailbox",
+            "--newer-than",
+            "14",
+            "--llm-fallback",
+            "--inbox-batch-message-cap",
+            "30",
+            "--inbox-batch-wall-budget-secs",
+            "600",
+            "--db",
+            str(tmp_path / "leads.db"),
+            "--dry-run",
+        ]
+    )
+    assert rc == 0
+
+
+def test_personal_mailbox_skips_when_unconfigured(monkeypatch, capsys):
+    monkeypatch.setattr(
+        imap_cli,
+        "ImapAccount",
+        SimpleNamespace(
+            from_env_if_configured=lambda prefix: None,
+            from_env=lambda prefix: (_ for _ in ()).throw(AssertionError("must not require credentials")),
+        ),
+    )
+    connected: list = []
+    monkeypatch.setattr(imap_cli, "connect", lambda account: connected.append(account))
+    rc = imap_main(["--personal-mailbox", "--imap-prefix", "ICLOUD", "--newer-than", "14"])
+    assert rc == 0
+    assert connected == []
+    assert "not configured" in capsys.readouterr().err
+
+
+def test_newer_than_uses_imap_since_criteria(monkeypatch, mock_imap, tmp_path: Path):
+    seen: dict = {}
+
+    def list_uids(*a, **k):
+        seen.update(k)
+        return []
+
+    monkeypatch.setattr(imap_cli, "list_message_uids", list_uids)
+    rc = imap_main(["--dry-run", "--db", str(tmp_path / "leads.db"), "--newer-than", "14"])
+    assert rc == 0
+    assert str(seen.get("criteria") or "").startswith("SINCE ")
+
+
+def test_personal_mailbox_does_not_move_mail(monkeypatch, mock_imap, tmp_path: Path):
+    monkeypatch.setattr(imap_cli, "list_message_uids", lambda *a, **k: ["1"])
+    monkeypatch.setattr(imap_cli, "fetch_message", lambda *a, **k: _msg())
+    monkeypatch.setattr(imap_cli, "triage_message", lambda *a, **k: _result(roles=[_role(resume=Path("/tmp/r.docx"))]))
+
+    rc = imap_main(["--db", str(tmp_path / "leads.db"), "--personal-mailbox"])
+    assert rc == 0
+    assert mock_imap.moves == []
+
+
+def test_personal_mailbox_skips_apple_receipts(monkeypatch, mock_imap, tmp_path: Path):
+    def _triage(*a, **k):
+        raise AssertionError("must not triage Apple receipts")
+
+    monkeypatch.setattr(imap_cli, "list_message_uids", lambda *a, **k: ["1"])
+    monkeypatch.setattr(
+        imap_cli,
+        "fetch_message",
+        lambda *a, **k: _msg(from_address="no_reply@email.apple.com"),
+    )
+    monkeypatch.setattr(imap_cli, "triage_message", _triage)
+
+    rc = imap_main(["--db", str(tmp_path / "leads.db"), "--personal-mailbox"])
+    assert rc == 0
+    assert mock_imap.moves == []

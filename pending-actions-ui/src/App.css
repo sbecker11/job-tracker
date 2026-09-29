@@ -69,6 +69,100 @@ body {
   justify-content: flex-end;
 }
 
+.find-mail {
+  margin: 0 0 22px;
+  padding: 14px 16px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.find-mail-form label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.find-mail-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.find-mail-input {
+  flex: 1 1 auto;
+}
+
+.find-mail-hint,
+.find-mail-empty {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.find-mail-error {
+  margin: 8px 0 0;
+  color: var(--danger);
+  font-size: 0.9rem;
+}
+
+.find-mail-results {
+  display: grid;
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.find-mail-group h3 {
+  margin: 0 0 8px;
+  font-size: 0.95rem;
+}
+
+.find-mail-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.find-mail-group li {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--elevated);
+}
+
+.find-mail-hit-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.find-mail-folder {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+}
+
+.find-mail-meta {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-top: 4px;
+}
+
+.find-mail-snippet {
+  margin: 8px 0 0;
+  font-size: 0.9rem;
+}
+
+.find-mail-links {
+  margin: 8px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .pipeline {
   display: flex;
   flex-wrap: wrap;

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from job_tracker.email.imap_reader import ImapAccount, parse_rfc822_message
+from job_tracker.email.imap_reader import ImapAccount, imap_since_criteria, parse_rfc822_message
 
 
 def test_imap_account_from_env_reads_prefixed_vars(monkeypatch):
@@ -27,6 +27,33 @@ def test_imap_account_from_env_missing_raises(monkeypatch):
 
     with pytest.raises(RuntimeError, match="SPEXTURE_IMAP"):
         ImapAccount.from_env("SPEXTURE")
+
+
+def test_from_env_if_configured_returns_none_when_missing(monkeypatch):
+    monkeypatch.delenv("ICLOUD_IMAP_HOST", raising=False)
+    monkeypatch.delenv("ICLOUD_IMAP_USER", raising=False)
+    monkeypatch.delenv("ICLOUD_IMAP_PASSWORD", raising=False)
+    assert ImapAccount.from_env_if_configured("ICLOUD") is None
+
+
+def test_imap_since_criteria_uses_english_month():
+    crit = imap_since_criteria(14)
+    assert crit.startswith("SINCE ")
+    month = crit.split("-")[1]
+    assert month in {
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
+    }
 
 
 _RAW_PLAIN_MESSAGE = (

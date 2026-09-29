@@ -27,6 +27,7 @@ import email as email_lib
 import imaplib
 import os
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from email.header import decode_header
 from email.message import Message as EmailLibMessage
 from email.utils import parseaddr
@@ -35,6 +36,21 @@ from job_tracker.email.models import EmailMessage
 from job_tracker.htmltext import html_to_text
 
 DEFAULT_PORT = 993
+# IMAP SEARCH dates must use English month abbreviations (locale-independent).
+_IMAP_MONTHS = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
 
 
 @dataclass
@@ -58,6 +74,24 @@ class ImapAccount:
                 "Fill these in directly in the shared .env file — never paste a password into chat."
             )
         return cls(host=host, port=int(port_raw), user=user, password=password)  # pragma: allowlist secret
+
+    @classmethod
+    def from_env_if_configured(cls, prefix: str) -> "ImapAccount | None":
+        """Same as `from_env`, but returns None instead of raising when creds are missing.
+
+        Used by `--personal-mailbox` so an optional iCloud account can be skipped
+        (exit 0) instead of HALTing the hourly schedule.
+        """
+        try:
+            return cls.from_env(prefix)
+        except RuntimeError:
+            return None
+
+
+def imap_since_criteria(days: int) -> str:
+    """IMAP SEARCH `SINCE DD-Mon-YYYY` for mail on/after this many days ago."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(0, int(days)))
+    return f"SINCE {cutoff.day:02d}-{_IMAP_MONTHS[cutoff.month - 1]}-{cutoff.year}"
 
 
 def connect(account: ImapAccount) -> imaplib.IMAP4_SSL:

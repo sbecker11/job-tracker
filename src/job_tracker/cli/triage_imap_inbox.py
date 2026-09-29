@@ -64,7 +64,15 @@ from job_tracker.cli.scan_communications import (
     _save_message_txt,
     _update_lead_jd_text,
 )
-from job_tracker.email.imap_reader import ImapAccount, connect, ensure_folder, fetch_message, list_message_uids, move_message
+from job_tracker.email.imap_reader import (
+    ImapAccount,
+    connect,
+    ensure_folder,
+    fetch_message,
+    imap_since_criteria,
+    list_message_uids,
+    move_message,
+)
 from job_tracker.pipeline.comms_match import match_message_to_job
 from job_tracker.pipeline.llm_apply import DEFAULT_MODEL, DEFAULT_OUTPUT_ROOT
 from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_EXTRACT_MODEL
@@ -117,6 +125,25 @@ _OUTCOME_FOLDERS = {
     NEEDS_REVIEW: "INBOX.JobTracker.NEEDS_REVIEW",
 }
 
+# Personal-mailbox noise that must never leave INBOX (Apple receipts, App Store, iCloud).
+_APPLE_RECEIPT_DOMAINS = frozenset({"apple.com", "itunes.com"})
+
+
+def _is_apple_receipt(message) -> bool:
+    addr = (getattr(message, "from_address", None) or "").strip().lower()
+    if "@" not in addr:
+        return False
+    domain = addr.rsplit("@", 1)[-1]
+    return domain in _APPLE_RECEIPT_DOMAINS or domain.endswith(".apple.com")
+
+
+def _file_message(imap_conn, uid: str, *, source_folder: str, to_folder: str, file_mail: bool) -> None:
+    """Move to a JobTracker folder unless this is a personal mailbox (leave in INBOX)."""
+    if not file_mail:
+        print(f"  (personal mailbox — left in {source_folder})")
+        return
+    move_message(imap_conn, uid, from_folder=source_folder, to_folder=to_folder)
+
 
 def _link_existing_conversation(
     conn,
@@ -130,6 +157,7 @@ def _link_existing_conversation(
     use_llm_fallback: bool = False,
     llm_extraction_model: str = DEFAULT_LLM_EXTRACT_MODEL,
     llm_extract_client=None,
+    file_mail: bool = True,
 ) -> None:
     """Mirror of `triage_recruiter_inbox._link_existing_conversation` for an
     IMAP-sourced message — see that function's docstring for the underlying
@@ -190,7 +218,7 @@ def _link_existing_conversation(
             body_text=message.combined_text,
         ),
     )
-    move_message(imap_conn, uid, from_folder=source_folder, to_folder=_LINKED_FOLDER)
+    _file_message(imap_conn, uid, source_folder=source_folder, to_folder=_LINKED_FOLDER, file_mail=file_mail)
 
 
 def _handle_linkedin_reply(
@@ -205,6 +233,7 @@ def _handle_linkedin_reply(
     output_root: Path,
     dry_run: bool,
     llm_extract_client=None,
+    file_mail: bool = True,
 ) -> str:
     """Mirror of `scan_communications._scan_one`'s post-`match_message_to_job`
     handling for one `hit-reply@`/`inmail-hit-reply@` message — stub-lead
@@ -302,7 +331,7 @@ def _handle_linkedin_reply(
                 output_root=output_root,
             )
             action += f" (+ archived {txt_path.name})"
-        move_message(imap_conn, uid, from_folder=source_folder, to_folder=_LINKED_FOLDER)
+        _file_message(imap_conn, uid, source_folder=source_folder, to_folder=_LINKED_FOLDER, file_mail=file_mail)
     else:
         record_unmatched_message(
             conn,
@@ -317,7 +346,9 @@ def _handle_linkedin_reply(
             ),
         )
         action = "parked (unmatched)"
-        move_message(imap_conn, uid, from_folder=source_folder, to_folder=_NEEDS_FOLLOWUP_FOLDER)
+        _file_message(
+            imap_conn, uid, source_folder=source_folder, to_folder=_NEEDS_FOLLOWUP_FOLDER, file_mail=file_mail
+        )
 
     print(f"  -> {action}")
     return action
@@ -374,6 +405,21 @@ def main(argv: list[str] | None = None) -> int:
             "mail for the next cycle. Does not HALT the schedule. Omit for no time budget."
         ),
     )
+    ap.add_argument(
+        "--newer-than",
+        type=int,
+        metavar="DAYS",
+        help="Only scan IMAP messages on or after this many days ago (IMAP SINCE). Omit or 0 = no date filter.",
+    )
+    ap.add_argument(
+        "--personal-mailbox",
+        action="store_true",
+        help=(
+            "Optional personal mailbox (e.g. iCloud). Exit 0 without connecting if "
+            "<PREFIX>_IMAP_* is unconfigured. Never files Apple receipts — or any mail — "
+            "out of INBOX."
+        ),
+    )
     ap.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Anthropic model id/alias (default: {DEFAULT_MODEL})")
     ap.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
@@ -404,10 +450,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
+    file_mail = not args.personal_mailbox
 
-    account = ImapAccount.from_env(args.imap_prefix)
+    if args.personal_mailbox:
+        account = ImapAccount.from_env_if_configured(args.imap_prefix)
+        if account is None:
+            print(
+                f"{args.imap_prefix} IMAP not configured — skipping personal mailbox.",
+                file=sys.stderr,
+            )
+            return 0
+    else:
+        account = ImapAccount.from_env(args.imap_prefix)
+
     imap_conn = connect(account)
-    uids = list_message_uids(imap_conn, folder=args.folder, criteria="ALL", limit=args.inbox_batch_message_cap)
+    criteria = imap_since_criteria(args.newer_than) if args.newer_than else "ALL"
+    uids = list_message_uids(imap_conn, folder=args.folder, criteria=criteria, limit=args.inbox_batch_message_cap)
 
     if not uids:
         print("No messages in this folder.", file=sys.stderr)
@@ -418,12 +476,13 @@ def main(argv: list[str] | None = None) -> int:
     postings_cache: dict[str, list] = {}
     results = []
     skipped_already_processed = 0
+    skipped_personal_noise = 0
     linked_to_existing_count = 0
     errored_uids: list[str] = []
     stopped_for_wall_budget = False
     batch_started_at = time.monotonic()
 
-    if not args.dry_run:
+    if not args.dry_run and file_mail:
         for folder in list(_OUTCOME_FOLDERS.values()) + [_LINKED_FOLDER, _NEEDS_FOLLOWUP_FOLDER]:
             ensure_folder(imap_conn, folder)
 
@@ -454,6 +513,19 @@ def main(argv: list[str] | None = None) -> int:
                 skipped_already_processed += 1
                 continue
 
+            if args.personal_mailbox and _is_apple_receipt(message):
+                skipped_personal_noise += 1
+                if not args.dry_run:
+                    record_message_processed(
+                        conn,
+                        message.id,
+                        outcome="PERSONAL_NOISE",
+                        subject=message.subject,
+                        from_address=message.from_address,
+                        archived=False,
+                    )
+                continue
+
             if message.from_address.strip().lower() in _LINKEDIN_PERSONAL_REPLY_SENDERS:
                 try:
                     _handle_linkedin_reply(
@@ -466,6 +538,7 @@ def main(argv: list[str] | None = None) -> int:
                         llm_model=args.llm_extraction_model,
                         output_root=args.output_root,
                         dry_run=args.dry_run,
+                        file_mail=file_mail,
                     )
                 except Exception as exc:
                     print(f"\n[ERROR] {message.id}: {exc!r} — skipping, will retry next run", file=sys.stderr)
@@ -485,6 +558,7 @@ def main(argv: list[str] | None = None) -> int:
                         dry_run=args.dry_run,
                         use_llm_fallback=args.llm_fallback,
                         llm_extraction_model=args.llm_extraction_model,
+                        file_mail=file_mail,
                     )
                     linked_to_existing_count += 1
                     if not args.dry_run:
@@ -495,8 +569,8 @@ def main(argv: list[str] | None = None) -> int:
                             subject=message.subject,
                             from_address=message.from_address,
                             lead_keys=[link_outcome.job_key],
-                            label_applied=_LINKED_FOLDER,
-                            archived=True,
+                            label_applied=_LINKED_FOLDER if file_mail else "",
+                            archived=file_mail,
                         )
                     continue
 
@@ -598,7 +672,9 @@ def main(argv: list[str] | None = None) -> int:
                     advance_status(conn, key, "skipped")
 
             target_folder = _OUTCOME_FOLDERS[result.outcome]
-            move_message(imap_conn, uid, from_folder=args.folder, to_folder=target_folder)
+            _file_message(
+                imap_conn, uid, source_folder=args.folder, to_folder=target_folder, file_mail=file_mail
+            )
             record_message_processed(
                 conn,
                 message.id,
@@ -606,8 +682,8 @@ def main(argv: list[str] | None = None) -> int:
                 subject=result.subject,
                 from_address=result.from_address,
                 lead_keys=lead_keys,
-                label_applied=target_folder,
-                archived=True,
+                label_applied=target_folder if file_mail else "",
+                archived=file_mail,
             )
     finally:
         conn.close()
@@ -618,6 +694,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if skipped_already_processed:
         print(f"\n(skipped {skipped_already_processed} message(s) already triaged in a prior run)", file=sys.stderr)
+    if skipped_personal_noise:
+        print(
+            f"\n(skipped {skipped_personal_noise} Apple/personal receipt(s) — left in INBOX)",
+            file=sys.stderr,
+        )
 
     if stopped_for_wall_budget:
         print(

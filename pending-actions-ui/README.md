@@ -24,5 +24,16 @@ From the job-tracker repo root:
 cd pending-actions-ui && npm run dev
 ```
 
-Open the Vite URL (usually http://localhost:5173).  
+Open http://127.0.0.1:3174/ (LaunchAgent) or the Vite URL (usually http://localhost:5173).
 Legacy `var/pending-actions.html` is still written but left alone as the old UI.
+
+## Find JD email
+
+The **Find JD email** box on that page searches Spexture IMAP live (Inbox +
+JobTracker folders — works before the 3-minute tick) and `leads.db` (after
+the tick). It needs `scripts/find_mail_api.py` on `127.0.0.1:3175`, which
+`tools/pending-actions-ui-server/run.sh` starts next to Vite.
+
+```bash
+python scripts/find_mail_api.py   # if the UI is already up without the API
+```

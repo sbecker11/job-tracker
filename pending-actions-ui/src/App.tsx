@@ -3,6 +3,7 @@ import { ArchivedLeadsPanel } from './components/ArchivedLeadsPanel'
 import { ContactFilterBar } from './components/ContactFilterBar'
 import { ContactPriorityQueue } from './components/ContactPriorityQueue'
 import { DecideApplyStage } from './components/DecideApplyStage'
+import { FindMailSearch } from './components/FindMailSearch'
 import { DuplicatesSkippedPanel } from './components/DuplicatesSkippedPanel'
 import { ScheduleHealthBanner } from './components/ScheduleHealthBanner'
 import { scrollToLeadRow } from './lib/links'
@@ -511,6 +512,8 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      <FindMailSearch />
 
       {error && (
         <div className="banner error">
