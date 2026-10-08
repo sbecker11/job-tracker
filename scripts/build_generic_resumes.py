@@ -26,6 +26,7 @@ MASTER = DETAILS / "SHAWN_BECKER_full_resume_indexed.docx"
 
 VARIANTS = {
     "full_stack": {
+        "headline": "Senior Full-Stack Engineer & Independent Consultant",
         "title": "Full-Stack Web Applications — Vue 3, React, Node.js & Java/Spring Boot",
         "summary": (
             "Senior full-stack engineer (individual contributor) with 30+ years building production software, "
@@ -49,6 +50,7 @@ VARIANTS = {
                      "ecommerce-semantic-search"],
     },
     "software_engineer": {
+        "headline": "Senior Software Engineer & Independent Consultant",
         "title": "Java/Spring Boot, Python & AWS Distributed Systems",
         "summary": (
             "Senior software engineer (individual contributor) with 30+ years building production systems in "
@@ -73,6 +75,7 @@ VARIANTS = {
                      "recruiting-automation"],
     },
     "data_engineer": {
+        "headline": "Senior Data Engineer & Independent Consultant",
         "title": "Distributed, Event-Driven Data Platforms for Regulated Systems",
         "summary": (
             "Senior data engineer (individual contributor) with 30+ years building production systems, focused "
@@ -136,7 +139,9 @@ def build(variant: str) -> Path:
         doc = Document(clean)
 
     lines = [p for p in doc.paragraphs if p.text.strip()]
+    _set_text(lines[1], cfg["headline"])
     _set_text(lines[2], cfg["title"])
+    doc.core_properties.title = f"Shawn Becker — {cfg['headline'].split(' & ')[0]}"
     _set_text(lines[5], cfg["summary"])
 
     for p in list(doc.paragraphs):
