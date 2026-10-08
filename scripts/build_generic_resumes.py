@@ -32,20 +32,20 @@ VARIANTS = {
             "from front-end UIs through backend services to the data platforms behind them. Recent client work "
             "includes Vue 3 + Node.js registration, login, and profile flows for NuSkin and Python REST admin "
             "tools for Adobe’s SEO platform; portfolio work includes resume-flyer (Vue 3, TypeScript, Vite, "
-            "Express.js) and spexture-com (React 18, Express.js, JWT/RBAC auth, PostgreSQL, Docker). Deep Java "
+            "Express.js) and color-palette-maker (React, K-means clustering, CIEDE2000 color distance). Deep Java "
             "and Spring background from co-founding HomePortfolio (Java, JSP, Oracle) and ClipFile (Java, "
             "Spring, DynamoDB), plus ~2.75 years owning SeniorLink’s AWS data platform. MIT PhD in computer "
             "vision and computer graphics; co-inventor on three NLP patents."
         ),
         "skills": [
-            ("Front end", "Vue 3, React 18, TypeScript, Vite, Vuetify, Vuelidate, JSP"),
-            ("Back end & APIs", "Node.js, Express.js, Java 21, Spring Boot, Python, FastAPI, REST, JWT/bcrypt auth, RBAC"),
+            ("Front end", "Vue 3, React, TypeScript, Vite, Vuetify, Vuelidate, JSP"),
+            ("Back end & APIs", "Node.js, Express.js, Java 21, Spring Boot, Python, FastAPI, REST, MCP (FastMCP)"),
             ("Data", "PostgreSQL, Aurora PostgreSQL, pgvector, Oracle, DynamoDB, Redshift, Snowflake, BigQuery"),
             ("Cloud & delivery", "AWS (ECS Fargate, S3, EMR, Glue, Bedrock, CloudWatch, CodePipeline/CodeBuild/CodeDeploy), "
-                                 "GCP, Docker, Docker Compose, CloudFormation, AWS CDK, Artifactory"),
+                                 "GCP, Docker, CloudFormation, AWS CDK, Artifactory"),
             ("Practices", "Automated testing (linkage-engine: 149 tests, 94.5% coverage), Agile/Scrum (CSM), Jira"),
         ],
-        "projects": ["resume-flyer", "spexture-com", "color-palette-maker", "linkage-engine",
+        "projects": ["resume-flyer", "sushi-rag-mcp-server", "color-palette-maker", "linkage-engine",
                      "ecommerce-semantic-search"],
     },
     "software_engineer": {
@@ -67,7 +67,7 @@ VARIANTS = {
                                  "BigQuery, PostgreSQL/pgvector, Oracle, DynamoDB, Flyway"),
             ("Cloud & delivery", "AWS (ECS Fargate, Aurora PostgreSQL Serverless v2, Bedrock, CloudWatch, "
                                  "CodeCommit/CodeBuild/CodePipeline/CodeDeploy), GCP, CloudFormation, AWS CDK, Docker"),
-            ("Security & practices", "CyberArk PAM, mTLS, JWT/RBAC, Xray test management, Agile/Scrum (CSM), Jira"),
+            ("Security & practices", "CyberArk PAM, mTLS, Xray test management, Agile/Scrum (CSM), Jira"),
         ],
         "projects": ["linkage-engine", "ecommerce-semantic-search", "resume-parser", "resume-flyer",
                      "recruiting-automation"],
