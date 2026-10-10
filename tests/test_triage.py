@@ -8,6 +8,7 @@ offline and free of charge.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -238,7 +239,8 @@ def test_recently_rejected_role_is_disqualified_without_llm_call(tmp_path):
     conn = connect(tmp_path / "leads.db")
     lead = JobLead(company="Acme", title="Software Engineer", source_message_id="m0", source_label="single-jd")
     upsert_lead(conn, lead)
-    record_rejection(conn, lead.normalized_key, when="2026-07-01T00:00:00+00:00")
+    recent = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+    record_rejection(conn, lead.normalized_key, when=recent)
 
     client = _FakeClient()  # no responses queued — a call would raise IndexError
     result = triage.triage_message(
