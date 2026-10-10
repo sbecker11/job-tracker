@@ -8,7 +8,7 @@ import json
 import sys
 from pathlib import Path
 
-from job_tracker.pipeline.llm_apply import EvaluationResult, render_jd_review
+from job_tracker.pipeline.llm_apply import EvaluationResult, render_jd_review, _canonical_structural_verdict
 from job_tracker.pipeline.models import LEAD_STAGES
 from job_tracker.pipeline.store import (
     DEFAULT_DB_PATH,
@@ -96,7 +96,7 @@ def _row_to_evaluation(r: dict) -> EvaluationResult:
         flags=r["llm_flags"],
         rationale=r.get("llm_rationale") or "",
         framing_guidance=r["llm_framing_guidance"],
-        structural_verdict=r.get("llm_structural_verdict") or "",
+        structural_verdict=_canonical_structural_verdict(r.get("llm_structural_verdict") or ""),
         next_step=r.get("llm_next_step") or "",
         cover_letter_strategy=r.get("llm_cover_letter_strategy") or "",
         interview_prep=r["llm_interview_prep"],

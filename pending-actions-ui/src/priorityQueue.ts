@@ -1,44 +1,54 @@
 import { leadAnchorId } from './lib/links'
 import type {
+  ArchivedLead,
   Channel,
   ClarifyItem,
+  DecideLead,
   PipelineStageId,
   SendResumeItem,
   WaitItem,
   WorkflowPayload,
 } from './types'
 
-/** Contact-work stages only — Decide/apply is separate (not outbound contact). */
+/** Contact-work stages — outbound reply / send / wait. */
 export const CONTACT_STAGE_IDS: PipelineStageId[] = [
   'clarify',
   'send_resume',
   'wait_schedule',
 ]
 
-/** 'duplicates_skipped' and 'archived' are top-level tabs like the others,
- * but their content (ArchivedLead rows) comes from data.archivedLeads, not
- * the clarify/send_resume/wait_schedule/decide_apply funnel — App.tsx
- * special-cases them the same way it already special-cases 'decide_apply'.
- *
- * 2026-08-18: 'archived' was previously a collapsible <details> below the
- * tabs, not a tab itself, reachable only via an `archiveOpen` boolean. That
- * turned out to be exactly the same mistake 'duplicates_skipped' made
- * before its own 2026-08-17 promotion (see DuplicatesSkippedPanel's
- * comment): a survivor jump landing there had to open the <details>,
- * re-render 1200+ archived rows, and then scroll a real (sometimes huge)
- * distance down the page to reach it — all while racing a fixed-duration
- * highlight flash. Confirmed live: the jump would set the highlight
- * correctly but the scroll itself would time out before that re-render
- * settled, landing on nothing visible. Making 'archived' a proper tab
- * means jumping there is just `setFilter('archived')` — same panel
- * position as every other tab, no <details>, no separately-triggered
- * re-render to wait out. */
+/** Stages that still need a manual task (not closed/archived lookup). */
+export const ACTIVE_STAGE_IDS: ReadonlySet<string> = new Set([
+  'clarify',
+  'send_resume',
+  'wait_schedule',
+  'decide_apply',
+])
+
+/**
+ * Filter chips on the single priority list. These used to swap entire
+ * panels (tabs). They now only narrow the same ranked list.
+ */
 export type ContactFilter = 'all' | PipelineStageId | 'duplicates_skipped' | 'archived'
+
+export type QueueStage = PipelineStageId | 'duplicates_skipped' | 'archived'
+
+export type StatusFilter = 'active' | 'any' | string
+
+/** How the visible list is ordered. Default keeps task-urgency ranking. */
+export type LeadSort = 'priority' | 'age_desc' | 'age_asc'
+
+export type DecideBucket =
+  | 'readyToApply'
+  | 'needsDecision'
+  | 'needsDecisionForced'
+  | 'awaitingLlmReview'
+  | 'jdUnresolved'
 
 export interface ContactPriorityItem {
   id: string
-  stage: 'clarify' | 'send_resume' | 'wait_schedule'
-  channel: Channel
+  stage: QueueStage
+  channel?: Channel
   company: string
   title: string
   recruiterName: string
@@ -71,54 +81,88 @@ export interface ContactPriorityItem {
   duplicateKeys?: string[]
   /** Full inbound message text — clarify rows only (see ClarifyItem). */
   messageBody?: string
+  /** job_leads.status when this row is a tracked lead. */
+  status?: string
+  verdict?: string
+  matchPct?: number
+  commCount?: number
+  decidedAt?: string
+  duplicateOfKey?: string
+  duplicateOfCompany?: string
+  duplicateOfTitle?: string
+  decideBucket?: DecideBucket
+  lastComms?: Array<{ at?: string; direction?: string; summary?: string; body?: string }>
+  initiation?: string
+  replyVia?: string
+  draftFitOk?: boolean
+  draftFitNote?: string
+  missedMeetingNote?: string
 }
 
 const STAGE_RANK: Record<string, number> = {
   clarify: 0,
   send_resume: 1,
   wait_schedule: 2,
+  decide_apply: 3,
+  duplicates_skipped: 8,
+  archived: 9,
+}
+
+export function isActiveWork(item: ContactPriorityItem): boolean {
+  return ACTIVE_STAGE_IDS.has(item.stage)
+}
+
+function urgency(item: ContactPriorityItem): number {
+  if (item.replyDue) return 0
+  if (item.followUpDue) return 1
+  if (item.stage === 'decide_apply' && item.resumeRequested) return 2
+  if (item.stage === 'clarify' || item.stage === 'send_resume' || item.stage === 'wait_schedule') {
+    return 3
+  }
+  if (item.stage === 'decide_apply') return 4
+  return 5
+}
+
+function recencyScore(item: ContactPriorityItem): number {
+  if (item.stage === 'archived' || item.stage === 'duplicates_skipped') {
+    const t = item.decidedAt ? Date.parse(item.decidedAt) : NaN
+    return Number.isNaN(t) ? 0 : t
+  }
+  if (item.unansweredDays != null) return item.unansweredDays
+  if (item.waitingDays != null) return item.waitingDays
+  return item.ageDays
 }
 
 function sortKey(item: ContactPriorityItem): [number, number, number, number, string] {
-  // Recruiter waiting on Shawn (replyDue) beats overdue Wait follow-ups.
-  const urgency = item.replyDue ? 0 : item.followUpDue ? 1 : 2
-  const recency =
-    item.unansweredDays != null
-      ? item.unansweredDays
-      : item.waitingDays != null
-        ? item.waitingDays
-        : item.ageDays
   return [
-    urgency,
+    urgency(item),
     -item.contactAttempts,
-    -recency,
+    -recencyScore(item),
     STAGE_RANK[item.stage] ?? 9,
     (item.company || item.recruiterName || '').toLowerCase(),
   ]
 }
 
+function compareItems(a: ContactPriorityItem, b: ContactPriorityItem): number {
+  const ka = sortKey(a)
+  const kb = sortKey(b)
+  for (let i = 0; i < ka.length; i++) {
+    if (ka[i] < kb[i]) return -1
+    if (ka[i] > kb[i]) return 1
+  }
+  return 0
+}
+
+/** Ranked list of every lead in the payload — active work first, then closed. */
 export function buildContactPriorityQueue(data: WorkflowPayload): ContactPriorityItem[] {
-  const items: ContactPriorityItem[] = []
-
-  for (const c of data.stages.clarify) {
-    items.push(fromClarify(c))
-  }
-  for (const s of data.stages.sendResume) {
-    items.push(fromSendResume(s))
-  }
-  for (const w of data.stages.waitSchedule) {
-    items.push(fromWait(w))
-  }
-
-  // Dedupe by normalizedKey when the same lead appears in multiple buckets
-  // (prefer clarify > send_resume > wait).
   const byKey = new Map<string, ContactPriorityItem>()
   const noKey: ContactPriorityItem[] = []
-  for (const item of items) {
+
+  const take = (item: ContactPriorityItem) => {
     const key = item.normalizedKey || ''
     if (!key) {
       noKey.push(item)
-      continue
+      return
     }
     const prev = byKey.get(key)
     if (!prev || (STAGE_RANK[item.stage] ?? 9) < (STAGE_RANK[prev.stage] ?? 9)) {
@@ -126,17 +170,58 @@ export function buildContactPriorityQueue(data: WorkflowPayload): ContactPriorit
     }
   }
 
-  const merged = [...byKey.values(), ...noKey]
-  merged.sort((a, b) => {
-    const ka = sortKey(a)
-    const kb = sortKey(b)
-    for (let i = 0; i < ka.length; i++) {
-      if (ka[i] < kb[i]) return -1
-      if (ka[i] > kb[i]) return 1
-    }
-    return 0
-  })
+  for (const c of data.stages.clarify) take(fromClarify(c))
+  for (const s of data.stages.sendResume) take(fromSendResume(s))
+  for (const w of data.stages.waitSchedule) take(fromWait(w))
+
+  const da = data.stages.decideApply
+  const decideBuckets: [DecideBucket, DecideLead[]][] = [
+    ['readyToApply', da.readyToApply],
+    ['needsDecision', da.needsDecision],
+    ['needsDecisionForced', da.needsDecisionForced],
+    ['awaitingLlmReview', da.awaitingLlmReview],
+    ['jdUnresolved', da.jdUnresolved],
+  ]
+  for (const [bucket, rows] of decideBuckets) {
+    for (const lead of rows) take(fromDecide(lead, bucket))
+  }
+
+  for (const lead of data.archivedLeads ?? []) take(fromArchived(lead))
+
+  const merged = [...byKey.values(), ...collapseUnmatchedByThread(noKey)]
+  merged.sort(compareItems)
   return merged
+}
+
+/** Unmatched InMails have no normalizedKey; IMAP + Gmail copies share threadUrl. */
+function collapseUnmatchedByThread(items: ContactPriorityItem[]): ContactPriorityItem[] {
+  const byThread = new Map<string, ContactPriorityItem>()
+  const rest: ContactPriorityItem[] = []
+  for (const item of items) {
+    const thread = (item.threadUrl || '').trim()
+    if (!thread) {
+      rest.push(item)
+      continue
+    }
+    const prev = byThread.get(thread)
+    if (!prev) {
+      byThread.set(thread, item)
+      continue
+    }
+    byThread.set(thread, preferLinkedInCopy(prev, item))
+  }
+  return [...byThread.values(), ...rest]
+}
+
+function preferLinkedInCopy(
+  a: ContactPriorityItem,
+  b: ContactPriorityItem,
+): ContactPriorityItem {
+  const aImap = (a.messageId || '').toLowerCase().startsWith('imap:')
+  const bImap = (b.messageId || '').toLowerCase().startsWith('imap:')
+  if (aImap && !bImap) return b
+  if (!aImap && bImap) return a
+  return a
 }
 
 function fromClarify(c: ClarifyItem): ContactPriorityItem {
@@ -168,6 +253,7 @@ function fromClarify(c: ClarifyItem): ContactPriorityItem {
     kind: c.kind,
     duplicateCount: c.duplicateCount,
     duplicateKeys: c.duplicateKeys,
+    status: c.status,
   }
 }
 
@@ -199,6 +285,7 @@ function fromSendResume(s: SendResumeItem): ContactPriorityItem {
     kind: s.kind,
     duplicateCount: s.duplicateCount,
     duplicateKeys: s.duplicateKeys,
+    status: s.status,
   }
 }
 
@@ -230,21 +317,74 @@ function fromWait(w: WaitItem): ContactPriorityItem {
     kind: w.kind,
     duplicateCount: w.duplicateCount,
     duplicateKeys: w.duplicateKeys,
+    status: w.status,
   }
 }
 
-/** Which top-level tab currently shows `normalizedKey`, if any — used to
- * jump from a duplicate's "Duplicate of X" link (on the Duplicates skipped
- * tab) back to the survivor lead wherever it actually lives. Returns null
- * when the survivor isn't tracked in the payload at all (e.g. removed from
- * the database) — there's nowhere to jump in that case.
- *
- * 'archived' means the lead lives in data.archivedLeads — a real tab as of
- * 2026-08-18 (see ContactFilter's comment), not a separately-opened
- * <details> below the tabs. Added 2026-08-17 after "Go to this lead"
- * reported leads as unreachable when a survivor had itself since been
- * fully decided (e.g. applied → hired/rejected) and moved out of every
- * active-funnel bucket. */
+function fromDecide(lead: DecideLead, bucket: DecideBucket): ContactPriorityItem {
+  return {
+    id: `decide:${bucket}:${lead.normalizedKey}`,
+    stage: 'decide_apply',
+    company: lead.company || '',
+    title: lead.title || '',
+    recruiterName: lead.recruiterName || '',
+    recruiterEmail: lead.recruiterEmail || '',
+    recruiterPhone: lead.recruiterPhone || '',
+    ageDays: lead.ageDays || 0,
+    contactAttempts: 0,
+    normalizedKey: lead.normalizedKey,
+    folderPath: lead.folderPath,
+    companyFolderPath: lead.companyFolderPath,
+    applyUrl: lead.applyUrl,
+    resumeRequested: lead.resumeRequested,
+    actionHint: lead.actionHint,
+    nextAction: lead.nextAction || lead.actionHint,
+    kind: bucket,
+    duplicateCount: lead.duplicateCount,
+    duplicateKeys: lead.duplicateKeys,
+    status: lead.status,
+    verdict: lead.verdict,
+    matchPct: lead.matchPct,
+    decideBucket: bucket,
+  }
+}
+
+function fromArchived(lead: ArchivedLead): ContactPriorityItem {
+  const isDup = Boolean(lead.duplicateOfKey)
+  return {
+    id: `archived:${lead.normalizedKey}`,
+    stage: isDup ? 'duplicates_skipped' : 'archived',
+    company: lead.company || '',
+    title: lead.title || '',
+    recruiterName: lead.recruiterName || '',
+    recruiterEmail: lead.recruiterEmail || '',
+    recruiterPhone: lead.recruiterPhone || '',
+    ageDays: lead.ageDays || 0,
+    contactAttempts: 0,
+    normalizedKey: lead.normalizedKey,
+    folderPath: lead.folderPath,
+    companyFolderPath: lead.companyFolderPath,
+    actionHint: lead.status
+      ? `Status: ${lead.status === 'skipped' ? 'Closed - skipped' : lead.status}`
+      : undefined,
+    nextAction: isDup
+      ? `Duplicate of ${lead.duplicateOfTitle || 'another lead'}${lead.duplicateOfCompany ? ` @ ${lead.duplicateOfCompany}` : ''}.`
+      : 'Closed — browse history or update status if this should still be active.',
+    kind: isDup ? 'duplicate' : 'archived',
+    duplicateCount: lead.duplicateCount,
+    duplicateKeys: lead.duplicateKeys,
+    status: lead.status,
+    verdict: lead.verdict,
+    matchPct: lead.matchPct,
+    commCount: lead.commCount,
+    decidedAt: lead.decidedAt,
+    duplicateOfKey: lead.duplicateOfKey,
+    duplicateOfCompany: lead.duplicateOfCompany,
+    duplicateOfTitle: lead.duplicateOfTitle,
+  }
+}
+
+/** Which filter chip currently shows `normalizedKey`, if any. */
 export function locateLeadTab(
   data: WorkflowPayload,
   normalizedKey: string,
@@ -261,15 +401,28 @@ export function locateLeadTab(
     ...da.awaitingLlmReview,
     ...da.jdUnresolved,
   ].some((i) => i.normalizedKey === normalizedKey)
-  if (inDecideApply) return 'decide_apply'
-  const inArchived = (data.archivedLeads ?? []).some((l) => l.normalizedKey === normalizedKey)
-  if (inArchived) return 'archived'
+  if (inDecideApply) return 'all'
+  const archived = (data.archivedLeads ?? []).find((l) => l.normalizedKey === normalizedKey)
+  if (archived?.duplicateOfKey) return 'duplicates_skipped'
+  if (archived) return 'archived'
   return null
 }
 
-/** Total row count across every decide/apply bucket — lives here (not in
- * ContactFilterBar.tsx, its only caller) purely so that component file only
- * exports components, keeping React Fast Refresh happy. */
+/** Stage + status filters that keep `normalizedKey` visible on the single list. */
+export function locateLeadFilters(
+  data: WorkflowPayload,
+  normalizedKey: string,
+): { stage: ContactFilter; status: StatusFilter } | null {
+  const tab = locateLeadTab(data, normalizedKey)
+  if (!tab) return null
+  if (tab === 'archived' || tab === 'duplicates_skipped') {
+    const lead = (data.archivedLeads ?? []).find((l) => l.normalizedKey === normalizedKey)
+    return { stage: tab, status: lead?.status || 'any' }
+  }
+  return { stage: 'all', status: 'active' }
+}
+
+/** Total row count across every decide/apply bucket. */
 export function decideApplyCount(data: {
   readyToApply: unknown[]
   needsDecision: unknown[]
@@ -286,12 +439,6 @@ export function decideApplyCount(data: {
   )
 }
 
-/** Every normalizedKey present anywhere in `data` — contact-stage items,
- * every decide/apply bucket, and archivedLeads. Same source lists as
- * locateLeadTab above; used to diff before/after snapshots around an
- * on-demand single-message IMAP triage run (App.tsx's "Check inbox now"
- * button) so the UI can tell which lead, if any, is newly present and
- * jump straight to it. */
 export function allLeadKeys(data: WorkflowPayload): Set<string> {
   const keys = new Set<string>()
   for (const i of [...data.stages.clarify, ...data.stages.sendResume, ...data.stages.waitSchedule]) {
@@ -313,21 +460,6 @@ export function allLeadKeys(data: WorkflowPayload): Set<string> {
   return keys
 }
 
-/** Reverse-lookup for a URL fragment produced by `leadAnchorId` — used to
- * restore a lead's location (which tab, or the Archived panel) when the
- * page is loaded/reloaded/opened in a new tab with a `#lead-...` hash
- * already in the address bar, e.g. a pasted or bookmarked link that a
- * previous "Duplicate of" / "Go to this lead" click produced (App.tsx's
- * onJumpToSurvivor/onViewDuplicates only ever wired up the *in-app click*
- * case — a fresh navigation straight to that URL had no equivalent
- * restoration logic, which is the actual explanation behind "the
- * duplicate-of link's address does nothing" reports that turned out to be
- * about pasting/reloading that URL rather than clicking inside an
- * already-mounted page). `leadAnchorId`'s character-collapsing isn't
- * cleanly invertible (multiple distinct separators all become `-`), so
- * this scans every real key actually present in `data` and matches by
- * recomputing each candidate's own anchor id, rather than trying to parse
- * the id back into "company::title". */
 export function findKeyForAnchorId(data: WorkflowPayload, anchorId: string): string | null {
   for (const key of allLeadKeys(data)) {
     if (leadAnchorId(key) === anchorId) return key
@@ -335,30 +467,79 @@ export function findKeyForAnchorId(data: WorkflowPayload, anchorId: string): str
   return null
 }
 
+export function filterPriorityQueue(
+  items: ContactPriorityItem[],
+  stage: ContactFilter,
+  status: StatusFilter,
+  duplicateOfKey?: string | null,
+): ContactPriorityItem[] {
+  return items.filter((item) => {
+    if (duplicateOfKey) {
+      return item.duplicateOfKey === duplicateOfKey
+    }
+    if (stage === 'duplicates_skipped') {
+      if (!item.duplicateOfKey) return false
+    } else if (stage === 'archived') {
+      if (item.stage !== 'archived' && item.stage !== 'duplicates_skipped') return false
+    } else if (stage !== 'all' && item.stage !== stage) {
+      return false
+    }
+    if (status === 'active') return isActiveWork(item)
+    if (status === 'any' || !status) return true
+    return (item.status || '') === status
+  })
+}
+
+export function sortPriorityQueue(
+  items: ContactPriorityItem[],
+  sort: LeadSort,
+): ContactPriorityItem[] {
+  if (sort === 'priority') return items
+  const copy = [...items]
+  copy.sort((a, b) => {
+    const diff = a.ageDays - b.ageDays
+    if (diff !== 0) return sort === 'age_asc' ? diff : -diff
+    return (a.company || a.recruiterName || '').localeCompare(
+      b.company || b.recruiterName || '',
+      undefined,
+      { sensitivity: 'base' },
+    )
+  })
+  return copy
+}
+
+/** @deprecated Prefer filterPriorityQueue — kept so older call sites still type-check. */
 export function filterContactQueue(
   items: ContactPriorityItem[],
   filter: ContactFilter,
 ): ContactPriorityItem[] {
-  // 'duplicates_skipped' / 'archived' render their own dedicated panel
-  // (App.tsx) sourced from data.archivedLeads, not this contact-priority
-  // list — this function's result goes unused for those two, but return
-  // early rather than let `i.stage === filter` (never true for either)
-  // silently produce a misleading empty array.
-  if (filter === 'all' || filter === 'decide_apply' || filter === 'duplicates_skipped' || filter === 'archived') {
-    return items
-  }
-  return items.filter((i) => i.stage === filter)
+  return filterPriorityQueue(items, filter, filter === 'archived' || filter === 'duplicates_skipped' ? 'any' : 'active')
 }
 
 export function contactQueueCounts(items: ContactPriorityItem[]): Record<string, number> {
   const counts: Record<string, number> = {
-    all: items.length,
+    all: 0,
     clarify: 0,
     send_resume: 0,
     wait_schedule: 0,
+    decide_apply: 0,
+    duplicates_skipped: 0,
+    archived: 0,
   }
   for (const i of items) {
+    if (isActiveWork(i)) counts.all += 1
     counts[i.stage] = (counts[i.stage] || 0) + 1
+    if (i.stage === 'duplicates_skipped') counts.archived += 1
+  }
+  return counts
+}
+
+export function statusCounts(items: ContactPriorityItem[]): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const i of items) {
+    const status = (i.status || '').trim()
+    if (!status) continue
+    counts[status] = (counts[status] || 0) + 1
   }
   return counts
 }
@@ -368,10 +549,6 @@ export function replyAckKey(item: ContactPriorityItem): string {
   return item.messageId || item.replyId || item.id
 }
 
-/** One entry in the cross-tab "All tabs" search index (see AllTabsToggle) —
- * every lead anywhere in the payload, tagged with which tab actually shows
- * it, so a search typed into any one tab's box can surface a hit that
- * actually lives in a different tab and jump straight there. */
 export interface GlobalSearchResult {
   normalizedKey: string
   company: string
@@ -383,13 +560,6 @@ export interface GlobalSearchResult {
   tab: ContactFilter
 }
 
-/** Builds the cross-tab index once per data refresh (App.tsx memoizes on
- * `data`) — deliberately keyed/deduped by normalizedKey, first occurrence
- * wins (contact stages checked before decide/apply before archived), so a
- * lead present in more than one bucket (shouldn't normally happen, but
- * cheaper to guard than assume) only shows once. Items with no
- * normalizedKey (e.g. an `unmatched` clarify row with nothing extracted
- * yet) are skipped — there's no anchor to jump to and nothing to key on. */
 export function buildGlobalSearchIndex(data: WorkflowPayload): GlobalSearchResult[] {
   const out: GlobalSearchResult[] = []
   const seen = new Set<string>()
@@ -407,6 +577,7 @@ export function buildGlobalSearchIndex(data: WorkflowPayload): GlobalSearchResul
       recruiterName: c.recruiterName,
       recruiterEmail: c.recruiterEmail,
       recruiterPhone: c.recruiterPhone,
+      status: c.status,
       tab: 'clarify',
     })
   }
@@ -418,6 +589,7 @@ export function buildGlobalSearchIndex(data: WorkflowPayload): GlobalSearchResul
       recruiterName: s.recruiterName,
       recruiterEmail: s.recruiterEmail,
       recruiterPhone: s.recruiterPhone,
+      status: s.status,
       tab: 'send_resume',
     })
   }
@@ -429,6 +601,7 @@ export function buildGlobalSearchIndex(data: WorkflowPayload): GlobalSearchResul
       recruiterName: w.recruiterName,
       recruiterEmail: w.recruiterEmail,
       recruiterPhone: w.recruiterPhone,
+      status: w.status,
       tab: 'wait_schedule',
     })
   }
@@ -447,7 +620,7 @@ export function buildGlobalSearchIndex(data: WorkflowPayload): GlobalSearchResul
       recruiterName: r.recruiterName,
       recruiterEmail: r.recruiterEmail,
       recruiterPhone: r.recruiterPhone,
-      status: r.verdict,
+      status: r.status || r.verdict,
       tab: 'decide_apply',
     })
   }
@@ -460,15 +633,12 @@ export function buildGlobalSearchIndex(data: WorkflowPayload): GlobalSearchResul
       recruiterEmail: l.recruiterEmail,
       recruiterPhone: l.recruiterPhone,
       status: l.status,
-      tab: 'archived',
+      tab: l.duplicateOfKey ? 'duplicates_skipped' : 'archived',
     })
   }
   return out
 }
 
-/** Same field set as every per-tab local search (company/title/recruiter
- * name/email/phone) — capped at `limit` matches so a broad query (e.g. a
- * one-letter typo) can't render a dropdown of hundreds of rows. */
 export function searchGlobalIndex(
   index: GlobalSearchResult[],
   query: string,

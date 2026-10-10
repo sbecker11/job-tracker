@@ -36,6 +36,7 @@ CLAUDE.md dealbreaker / skills framework changes.
 
 ## Local helpers (optional)
 
+- **All Pending Actions URL handlers** (one shot): `tools/install-pending-action-handlers.sh` — also runs from `tools/pending-actions-ui-server/install.sh` so the React UI never ships without `refreshpending://` / `revealfolder://` / etc. Individual `tools/<name>/install.sh` still work.
 - Finder folder open: `tools/reveal-folder/install.sh` → `revealfolder://reveal?path=...`
 - View communications ODT: `tools/view-communications/install.sh` → `viewcomms://open?company=...&title=...` (Pending Actions React UI: **View communications**)
 - Regenerate pending-actions page: `tools/refresh-pending/install.sh` → `refreshpending://run`
@@ -44,7 +45,7 @@ CLAUDE.md dealbreaker / skills framework changes.
 - Inline tri-state edit (direct_recruiter_outreach): `tools/set-direct-recruiter-outreach/install.sh` → `setdro://set?key=...&value=yes|no|undecided`
 - Dismiss LinkedIn reply card: `tools/dismiss-linkedin-reply/install.sh` → `dlr://dismiss?kind=lead|unmatched&key=...&message_id=...`
 - Mark résumé package sent: `tools/mark-package-sent/install.sh` → `mps://mark?key=...`
-- React pending-actions UI: `pending-actions-ui/` — `tools/pending-actions-ui-server/install.sh` starts Vite at login/reboot (`http://127.0.0.1:3174/`) plus the find-mail API on `:3175`; or manually `python scripts/render_pending_actions.py --no-rescore` then `cd pending-actions-ui && npm run dev` (stage strip: Clarify → Send résumé → Wait → Decide/apply). **Find JD email** on that page searches Spexture IMAP live (before the 3-minute tick) and `leads.db` (after).
+- React pending-actions UI: `pending-actions-ui/` — `tools/pending-actions-ui-server/install.sh` starts Vite at login/reboot (`http://127.0.0.1:3174/`) plus the find-mail API on `:3175`, **and installs every URL handler above**; or manually `python scripts/render_pending_actions.py --no-rescore` then `cd pending-actions-ui && npm run dev` (stage strip: Clarify → Send résumé → Wait → Decide/apply). **Find JD email** searches every lead (all statuses), every `leads.db` field, résumé-package files, and Spexture IMAP across all folders.
 
 Prefer `python-docx` via this repo’s `.venv` (+ `letter_style.apply_template_styles`)
 when generating packages from scratch.

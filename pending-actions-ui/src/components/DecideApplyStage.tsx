@@ -4,6 +4,7 @@ import { AllTabsToggle } from './AllTabsToggle'
 import { DuplicateBadge } from './DuplicateBadge'
 import { ManageLeadStatus } from './ManageLeadStatus'
 import { leadAnchorId } from '../lib/links'
+import { HistoryLink } from './HistoryLink'
 import type { GlobalSearchResult } from '../priorityQueue'
 import type { DecideLead, WorkflowPayload } from '../types'
 
@@ -15,12 +16,6 @@ const ESTIMATED_ROW_HEIGHT = 46
 function revealFolderUrl(folderPath: string | undefined): string | null {
   if (!folderPath) return null
   return `revealfolder://reveal?path=${encodeURIComponent(folderPath)}`
-}
-
-/** Export + open this lead's job_conversations ODT (tools/view-communications/). */
-function viewCommunicationsUrl(company?: string, title?: string): string | null {
-  if (!company?.trim() || !title?.trim()) return null
-  return `viewcomms://open?company=${encodeURIComponent(company)}&title=${encodeURIComponent(title)}`
 }
 
 /** Search box filter — company/title/recruiter/email/phone, same fields as
@@ -149,15 +144,9 @@ function LeadTable({
                   <td className="action-cell">
                     <div className="decide-actions">
                       <span>{r.nextAction || r.actionHint || 'Review reviews → pursue or skip'}</span>
-                      {viewCommunicationsUrl(r.company, r.title) && (
-                        <a
-                          className="btn"
-                          href={viewCommunicationsUrl(r.company, r.title)!}
-                          title="Export and open full communications ODT for this lead"
-                        >
-                          History
-                        </a>
-                      )}
+                      {r.company && r.title ? (
+                        <HistoryLink company={r.company} title={r.title} />
+                      ) : null}
                       <ManageLeadStatus normalizedKey={r.normalizedKey} />
                     </div>
                   </td>

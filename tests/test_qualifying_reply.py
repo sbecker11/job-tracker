@@ -66,14 +66,21 @@ def test_extract_role_heuristic_evan_thin_pitch_returns_none():
     assert extract_role_heuristic(EVAN) is None
 
 
-def test_draft_evan_asks_for_jd_and_engagement():
+def test_draft_evan_is_screen_first_not_jd_gate():
+    """Evan asks for résumé + availability with no real JD — send generic résumé, don't gate on a paste."""
+    gaps = detect_pitch_gaps(EVAN, subject="AI Engineer Job Opportunity")
+    assert gaps.needs_jd is True
+    assert gaps.screen_first is True
     draft = draft_qualifying_reply(EVAN, subject="AI Engineer Job Opportunity")
     assert draft.recruiter_name.startswith("Evan")
     assert "messaging/thread/" in draft.thread_url
-    assert "job description" in draft.body.lower() or "paste" in draft.body.lower()
+    assert "latest résumé" in draft.body.lower()
+    assert "paste the job description" not in draft.body.lower()
+    assert "before I send a résumé" not in draft.body
     assert "C2C" in draft.body
+    assert "rate" not in draft.body.lower()
+    assert "$" not in draft.body
     assert draft.body.strip().endswith("Best, Shawn")
-    assert "$" not in draft.body  # never invent a figure
 
 
 def test_draft_madhvendra_skips_jd_and_remote_asks():
@@ -86,6 +93,29 @@ def test_draft_madhvendra_skips_jd_and_remote_asks():
     assert "LLM Data Engineer" in draft.body
     assert "paste the job description" not in draft.body.lower()
     assert "C2C" in draft.body
+    assert draft.body.strip().endswith("Best, Shawn")
+    assert draft.gaps.screen_first is False
+
+
+STEPHEN_CALL_THEN_JD = """
+AI Engineer Salt Lake City
+
+        Stephen Gordon Joughin
+        Reply
+        https://www.linkedin.com/messaging/thread/2-N2UzNDQ3NTgtZjVlMS00YWZhLTk0NGMtZmQ3YTAyNDk5NzdiXzEwMA==/
+
+Would you be open to a confidential chat? I can share who the client is when we speak.
+It's a hybrid role based in Salt Lake City.
+"""
+
+
+def test_draft_confidential_chat_is_screen_first():
+    gaps = detect_pitch_gaps(STEPHEN_CALL_THEN_JD, subject="AI Engineer Salt Lake City")
+    assert gaps.screen_first is True
+    draft = draft_qualifying_reply(STEPHEN_CALL_THEN_JD, subject="AI Engineer Salt Lake City")
+    assert "latest résumé" in draft.body.lower()
+    assert "Who is the end client" not in draft.body
+    assert "paste the job description" not in draft.body.lower()
     assert draft.body.strip().endswith("Best, Shawn")
 
 

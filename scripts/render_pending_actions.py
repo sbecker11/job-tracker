@@ -742,6 +742,18 @@ def _is_first_touch_linkedin_subject(subject: str) -> bool:
     return True
 
 
+def _collapse_ws(text: str) -> str:
+    """Normalize folded MIME subjects so IMAP vs Gmail copies of one InMail match."""
+    return re.sub(r"\s+", " ", text or "").strip().lower()
+
+
+def _prefer_gmail_linkedin_copy(candidate_mid: str, kept_mid: str) -> bool:
+    """Keep the Gmail API copy when Spexture IMAP mirrored the same LinkedIn thread."""
+    c = (candidate_mid or "").strip()
+    k = (kept_mid or "").strip()
+    return k.lower().startswith("imap:") and bool(c) and not c.lower().startswith("imap:")
+
+
 def _json_for_script(value) -> str:
     """json.dumps that won't break when embedded in a <script> tag.
 
@@ -775,13 +787,29 @@ def _build_linkedin_reply_queue(
         is_li = fr in _LINKEDIN_PERSONAL_REPLY_SENDERS or bool(m.get("threadUrl"))
         if not is_li:
             continue
-        key = m.get("threadUrl") or m.get("messageId") or ""
-        dedupe = ((m.get("recruiterName") or "").lower(), (m.get("subject") or "").lower())
+        thread = (m.get("threadUrl") or "").strip()
+        dedupe = ((m.get("recruiterName") or "").lower(), _collapse_ws(m.get("subject") or ""))
+        if thread and thread in seen_threads:
+            for i, kept in enumerate(queue):
+                if (kept.get("threadUrl") or "").strip() != thread:
+                    continue
+                if _prefer_gmail_linkedin_copy(m.get("messageId") or "", kept.get("messageId") or ""):
+                    queue[i] = {
+                        **kept,
+                        "subject": m.get("subject") or kept.get("subject") or "",
+                        "messageId": m.get("messageId") or kept.get("messageId") or "",
+                        "draftReply": m.get("draftReply") or kept.get("draftReply") or "",
+                        "messageBody": clean_message_body_for_display(m.get("body") or "")
+                        or kept.get("messageBody")
+                        or "",
+                    }
+                break
+            continue
         if dedupe in seen_names_subjects:
             continue
         seen_names_subjects.add(dedupe)
-        if key:
-            seen_threads.add(key)
+        if thread:
+            seen_threads.add(thread)
         queue.append(
             {
                 "kind": "unmatched",
@@ -789,7 +817,7 @@ def _build_linkedin_reply_queue(
                 "subject": m.get("subject") or "",
                 "company": m.get("companyGuess") or "",
                 "title": m.get("titleGuess") or "",
-                "threadUrl": m.get("threadUrl") or "",
+                "threadUrl": thread,
                 "draftReply": m.get("draftReply") or "",
                 "messageBody": clean_message_body_for_display(m.get("body") or ""),
                 "ageDays": m.get("ageDays") or 0,

@@ -12,7 +12,7 @@ const TAB_LABELS: Record<ContactFilter, string> = {
 }
 
 const STATUS_LABELS: Record<string, string> = {
-  skipped: 'Skipped',
+  skipped: 'Closed - skipped',
   rejected: 'Rejected',
   deleted: 'Deleted',
   unavailable: 'Unavailable',

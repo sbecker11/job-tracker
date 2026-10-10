@@ -1,7 +1,8 @@
 import { memo, useMemo, useState } from 'react'
 import { AllTabsToggle } from './AllTabsToggle'
 import { ManageLeadStatus } from './ManageLeadStatus'
-import { formatDecidedAt, leadAnchorHref, leadAnchorId, revealFolderUrl, viewCommunicationsUrl } from '../lib/links'
+import { formatDecidedAt, leadAnchorHref, leadAnchorId, revealFolderUrl } from '../lib/links'
+import { HistoryLink } from './HistoryLink'
 import type { GlobalSearchResult } from '../priorityQueue'
 import type { ArchivedLead } from '../types'
 
@@ -149,14 +150,13 @@ function DuplicateGroupCard({
                 )}
               </td>
               <td>
-                {d.commCount > 0 && viewCommunicationsUrl(d.company, d.title) ? (
-                  <a
-                    className="btn"
-                    href={viewCommunicationsUrl(d.company, d.title)!}
-                    title={`Export and open full communications ODT (${d.commCount} message${d.commCount === 1 ? '' : 's'})`}
-                  >
-                    History ({d.commCount})
-                  </a>
+                {d.commCount > 0 && d.company && d.title ? (
+                  <HistoryLink
+                    company={d.company}
+                    title={d.title}
+                    label={`History (${d.commCount})`}
+                    titleAttr={`Export and open full communications ODT (${d.commCount} message${d.commCount === 1 ? '' : 's'})`}
+                  />
                 ) : (
                   <span className="muted">No messages</span>
                 )}

@@ -79,7 +79,7 @@ _EVAL_PAYLOAD_PURSUE = json.dumps(
         "skills_alignment": [{"requirement": "Python", "evidence": "Years of Python work.", "strength": "strong"}],
         "match_pct": 85,
         "flags": ["Title reads senior but scope may be mid-level."],
-        "structural_verdict": "PASS on structure",
+        "structural_verdict": "JD structure matches resume",
         "next_step": "",
         "verdict": "pursue",
         "rationale": "Strong overall fit.",
@@ -98,7 +98,7 @@ _EVAL_PAYLOAD_PASS = json.dumps(
         "skills_alignment": [],
         "match_pct": 10,
         "flags": [],
-        "structural_verdict": "FAIL on structure",
+        "structural_verdict": "JD structure does not match resume",
         "next_step": "",
         "verdict": "pass",
         "rationale": "Dealbreaker fires.",
@@ -143,7 +143,7 @@ def test_evaluate_lead_parses_response_and_computes_metrics():
     assert result.flags == ["Title reads senior but scope may be mid-level."]
     assert result.rationale == "Strong overall fit."
     assert result.framing_guidance == ["Lead with the agentic-AI throughline."]
-    assert result.structural_verdict == "PASS on structure"
+    assert result.structural_verdict == "JD structure matches resume"
     assert result.cover_letter_strategy == "Frame the agentic-AI throughline as the core narrative."
     assert result.interview_prep == ["Open with the agentic-AI project as the go-to example."]
     assert len(client.calls) == 1
@@ -161,6 +161,24 @@ def test_evaluate_lead_defaults_verdict_to_review_when_missing():
     client = _FakeClient(responses=[payload])
     result = llm_apply.evaluate_lead("JD", company="Acme", title="Eng", model="claude-haiku-4-5", client=client)
     assert result.verdict == "review"
+
+
+def test_evaluate_lead_canonicalizes_legacy_structural_verdict():
+    payload = json.loads(_EVAL_PAYLOAD_PURSUE)
+    payload["structural_verdict"] = "PASS on structure"
+    client = _FakeClient(responses=[(json.dumps(payload), 10, 10)])
+    result = llm_apply.evaluate_lead("JD", company="Acme", title="Eng", model="claude-haiku-4-5", client=client)
+    assert result.structural_verdict == "JD structure matches resume"
+    assert (
+        llm_apply._canonical_structural_verdict(
+            "borderline PASS on structure — strong Java overlap"
+        )
+        == "borderline JD structure matches resume — strong Java overlap"
+    )
+    assert (
+        llm_apply._canonical_structural_verdict("weak/FAIL on structure")
+        == "weak/JD structure does not match resume"
+    )
 
 
 # --- JSON parsing / repair retry --------------------------------------------
@@ -639,7 +657,7 @@ def test_render_jd_review_includes_all_sections():
     assert "Strong (real overlap):" in text
     assert "Agentic systems" in text and "healthcare-agentic-snowflake-rag" in text
     assert "Gaps:" in text and "React/Next.js" in text
-    assert "Verdict: ~92% skills match / PASS on structure." in text
+    assert "Verdict: ~92% skills match / JD structure matches resume." in text
     assert "Flags" in text
     assert "seniority" in text.lower() or "mid-level" in text.lower()
     assert "Recommendation: PURSUE" in text
@@ -680,7 +698,7 @@ def test_render_jd_review_docx_writes_llm_review_with_dealbreaker_table_and_grou
     full_text = "\n".join(p.text for p in doc.paragraphs)
     assert "Senior AI Engineer @ Talkiatry" in full_text
     assert "greenfield agentic-AI team" in full_text
-    assert "Verdict: ~92% skills match / PASS on structure." in full_text
+    assert "Verdict: ~92% skills match / JD structure matches resume." in full_text
     assert "Recommendation: PURSUE" in full_text
     assert "healthcare-agentic-RAG throughline" in full_text
     assert "Strong (real overlap):" in full_text

@@ -187,8 +187,11 @@ Decide/apply) reads the same regenerated JSON and is meant to stay up across
 reboots via a LaunchAgent:
 
 ```bash
-# Install once (starts now + on every login/reboot; KeepAlive restarts if it dies)
+# Install once (starts now + on every login/reboot; KeepAlive restarts if it dies).
+# Also installs every Pending Actions URL handler (refreshpending://, revealfolder://, …).
 ./tools/pending-actions-ui-server/install.sh
+# URL handlers only:
+./tools/install-pending-action-handlers.sh
 
 # Unload until you re-install
 ./tools/pending-actions-ui-server/stop.sh

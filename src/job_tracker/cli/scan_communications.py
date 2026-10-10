@@ -90,8 +90,10 @@ from pathlib import Path
 
 from job_tracker.email import gmail_writer
 from job_tracker.email.gmail_reader import (
+    GmailQuotaExceeded,
     default_credentials_path,
     default_token_path,
+    defer_gmail_quota,
     fetch_message,
     get_gmail_service,
     get_gmail_service_writable,
@@ -523,15 +525,18 @@ def main(argv: list[str] | None = None) -> int:
     else:
         token_path = args.token or default_token_path(args.account, writable=True)
         service = get_gmail_service_writable(credentials_path, token_path, account=args.account)
-        label_ids = {
-            "linked": gmail_writer.get_or_create_label(service, gmail_writer.LINKED_LABEL),
-            "needs_followup": gmail_writer.get_or_create_label(service, gmail_writer.NEEDS_FOLLOWUP_LABEL),
-            "remove": [
-                gmail_writer.get_or_create_label(service, gmail_writer.PURSUE_LABEL),
-                gmail_writer.get_or_create_label(service, gmail_writer.SKIP_LABEL),
-                gmail_writer.get_or_create_label(service, gmail_writer.NEEDS_REVIEW_LABEL),
-            ],
-        }
+        try:
+            label_ids = {
+                "linked": gmail_writer.get_or_create_label(service, gmail_writer.LINKED_LABEL),
+                "needs_followup": gmail_writer.get_or_create_label(service, gmail_writer.NEEDS_FOLLOWUP_LABEL),
+                "remove": [
+                    gmail_writer.get_or_create_label(service, gmail_writer.PURSUE_LABEL),
+                    gmail_writer.get_or_create_label(service, gmail_writer.SKIP_LABEL),
+                    gmail_writer.get_or_create_label(service, gmail_writer.NEEDS_REVIEW_LABEL),
+                ],
+            }
+        except GmailQuotaExceeded:
+            return defer_gmail_quota("scan_communications labels")
 
     conn = connect(args.db)
     results: list[dict] = []
@@ -584,6 +589,8 @@ def main(argv: list[str] | None = None) -> int:
                         output_root=args.output_root,
                     )
                 )
+    except GmailQuotaExceeded:
+        defer_gmail_quota("scan_communications", processed=len(results))
     finally:
         conn.close()
 

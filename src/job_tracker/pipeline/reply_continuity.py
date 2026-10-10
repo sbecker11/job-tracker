@@ -306,7 +306,7 @@ def _live_gmail_helpers() -> tuple[Callable[[str, int], list[str]], Callable[[st
             return gmail_reader.list_message_ids(service, query=query, limit=limit)
 
         def body(message_id: str) -> str:
-            raw = (
+            raw = gmail_reader.execute_gmail(
                 service.users()
                 .messages()
                 .get(
@@ -315,7 +315,6 @@ def _live_gmail_helpers() -> tuple[Callable[[str, int], list[str]], Callable[[st
                     format="metadata",
                     metadataHeaders=["Subject", "From"],
                 )
-                .execute()
             )
             headers = {
                 (h.get("name") or "").lower(): (h.get("value") or "")

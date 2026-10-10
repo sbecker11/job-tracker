@@ -260,3 +260,53 @@ def test_get_gmail_service_rejects_personal_hub(tmp_path: Path):
         gmail_reader.get_gmail_service(
             tmp_path / "c.json", tmp_path / "t.json", account="personal_hub"
         )
+
+
+class _QuotaError(RuntimeError):
+    def __init__(self):
+        super().__init__(
+            "HttpError 403 Quota exceeded for quota metric 'Total Query Cost' "
+            "and limit 'Units per minute per user' ... rateLimitExceeded"
+        )
+        self.resp = SimpleNamespace(status=403)
+
+
+def test_is_gmail_rate_limit_detects_quota_403():
+    assert gmail_reader.is_gmail_rate_limit(_QuotaError())
+    other = RuntimeError("permission denied")
+    other.resp = SimpleNamespace(status=403)
+    assert not gmail_reader.is_gmail_rate_limit(other)
+
+
+def test_execute_gmail_raises_gmail_quota_exceeded():
+    class Once:
+        def __init__(self):
+            self.calls = 0
+
+        def execute(self):
+            self.calls += 1
+            raise _QuotaError()
+
+    req = Once()
+    with pytest.raises(gmail_reader.GmailQuotaExceeded):
+        gmail_reader.execute_gmail(req)
+    assert req.calls == 1
+
+
+def test_list_message_ids_quota_raises_gmail_quota_exceeded():
+    class Boom:
+        def users(self):
+            return self
+
+        def messages(self):
+            return self
+
+        def list(self, **kwargs):
+            class Req:
+                def execute(self):
+                    raise _QuotaError()
+
+            return Req()
+
+    with pytest.raises(gmail_reader.GmailQuotaExceeded):
+        gmail_reader.list_message_ids(Boom(), query="in:inbox")

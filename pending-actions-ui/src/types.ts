@@ -58,6 +58,8 @@ export interface ClarifyItem {
   nextAction?: string
   folderPath?: string
   companyFolderPath?: string
+  /** job_leads.status when this clarify row is a tracked lead. */
+  status?: string
   /** Count of, and normalizedKeys for, other leads marked as duplicates of
    * this one (store.mark_duplicate). Only present (and non-empty) when at
    * least one exists — see the "Duplicates skipped" tab in App.tsx. */
@@ -90,6 +92,8 @@ export interface SendResumeItem {
   markSentUrl?: string
   actionHint?: string
   nextAction?: string
+  /** job_leads.status */
+  status?: string
   duplicateCount?: number
   duplicateKeys?: string[]
 }
@@ -143,6 +147,8 @@ export interface DecideLead {
   recruiterName?: string
   recruiterEmail?: string
   recruiterPhone?: string
+  /** job_leads.status (typically new / package_generated in this funnel). */
+  status?: string
 }
 
 /** A lead a decision has already been made on (skipped/rejected/deleted/

@@ -209,8 +209,39 @@ def _next_action_clarify(
     unanswered_days: int = 0,
     thread_url: str = "",
     gmail_url: str = "",
+    screen_first: bool = False,
 ) -> str:
     who = recruiter_name.strip() or "the recruiter"
+    linkedin = bool(
+        (thread_url or "").strip()
+        or (channel == "linkedin" and not (gmail_url or "").strip())
+    )
+    age = f" ({unanswered_days}d unanswered)" if unanswered_days else ""
+
+    if screen_first:
+        prefix = (
+            f"YOUR ACTION: Recruiter wants résumé + call before a JD{age} — reply now. "
+            if reply_due
+            else "YOUR ACTION: "
+        )
+        if linkedin:
+            return (
+                f"{prefix}"
+                f"(1) Attach latest résumé (generic, not JD-tailored) "
+                f"(2) Copy reply (3) Open LinkedIn thread (4) Paste & send to {who} "
+                f"(5) Dismiss / marked replied"
+            )
+        via = (
+            f"Reply in Gmail to {who} (LinkedIn continuity copy)"
+            if (gmail_url or "").strip()
+            else f"Reply in Gmail to {who}"
+        )
+        return (
+            f"{prefix}"
+            f"(1) Attach latest résumé (generic, not JD-tailored) "
+            f"(2) Copy reply (3) {via} (4) Dismiss / marked replied"
+        )
+
     if (thread_url or "").strip():
         open_step = f"Open LinkedIn thread (3) Paste & send to {who}"
     elif (gmail_url or "").strip():
@@ -221,7 +252,6 @@ def _next_action_clarify(
         open_step = f"Reply in Gmail to {who}"
 
     if reply_due:
-        age = f" ({unanswered_days}d unanswered)" if unanswered_days else ""
         if (thread_url or "").strip() or (channel == "linkedin" and not (gmail_url or "").strip()):
             return (
                 f"YOUR ACTION: Recruiter followed up{age} — reply now. "
@@ -429,17 +459,23 @@ def build_clarify_queue(
     seen_reply_ids: set[str] = set()
     seen_keys: set[str] = set()
     seen_mids: set[str] = set()
+    seen_threads: set[str] = set()
     continuity_cache: dict[str, dict[str, str]] = {}
 
     def _add(item: dict) -> None:
         rid = item.get("replyId") or ""
         key = item.get("normalizedKey") or ""
         mid = item.get("messageId") or ""
+        thread = (item.get("threadUrl") or "").strip()
         if rid and rid in seen_reply_ids:
             return
         if key and key in seen_keys:
             return
         if mid and mid in seen_mids:
+            return
+        # Same LinkedIn conversation often lands twice: Spexture IMAP + Gmail
+        # InMail copy, with different messageIds and no normalizedKey.
+        if thread and thread in seen_threads:
             return
         if rid:
             seen_reply_ids.add(rid)
@@ -447,6 +483,8 @@ def build_clarify_queue(
             seen_keys.add(key)
         if mid:
             seen_mids.add(mid)
+        if thread:
+            seen_threads.add(thread)
         if not item.get("gmailUrl"):
             gmail_url = ""
             if key:
@@ -462,6 +500,14 @@ def build_clarify_queue(
             and not item.get("threadUrl")
         ):
             enrich_item_reply_links(item, conn=conn, cache=continuity_cache)
+        screen_first = bool(item.get("screenFirst"))
+        if not screen_first:
+            screen_first = detect_pitch_gaps(
+                item.get("messageBody") or "",
+                subject=item.get("subject") or "",
+            ).screen_first
+            if screen_first:
+                item["screenFirst"] = True
         next_action = _next_action_clarify(
             channel=item.get("channel") or "email",
             recruiter_name=item.get("recruiterName") or "",
@@ -469,6 +515,7 @@ def build_clarify_queue(
             unanswered_days=int(item.get("unansweredDays") or 0),
             thread_url=item.get("threadUrl") or "",
             gmail_url=item.get("gmailUrl") or "",
+            screen_first=screen_first,
         )
         item["nextAction"] = next_action
         item["actionHint"] = next_action
@@ -674,6 +721,7 @@ def build_clarify_queue(
                 gaps.needs_engagement,
                 gaps.needs_remote,
                 gaps.needs_rate_band,
+                gaps.screen_first,
             )
         )
         draft_body = (
@@ -850,6 +898,34 @@ def _duplicate_keys(conn) -> dict[str, list[str]]:
     for r in rows:
         out.setdefault(r["duplicate_of_key"], []).append(r["normalized_key"])
     return out
+
+
+def _attach_lead_statuses(items: list[dict], conn) -> None:
+    """Copy `job_leads.status` onto every item that has a `normalizedKey`.
+
+    Wait/archived builders already set this; Clarify, Send résumé, and
+    Decide/apply historically did not, which made a UI status filter
+    impossible on the active funnel. Skip keys that already have a
+    non-empty status so those builders stay authoritative.
+    """
+    keys = sorted({i.get("normalizedKey") for i in items if i.get("normalizedKey")})
+    if not keys:
+        return
+    statuses: dict[str, str] = {}
+    chunk = 400
+    for i in range(0, len(keys), chunk):
+        batch = keys[i : i + chunk]
+        placeholders = ",".join("?" for _ in batch)
+        for r in conn.execute(
+            f"SELECT normalized_key, status FROM job_leads WHERE normalized_key IN ({placeholders})",
+            batch,
+        ):
+            statuses[r["normalized_key"]] = r["status"] or ""
+    for item in items:
+        key = item.get("normalizedKey")
+        if not key or item.get("status"):
+            continue
+        item["status"] = statuses.get(key, "")
 
 
 def _attach_duplicate_count(item: dict, dup_keys: dict[str, list[str]]) -> None:
@@ -1405,6 +1481,11 @@ def build_workflow_payload(
         for item in bucket:
             _attach_folder_links(item, conn=conn, output_root=root)
             _attach_duplicate_count(item, dup_keys)
+
+    status_items = [*clarify, *send_resume, *wait_schedule]
+    for bucket in decide_apply.values():
+        status_items.extend(bucket)
+    _attach_lead_statuses(status_items, conn)
 
     archived_leads = _list_archived_leads(conn, age_days_fn=age_days_fn, now=now)
     for item in archived_leads:

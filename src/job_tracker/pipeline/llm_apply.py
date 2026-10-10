@@ -72,6 +72,28 @@ _SPEXTURE_SUBSECTION_HEADINGS = {
     "spexture client engagements": "Spexture Client Engagements",
 }
 
+# CLAUDE.md §11 step 4 — skills-only structural read. Older reviews used
+# "PASS/FAIL on structure", which collides with Recommendation: PASS (skip).
+_STRUCTURAL_MATCH = "JD structure matches resume"
+_STRUCTURAL_MISMATCH = "JD structure does not match resume"
+_STRUCTURAL_VERDICT_ALIASES = {
+    "pass on structure": _STRUCTURAL_MATCH,
+    "fail on structure": _STRUCTURAL_MISMATCH,
+    _STRUCTURAL_MATCH.casefold(): _STRUCTURAL_MATCH,
+    _STRUCTURAL_MISMATCH.casefold(): _STRUCTURAL_MISMATCH,
+}
+
+
+def _canonical_structural_verdict(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    folded = re.sub(r"\s+", " ", text.casefold())
+    if folded in _STRUCTURAL_VERDICT_ALIASES:
+        return _STRUCTURAL_VERDICT_ALIASES[folded]
+    out = re.sub(r"(?i)FAIL on structure", _STRUCTURAL_MISMATCH, text)
+    return re.sub(r"(?i)PASS on structure", _STRUCTURAL_MATCH, out)
+
 # CLAUDE.md §4 "Banned terms" — checked mechanically post-generation as a
 # safety net; the prompt already instructs the model to avoid these, but a
 # hardcoded name-collision (e.g. "Cambria" vs "Cambia Health Solutions") is
@@ -166,10 +188,10 @@ class EvaluationResult:
     # application (what to lead with, what to downplay, an angle for the
     # cover letter) given whatever `flags` surfaced. Empty on a clean pass.
     framing_guidance: list[str] = field(default_factory=list)
-    # CLAUDE.md §10 step 4 — a short skills-only structural read, independent
-    # of whether dealbreakers actually fired, e.g. "PASS on structure" or
-    # "FAIL on structure". Lets the verdict line separate "does this look
-    # good on paper" from the final pursue/review/pass call.
+    # CLAUDE.md §11 step 4 — a short skills-only structural read, independent
+    # of whether dealbreakers actually fired, e.g. "JD structure matches resume"
+    # or "JD structure does not match resume". Lets the verdict line separate
+    # "does this look good on paper" from the final pursue/review/pass call.
     structural_verdict: str = ""
     # CLAUDE.md §10 step 5 — only when a dealbreaker is soft/confirmable
     # rather than absolute (e.g. remote eligibility unstated, not ruled
@@ -403,10 +425,13 @@ Fargate)'), not a sentence fragment that depends on surrounding table context.
 this application — e.g. a title/seniority mismatch (JD's actual day-to-day responsibilities read as more \
 junior or more senior than the title suggests), an unusually vague scope, a signal the team is much \
 earlier/later stage than the durability lens prefers. Empty list if nothing stands out.
-- "structural_verdict": a short skills-only structural read, e.g. "PASS on structure" or "FAIL on \
-structure" — does this look like a good fit purely on skills/experience, independent of whether any \
-dealbreaker actually fired. This can (and often will) differ from "verdict" once dealbreakers are factored \
-in — e.g. a strong skills match that still gets a "pass" verdict because of a hard location dealbreaker.
+- "structural_verdict": a short skills-only structural read — exactly \
+"JD structure matches resume" or "JD structure does not match resume" \
+(never "PASS on structure" / "FAIL on structure", which collides with the \
+pursue/review/pass recommendation). This is purely skills/experience fit, \
+independent of whether any dealbreaker actually fired. It can (and often will) \
+differ from "verdict" once dealbreakers are factored in — e.g. a strong skills \
+match that still gets a "pass" verdict because of a hard location dealbreaker.
 - "next_step": only when a dealbreaker is soft/confirmable rather than absolute (e.g. remote eligibility \
 is unstated in the JD rather than explicitly ruled out, or a compensation range is unlisted) — name the \
 ONE concrete, low-effort action that would resolve that open question before writing the role off (e.g. \
@@ -557,7 +582,7 @@ def evaluate_lead(
         flags=[str(f) for f in (data.get("flags") or [])],
         rationale=str(data.get("rationale", "")),
         framing_guidance=[str(g) for g in (data.get("framing_guidance") or [])],
-        structural_verdict=str(data.get("structural_verdict", "")),
+        structural_verdict=_canonical_structural_verdict(str(data.get("structural_verdict", ""))),
         next_step=str(data.get("next_step", "")),
         cover_letter_strategy=str(data.get("cover_letter_strategy", "")),
         interview_prep=[str(g) for g in (data.get("interview_prep") or [])],
@@ -628,8 +653,9 @@ def render_jd_review(evaluation: EvaluationResult, *, company: str, title: str) 
             lines.append("")
 
     verdict_line = f"**Verdict: ~{evaluation.match_pct:.0f}% skills match"
-    if evaluation.structural_verdict:
-        verdict_line += f" / {evaluation.structural_verdict}"
+    structural = _canonical_structural_verdict(evaluation.structural_verdict)
+    if structural:
+        verdict_line += f" / {structural}"
     verdict_line += ".**"
     if evaluation.rationale:
         verdict_line += f" {evaluation.rationale}"
@@ -803,8 +829,9 @@ def render_jd_review_docx(
 
     p = doc.add_paragraph()
     verdict_run_text = f"Verdict: ~{evaluation.match_pct:.0f}% skills match"
-    if evaluation.structural_verdict:
-        verdict_run_text += f" / {evaluation.structural_verdict}"
+    structural = _canonical_structural_verdict(evaluation.structural_verdict)
+    if structural:
+        verdict_run_text += f" / {structural}"
     verdict_run_text += "."
     p.add_run(verdict_run_text).bold = True
     if evaluation.rationale:

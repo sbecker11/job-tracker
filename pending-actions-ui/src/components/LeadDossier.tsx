@@ -1,5 +1,5 @@
 import type { ContactPriorityItem } from '../priorityQueue'
-import { viewCommunicationsUrl } from '../lib/links'
+import { HistoryLink } from './HistoryLink'
 
 const REPLY_VIA: Record<string, string> = {
   linkedin: 'Continue LinkedIn thread',
@@ -29,7 +29,6 @@ export function LeadDossier({
   const writeTo = [item.recruiterName, item.recruiterEmail, item.recruiterPhone]
     .filter(Boolean)
     .join(' · ')
-  const historyHref = viewCommunicationsUrl(item.company, item.title)
 
   return (
     <div className="lead-dossier">
@@ -103,11 +102,9 @@ export function LeadDossier({
             ))}
           </ol>
         )}
-        {historyHref && (
-          <a className="btn" href={historyHref}>
-            Full history
-          </a>
-        )}
+        {item.company && item.title ? (
+          <HistoryLink company={item.company} title={item.title} label="Full history" />
+        ) : null}
       </div>
     </div>
   )

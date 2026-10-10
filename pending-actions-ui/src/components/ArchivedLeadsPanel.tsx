@@ -3,7 +3,8 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { AllTabsToggle } from './AllTabsToggle'
 import { DuplicateBadge } from './DuplicateBadge'
 import { ManageLeadStatus } from './ManageLeadStatus'
-import { formatDecidedAt, leadAnchorId, revealFolderUrl, viewCommunicationsUrl } from '../lib/links'
+import { formatDecidedAt, leadAnchorId, revealFolderUrl } from '../lib/links'
+import { HistoryLink } from './HistoryLink'
 import type { GlobalSearchResult } from '../priorityQueue'
 import type { ArchivedLead } from '../types'
 
@@ -13,7 +14,7 @@ import type { ArchivedLead } from '../types'
 const ESTIMATED_ROW_HEIGHT = 46
 
 const STATUS_LABELS: Record<string, string> = {
-  skipped: 'Skipped',
+  skipped: 'Closed - skipped',
   rejected: 'Rejected',
   deleted: 'Deleted',
   unavailable: 'Unavailable',
@@ -310,14 +311,13 @@ export const ArchivedLeadsPanel = memo(function ArchivedLeadsPanel({
                   <td className="muted">{formatDecidedAt(l.decidedAt)}</td>
                   <td className="num">{l.matchPct ?? '—'}</td>
                   <td>
-                    {l.commCount > 0 && viewCommunicationsUrl(l.company, l.title) ? (
-                      <a
-                        className="btn"
-                        href={viewCommunicationsUrl(l.company, l.title)!}
-                        title={`Export and open full communications ODT (${l.commCount} message${l.commCount === 1 ? '' : 's'})`}
-                      >
-                        History ({l.commCount})
-                      </a>
+                    {l.commCount > 0 && l.company && l.title ? (
+                      <HistoryLink
+                        company={l.company}
+                        title={l.title}
+                        label={`History (${l.commCount})`}
+                        titleAttr={`Export and open full communications ODT (${l.commCount} message${l.commCount === 1 ? '' : 's'})`}
+                      />
                     ) : (
                       <span className="muted">No messages</span>
                     )}

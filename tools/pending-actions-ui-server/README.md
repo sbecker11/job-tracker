@@ -11,8 +11,9 @@ Also documented in:
 ## Install / stop
 
 ```bash
-./tools/pending-actions-ui-server/install.sh   # start now + on reboot
+./tools/pending-actions-ui-server/install.sh   # start now + on reboot; also installs URL handlers
 ./tools/pending-actions-ui-server/stop.sh      # unload until re-installed
+./tools/install-pending-action-handlers.sh     # URL handlers only (Regenerate, folders, …)
 ```
 
 Manual (no agent): `cd pending-actions-ui && npm run dev`
@@ -23,7 +24,7 @@ Manual (no agent): `cd pending-actions-ui && npm run dev`
 |---|---|
 | `run.sh` | launchd program — frees port 3174, then execs local `vite` on `127.0.0.1:3174`; starts find-mail API only if `:3175` is not already listening |
 | `run-api.sh` | launchd program for Find JD email — `scripts/find_mail_api.py` on `127.0.0.1:3175` |
-| `install.sh` | writes both plists under `~/Library/LaunchAgents/`, bootstraps the agents |
+| `install.sh` | writes both plists under `~/Library/LaunchAgents/`, bootstraps the agents, then runs `tools/install-pending-action-handlers.sh` |
 | `stop.sh` | `launchctl bootout` for UI + API (leaves plists in place) |
 | `pending-actions-ui/vite.config.ts` | pins `host`/`port`/`strictPort` so the bookmark stays stable |
 

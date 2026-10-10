@@ -91,6 +91,7 @@ def test_workflow_clarify_includes_linkedin_stub_and_sorts_by_attempts(tmp_path:
     assert hit["draftReply"]
     assert hit["nextAction"].startswith("YOUR ACTION:")
     assert "LinkedIn" in hit["nextAction"]
+    assert hit["status"] == "new"
 
 
 def test_workflow_email_unmatched_lands_in_clarify(tmp_path: Path):
@@ -123,6 +124,73 @@ def test_workflow_email_unmatched_lands_in_clarify(tmp_path: Path):
     assert "W2" in hit["draftReply"] or "1099" in hit["draftReply"]
     assert hit["nextAction"].startswith("YOUR ACTION:")
     assert "Gmail" in hit["nextAction"]
+
+
+def test_linkedin_imap_and_gmail_copies_collapse_to_one_clarify_card(tmp_path: Path):
+    """Spexture IMAP + recruiting Gmail both receive the same LinkedIn InMail.
+
+    Folded MIME subjects (``\\r\\n``) used to beat name+subject dedupe, so Max
+    Caron / NBA AI showed twice. Collapse on thread URL instead.
+    """
+    conn = connect(tmp_path / "leads.db")
+    thread = (
+        "https://www.linkedin.com/messaging/thread/"
+        "2-YjZlZDYzN2QtMzU4OS00NjcyLTlkOGQtNGQ5N2RkZGNhOGJjXzEwMA==/"
+    )
+    body = (
+        "Hi Shawn,\n\nI'm Max Caron.\n"
+        f"{thread}\n\n"
+        "Sr. Fullstack Developer for NBA AI Platform (6 month contract/Remote).\n"
+        "Please reply with your interest.\n\nBest,\nMax Caron"
+    )
+    detected = (NOW - timedelta(days=14)).isoformat()
+    record_unmatched_message(
+        conn,
+        UnmatchedMessage(
+            message_id="imap:<556882751.1105589.1789423691424@lor1-app149064.prod.linkedin.com>",
+            direction="inbound",
+            from_address="Max Caron <inmail-hit-reply@linkedin.com>",
+            to_address="shawn.becker@spexture.com",
+            subject="Sr. Fullstack Developer for NBA AI Platform (6 month\r\n contract/Remote)",
+            body_text=body,
+            detected_at=detected,
+        ),
+    )
+    record_unmatched_message(
+        conn,
+        UnmatchedMessage(
+            message_id="1a0a1f6c588b34c7",
+            direction="inbound",
+            from_address="Max Caron <inmail-hit-reply@linkedin.com>",
+            to_address="shawnbecker.recruiting@gmail.com",
+            subject="Sr. Fullstack Developer for NBA AI Platform (6 month contract/Remote)",
+            body_text=body,
+            detected_at=detected,
+        ),
+    )
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    workflow = build_workflow_payload(
+        data, conn=conn, age_days_fn=render_pending_actions._age_days, now=NOW
+    )
+    conn.close()
+
+    li_hits = [
+        i
+        for i in data["linkedin_reply_queue"]
+        if "NBA AI" in (i.get("subject") or "")
+        or (i.get("recruiterName") or "") == "Max Caron"
+    ]
+    assert len(li_hits) == 1, li_hits
+    assert li_hits[0]["threadUrl"] == thread
+    assert not str(li_hits[0]["messageId"]).startswith("imap:"), li_hits[0]["messageId"]
+
+    clarify_hits = [
+        i
+        for i in workflow["stages"]["clarify"]
+        if "NBA AI" in (i.get("subject") or "")
+        or (i.get("recruiterName") or "") == "Max Caron"
+    ]
+    assert len(clarify_hits) == 1, [i.get("messageId") for i in clarify_hits]
 
 
 def test_digest_alert_not_in_send_resume_or_clarify(tmp_path: Path):

@@ -49,8 +49,10 @@ cp -R "${BUILD_DIR}/${APP_NAME}" "${DEST_APP}"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
   -f "${DEST_APP}"
 
-open "${DEST_APP}"
-sleep 0.5
+if [[ "${JOB_TRACKER_HELPER_SKIP_OPEN:-}" != "1" ]]; then
+  open "${DEST_APP}"
+  sleep 0.5
+fi
 
 echo "Installed: ${DEST_APP}"
 echo "URL scheme: setdro://set?key=<normalized_key>&value=<yes|no|undecided>"

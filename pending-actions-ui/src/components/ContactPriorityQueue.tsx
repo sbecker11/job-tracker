@@ -1,11 +1,16 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { AllTabsToggle } from './AllTabsToggle'
 import { ChannelBadge } from './ChannelBadge'
 import { DuplicateBadge } from './DuplicateBadge'
-import { ManageLeadStatus } from './ManageLeadStatus'
-import { leadAnchorId } from '../lib/links'
-import { replyAckKey, type ContactPriorityItem, type GlobalSearchResult } from '../priorityQueue'
+import { LEAD_STATUS_OPTIONS, ManageLeadStatus } from './ManageLeadStatus'
+import { formatDecidedAt, leadAnchorHref, leadAnchorId } from '../lib/links'
+import { HistoryLink } from './HistoryLink'
+import {
+  replyAckKey,
+  searchGlobalIndex,
+  type ContactPriorityItem,
+  type GlobalSearchResult,
+} from '../priorityQueue'
 
 /** Rough starting estimate (collapsed row: rank + title/badges row + next-
  * action line + meta line, plus padding) — corrected per-row once rendered
@@ -22,6 +27,22 @@ const STAGE_LABEL: Record<string, string> = {
   clarify: 'Clarify',
   send_resume: 'Send résumé',
   wait_schedule: 'Wait / schedule',
+  decide_apply: 'Decide / apply',
+  duplicates_skipped: 'Duplicate',
+  archived: 'Closed',
+}
+
+const DECIDE_BUCKET_LABEL: Record<string, string> = {
+  readyToApply: 'Ready to apply',
+  needsDecision: 'Needs decision',
+  needsDecisionForced: 'Forced review',
+  awaitingLlmReview: 'Awaiting LLM',
+  jdUnresolved: 'JD unresolved',
+}
+
+function statusLabel(status?: string): string {
+  if (!status) return ''
+  return LEAD_STATUS_OPTIONS.find((o) => o.value === status)?.label || status
 }
 
 async function copyText(text: string) {
@@ -41,12 +62,6 @@ function dismissUrl(item: ContactPriorityItem): string | null {
 function revealFolderUrl(folderPath: string | undefined): string | null {
   if (!folderPath) return null
   return `revealfolder://reveal?path=${encodeURIComponent(folderPath)}`
-}
-
-/** Export + open this lead's job_conversations ODT (tools/view-communications/). */
-function viewCommunicationsUrl(company?: string, title?: string): string | null {
-  if (!company?.trim() || !title?.trim()) return null
-  return `viewcomms://open?company=${encodeURIComponent(company)}&title=${encodeURIComponent(title)}`
 }
 
 /**
@@ -101,19 +116,15 @@ interface Props {
   replySentDone?: Record<string, true>
   replyScanningId?: string
   replyScanBusy?: boolean
-  /** Switch to the Duplicates skipped tab, focused on this lead's group. */
+  /** Switch to the Duplicates filter, focused on this lead's group. */
   onViewDuplicates?: (normalizedKey: string, firstDuplicateKey?: string) => void
+  onJumpToSurvivor?: (normalizedKey: string) => void
   /** Briefly flash + scroll to the row for this key (set after jumping in
    * from the Duplicates skipped tab's "Duplicate of" link). */
   highlightKey?: string | null
   /** Cross-tab search — see AllTabsToggle. */
   searchIndex?: GlobalSearchResult[]
   onJumpToResult?: (result: GlobalSearchResult) => void
-  /** "All tabs" checkbox state — lifted to App.tsx (2026-08-26) so it
-   * survives a tab switch instead of resetting; see AllTabsToggle's
-   * comment for why this can't be this component's own local state. */
-  allTabsSearch?: boolean
-  onAllTabsSearchChange?: (value: boolean) => void
 }
 
 // Memoized: this list can run to hundreds of rows, and App re-renders every
@@ -128,11 +139,10 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
   replyScanningId = '',
   replyScanBusy = false,
   onViewDuplicates,
+  onJumpToSurvivor,
   highlightKey,
   searchIndex = [],
   onJumpToResult,
-  allTabsSearch = false,
-  onAllTabsSearchChange,
 }: Props) {
   const [expandedId, setExpandedId] = useState('')
   const [copiedId, setCopiedId] = useState('')
@@ -159,6 +169,13 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
         (item.recruiterPhone || '').toLowerCase().includes(q),
     )
   }, [items, query])
+
+  const outsideMatches = useMemo(() => {
+    const q = query.trim()
+    if (!q || !onJumpToResult) return []
+    const inList = new Set(items.map((i) => i.normalizedKey).filter(Boolean) as string[])
+    return searchGlobalIndex(searchIndex, q).filter((r) => !inList.has(r.normalizedKey))
+  }, [query, items, searchIndex, onJumpToResult])
 
   // 2026-08-18 perf pass: "All contact" alone can run to 500+ rows — same
   // virtualization approach as ArchivedLeadsPanel's table (bounded-height,
@@ -201,14 +218,6 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlightKey, filterLabel, query, rowVirtualizer])
 
-  if (!items.length) {
-    return (
-      <p className="empty-hint">
-        No contact work in {filterLabel.toLowerCase()} — you&apos;re clear on outbound follow-ups.
-      </p>
-    )
-  }
-
   return (
     <div>
       <div className="archive-controls">
@@ -219,17 +228,40 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        {onJumpToResult && onAllTabsSearchChange && (
-          <AllTabsToggle
-            query={query}
-            searchIndex={searchIndex}
-            onJumpToResult={onJumpToResult}
-            allTabs={allTabsSearch}
-            onAllTabsChange={onAllTabsSearchChange}
-          />
+        {outsideMatches.length > 0 && onJumpToResult && (
+          <div className="global-search-results">
+            <p className="global-search-empty">
+              {outsideMatches.length} match{outsideMatches.length === 1 ? '' : 'es'} hidden by the
+              current filters
+            </p>
+            <ul>
+              {outsideMatches.map((r) => (
+                <li key={r.normalizedKey}>
+                  <button
+                    type="button"
+                    className="global-search-result"
+                    onClick={() => onJumpToResult(r)}
+                  >
+                    <span className="global-search-result-main">
+                      {r.title} @ {r.company}
+                    </span>
+                    <span className="global-search-result-meta">
+                      {STAGE_LABEL[r.tab] || r.tab}
+                      {r.status ? ` · ${statusLabel(r.status)}` : ''}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
       </div>
-      {!visibleItems.length ? (
+      {!items.length ? (
+        <p className="empty-hint">
+          No matching leads in {filterLabel.toLowerCase()} — change Status or a task chip, or
+          you&apos;re clear on this slice.
+        </p>
+      ) : !visibleItems.length ? (
         <p className="empty-hint">No {filterLabel.toLowerCase()} leads match &quot;{query}&quot;.</p>
       ) : (
       <div className="priority-list-scroll" ref={scrollElRef}>
@@ -318,8 +350,19 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     )}
                   </strong>
                   <span className={`stage-chip stage-${item.stage}`}>
-                    {STAGE_LABEL[item.stage] || item.stage}
+                    {item.decideBucket
+                      ? DECIDE_BUCKET_LABEL[item.decideBucket] || STAGE_LABEL[item.stage]
+                      : STAGE_LABEL[item.stage] || item.stage}
                   </span>
+                  {item.status && (
+                    <span className="stage-chip stage-status">{statusLabel(item.status)}</span>
+                  )}
+                  {item.matchPct != null && (
+                    <span className="stage-chip">{item.matchPct}% match</span>
+                  )}
+                  {item.verdict && (
+                    <span className="stage-chip">{item.verdict}</span>
+                  )}
                   {item.normalizedKey && (
                     <DuplicateBadge
                       count={item.duplicateCount}
@@ -331,7 +374,9 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                       }
                     />
                   )}
-                  <ChannelBadge channel={item.channel} href={item.gmailUrl} />
+                  {item.channel && (
+                    <ChannelBadge channel={item.channel} href={item.gmailUrl} />
+                  )}
                   {item.stage === 'send_resume' && (
                     <span className={`pkg-chip${item.packageReady ? ' ready' : ' missing'}`}>
                       {item.packageReady ? 'Package ready' : 'Package missing — generate first'}
@@ -347,6 +392,22 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                       Recruiter waiting on you
                       {item.unansweredDays != null ? ` · ${item.unansweredDays}d` : ''}
                     </span>
+                  )}
+                  {item.resumeRequested && item.stage === 'decide_apply' && (
+                    <span className="pkg-chip missing">Recruiter asked for résumé</span>
+                  )}
+                  {item.duplicateOfKey && onJumpToSurvivor && (
+                    <a
+                      className="link-button"
+                      href={leadAnchorHref(item.duplicateOfKey)}
+                      onClick={(e) => {
+                        e.preventDefault()
+                        onJumpToSurvivor(item.duplicateOfKey!)
+                      }}
+                    >
+                      Duplicate of {item.duplicateOfTitle || 'this lead'}
+                      {item.duplicateOfCompany ? ` @ ${item.duplicateOfCompany}` : ''}
+                    </a>
                   )}
                   {item.replyDue && onReplySent && (
                     <button
@@ -382,21 +443,19 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     </span>
                   )}
                   <span>
-                    {item.contactAttempts}× human contact · {item.ageDays}d
+                    {item.contactAttempts
+                      ? `${item.contactAttempts}× human contact · ${item.ageDays}d`
+                      : `${item.ageDays}d`}
                     {item.waitingDays != null ? ` · waiting ${item.waitingDays}d` : ''}
+                    {item.decidedAt ? ` · decided ${formatDecidedAt(item.decidedAt)}` : ''}
+                    {item.commCount != null ? ` · ${item.commCount} messages` : ''}
                   </span>
                 </div>
               </div>
               <div className="priority-actions">
-                {viewCommunicationsUrl(item.company, item.title) && (
-                  <a
-                    className="btn"
-                    href={viewCommunicationsUrl(item.company, item.title)!}
-                    title="Export and open full communications ODT for this lead"
-                  >
-                    History
-                  </a>
-                )}
+                {item.company && item.title ? (
+                  <HistoryLink company={item.company} title={item.title} />
+                ) : null}
                 {item.stage === 'clarify' && item.draftReply && (
                   <button
                     type="button"
@@ -437,7 +496,12 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     {copiedId === item.id ? 'Copied' : 'Copy follow-up'}
                   </button>
                 )}
-                <ManageLeadStatus normalizedKey={item.normalizedKey} />
+                {item.applyUrl && (
+                  <a className="btn" href={item.applyUrl} target="_blank" rel="noreferrer">
+                    Apply
+                  </a>
+                )}
+                <ManageLeadStatus normalizedKey={item.normalizedKey} currentStatus={item.status} />
               </div>
             </div>
 

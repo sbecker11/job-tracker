@@ -29,9 +29,11 @@ Legacy `var/pending-actions.html` is still written but left alone as the old UI.
 
 ## Find JD email
 
-The **Find JD email** box on that page searches Spexture IMAP live (Inbox +
-JobTracker folders — works before the 3-minute tick) and `leads.db` (after
-the tick). It needs `scripts/find_mail_api.py` on `127.0.0.1:3175`, which
+The **Find JD email** box searches every lead (including skipped/closed),
+every stored field (JD text, notes, LLM review, contacts, conversations,
+documents, meetings, offers, processed mail), résumé-package files under
+`~/Desktop/Resumes/2026/`, and Spexture IMAP across all folders. It needs
+`scripts/find_mail_api.py` on `127.0.0.1:3175`, which
 `tools/pending-actions-ui-server/run.sh` starts next to Vite.
 
 ```bash

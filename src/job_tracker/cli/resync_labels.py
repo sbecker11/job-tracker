@@ -52,8 +52,10 @@ from pathlib import Path
 from job_tracker.email import gmail_writer
 from job_tracker.email.gmail_reader import (
     KNOWN_ACCOUNTS,
+    GmailQuotaExceeded,
     default_credentials_path,
     default_token_path,
+    defer_gmail_quota,
     get_gmail_service,
     get_gmail_service_writable,
     list_message_ids,
@@ -142,6 +144,8 @@ def main(argv: list[str] | None = None) -> int:
             f"({skipped_non_gmail} IMAP-sourced message(s) skipped — not Gmail-labeled).",
             file=sys.stderr,
         )
+    except GmailQuotaExceeded:
+        defer_gmail_quota("resync_labels")
     finally:
         conn.close()
 

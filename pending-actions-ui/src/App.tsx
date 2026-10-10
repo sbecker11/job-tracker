@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArchivedLeadsPanel } from './components/ArchivedLeadsPanel'
-import { ContactFilterBar } from './components/ContactFilterBar'
+import { ContactFilterBar, statusFilterOptions } from './components/ContactFilterBar'
 import { ContactPriorityQueue } from './components/ContactPriorityQueue'
-import { DecideApplyStage } from './components/DecideApplyStage'
 import { FindMailSearch } from './components/FindMailSearch'
-import { DuplicatesSkippedPanel } from './components/DuplicatesSkippedPanel'
 import { ScheduleHealthBanner } from './components/ScheduleHealthBanner'
 import { scrollToLeadRow } from './lib/links'
 import {
@@ -12,14 +9,17 @@ import {
   buildContactPriorityQueue,
   buildGlobalSearchIndex,
   contactQueueCounts,
-  decideApplyCount,
-  filterContactQueue,
+  filterPriorityQueue,
   findKeyForAnchorId,
-  locateLeadTab,
+  locateLeadFilters,
   replyAckKey,
+  sortPriorityQueue,
+  statusCounts,
   type ContactFilter,
   type ContactPriorityItem,
   type GlobalSearchResult,
+  type LeadSort,
+  type StatusFilter,
 } from './priorityQueue'
 import type { WorkflowPayload } from './types'
 import './App.css'
@@ -127,13 +127,8 @@ export default function App() {
   const [data, setData] = useState<WorkflowPayload | null>(null)
   const [error, setError] = useState('')
   const [filter, setFilter] = useState<ContactFilter>('all')
-  // Lifted here (2026-08-26), not owned by AllTabsToggle itself — each tab
-  // below mounts a *different* component (ContactPriorityQueue /
-  // DecideApplyStage / DuplicatesSkippedPanel / ArchivedLeadsPanel) via the
-  // ternary further down, so a checkbox with its own local useState would
-  // silently reset to unchecked every time `filter` changes tabs. See
-  // AllTabsToggle's own comment for the confirmed-live bug this caused.
-  const [allTabsSearch, setAllTabsSearch] = useState(false)
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('active')
+  const [leadSort, setLeadSort] = useState<LeadSort>('priority')
   const [regenerating, setRegenerating] = useState(false)
   const [replyScanningId, setReplyScanningId] = useState('')
   /** Ack key captured at click — locked only after scan finishes. */
@@ -200,11 +195,31 @@ export default function App() {
     if (!hash.startsWith('#lead-')) return
     const key = findKeyForAnchorId(data, hash.slice(1))
     if (!key) return
-    const tab = locateLeadTab(data, key)
-    if (!tab) return
+    const located = locateLeadFilters(data, key)
+    if (!located) return
     setHighlightKey(key)
-    setFilter(tab)
+    setFilter(located.stage)
+    setStatusFilter(located.status)
     scrollToLeadRow(key)
+  }, [data])
+
+  useEffect(() => {
+    if (!data) return
+    const onHash = () => {
+      const hash = window.location.hash
+      if (!hash.startsWith('#lead-')) return
+      const key = findKeyForAnchorId(data, hash.slice(1))
+      if (!key) return
+      const located = locateLeadFilters(data, key)
+      if (!located) return
+      setDuplicatesFocusKey(null)
+      setHighlightKey(key)
+      setFilter(located.stage)
+      setStatusFilter(located.status)
+      scrollToLeadRow(key)
+    }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
   }, [data])
 
   useEffect(() => {
@@ -320,6 +335,7 @@ export default function App() {
    * list every second regardless of whether anything it shows changed. */
   const onViewDuplicates = useCallback((normalizedKey: string, firstDuplicateKey?: string) => {
     setFilter('duplicates_skipped')
+    setStatusFilter('any')
     setDuplicatesFocusKey(normalizedKey)
     setHighlightKey(firstDuplicateKey ?? null)
     if (firstDuplicateKey) scrollToLeadRow(firstDuplicateKey)
@@ -334,8 +350,8 @@ export default function App() {
    * like any other tab now, not a separately-opened <details>. */
   const onJumpToSurvivor = useCallback((normalizedKey: string) => {
     if (!data) return
-    const tab = locateLeadTab(data, normalizedKey)
-    if (!tab) {
+    const located = locateLeadFilters(data, normalizedKey)
+    if (!located) {
       setError(
         'That lead is no longer tracked in this dashboard at all (removed from the database) — nothing to jump to.',
       )
@@ -343,7 +359,8 @@ export default function App() {
     }
     setDuplicatesFocusKey(null)
     setHighlightKey(normalizedKey)
-    setFilter(tab)
+    setFilter(located.stage)
+    setStatusFilter(located.status)
     scrollToLeadRow(normalizedKey)
   }, [data])
 
@@ -353,11 +370,14 @@ export default function App() {
    * above. */
   const searchIndex = useMemo(() => (data ? buildGlobalSearchIndex(data) : []), [data])
   const onJumpToResult = useCallback((result: GlobalSearchResult) => {
+    if (!data) return
+    const located = locateLeadFilters(data, result.normalizedKey)
     setDuplicatesFocusKey(null)
     setHighlightKey(result.normalizedKey)
-    setFilter(result.tab)
+    setFilter(located?.stage ?? result.tab)
+    setStatusFilter(located?.status ?? 'any')
     scrollToLeadRow(result.normalizedKey)
-  }, [])
+  }, [data])
 
   const onRegenerate = () => {
     if (busy) return
@@ -381,10 +401,13 @@ export default function App() {
       return
     }
     const key = newKeys[0]
-    const tab = locateLeadTab(payload, key)
+    const located = locateLeadFilters(payload, key)
     setDuplicatesFocusKey(null)
     setHighlightKey(key)
-    if (tab) setFilter(tab)
+    if (located) {
+      setFilter(located.stage)
+      setStatusFilter(located.status)
+    }
     scrollToLeadRow(key)
   }
 
@@ -413,61 +436,78 @@ export default function App() {
     [data],
   )
   const counts = useMemo(() => contactQueueCounts(priorityAll), [priorityAll])
+  const byStatus = useMemo(() => statusCounts(priorityAll), [priorityAll])
   const filtered = useMemo(
-    () => filterContactQueue(priorityAll, filter),
-    [priorityAll, filter],
+    () =>
+      sortPriorityQueue(
+        filterPriorityQueue(priorityAll, filter, statusFilter, duplicatesFocusKey),
+        leadSort,
+      ),
+    [priorityAll, filter, statusFilter, duplicatesFocusKey, leadSort],
+  )
+  const statusOptions = useMemo(
+    () => statusFilterOptions(byStatus, counts.all, priorityAll.length),
+    [byStatus, counts.all, priorityAll.length],
   )
 
   const filterOptions = useMemo(() => {
     if (!data) return []
+    const countFor = (stage: ContactFilter) =>
+      filterPriorityQueue(priorityAll, stage, statusFilter).length
     return [
       {
         id: 'all' as const,
-        label: 'All contact',
-        count: counts.all,
-        hint: 'Every lead needing outbound contact, ranked by attempts then age',
+        label: 'All tasks',
+        count: countFor('all'),
+        hint: 'Active-work tasks only. Closed/Skipped leads are under Closed, or set Status to Any status / Closed - skipped',
       },
       {
         id: 'clarify' as const,
         label: 'Clarify',
-        count: counts.clarify || 0,
+        count: countFor('clarify'),
         hint: 'Reply now — unreplied recruiter messages rank first',
       },
       {
         id: 'send_resume' as const,
         label: 'Send résumé',
-        count: counts.send_resume || 0,
+        count: countFor('send_resume'),
         hint: 'Send package to the recruiter',
       },
       {
         id: 'wait_schedule' as const,
         label: 'Wait / schedule',
-        count: counts.wait_schedule || 0,
+        count: countFor('wait_schedule'),
         hint: `Ball in their court — follow-up due after ${data.waitFollowupDays ?? 7} silent days`,
       },
       {
         id: 'decide_apply' as const,
         label: 'Decide / apply',
-        count: decideApplyCount(data.stages.decideApply),
-        hint: 'Package/review funnel — not contact prioritization',
+        count: countFor('decide_apply'),
+        hint: 'Package and review work, ranked in the same list',
       },
       {
         id: 'duplicates_skipped' as const,
-        label: '🔁 Duplicates skipped',
-        count: data.archivedLeads?.filter((l) => l.duplicateOfKey).length ?? 0,
-        hint: 'Leads skipped specifically because they duplicated another lead — grouped by survivor',
+        label: 'Duplicates',
+        count: countFor('duplicates_skipped'),
+        hint: 'Leads skipped because they duplicated another lead',
       },
       {
         id: 'archived' as const,
-        label: 'Archived / decided',
-        count: data.archivedLeads?.length ?? 0,
-        hint: 'Off the active funnel — already decided against, closed out, or already applied',
+        label: 'Closed',
+        count: countFor('archived'),
+        hint: 'Off the active funnel — decided, closed out, or already applied',
       },
     ]
-  }, [counts, data])
+  }, [data, priorityAll, statusFilter])
 
   const filterLabel =
-    filterOptions.find((o) => o.id === filter)?.label || 'All contact'
+    filterOptions.find((o) => o.id === filter)?.label || 'All tasks'
+
+  const duplicateFocusLabel = duplicatesFocusKey
+    ? priorityAll.find((i) => i.normalizedKey === duplicatesFocusKey)?.title ||
+      priorityAll.find((i) => i.duplicateOfKey === duplicatesFocusKey)?.duplicateOfTitle ||
+      duplicatesFocusKey
+    : ''
 
   return (
     <div className="app">
@@ -475,9 +515,10 @@ export default function App() {
         <div>
           <h1>Pending actions</h1>
           <p className="subtitle">
-            Contact priority ranks outbound work (attempts, then age). Each row starts with{" "}
-            <strong>YOUR ACTION</strong> — the exact next steps for that lead. Stage chips only
-            filter the list.
+            One list, ranked by manual-task urgency (recruiter waiting on you, then overdue
+            follow-up, then résumé asks, then the rest). Each row starts with{" "}
+            <strong>YOUR ACTION</strong>. Use Status and the task chips to filter — they do not
+            switch views.
           </p>
         </div>
         <div className="top-meta">
@@ -513,7 +554,7 @@ export default function App() {
         </div>
       </header>
 
-      <FindMailSearch />
+      <FindMailSearch onOpenLead={onJumpToSurvivor} />
 
       {error && (
         <div className="banner error">
@@ -532,90 +573,65 @@ export default function App() {
       )}
 
       {data && (
-        <section className="contact-priority" aria-label="Contact priority">
+        <section className="contact-priority" aria-label="Task priority">
           <div className="contact-priority-head">
             <div>
-              <h2>Contact priority</h2>
+              <h2>Task priority</h2>
               <p className="panel-action">
-                {filter === 'duplicates_skipped'
-                  ? 'Leads skipped specifically because they duplicated another lead, grouped by the survivor.'
-                  : filter === 'archived'
-                    ? 'Off the active funnel above — already decided against, closed out, or already applied — still browsable here for their stored message history.'
-                    : 'Ranked by recruiter contact attempts, then age. Read YOUR ACTION on each row before using the buttons. Digests / ATS alerts are excluded — use Decide/apply for those.'}
+                Ranked by what needs a human next. All tasks still respects Status (default Active
+                work), so skipped leads stay under Closed until you pick Closed, Status = Closed - skipped,
+                or Status = Any status.
               </p>
             </div>
-            {filter !== 'duplicates_skipped' && filter !== 'archived' && (
-              <span className="priority-total">
-                {filter === 'decide_apply' ? decideApplyCount(data.stages.decideApply) : filtered.length}{' '}
-                shown
-              </span>
-            )}
+            <span className="priority-total">{filtered.length} shown</span>
           </div>
 
           <ContactFilterBar
-            options={filterOptions}
-            active={filter}
-            onSelect={(id) => {
-              // Manually picking a tab (vs. a "N duplicates" badge calling
-              // onViewDuplicates) always shows every duplicate group.
+            stageOptions={filterOptions}
+            activeStage={filter}
+            onSelectStage={(id) => {
               setFilter(id)
               setDuplicatesFocusKey(null)
+              if (
+                (id === 'archived' || id === 'duplicates_skipped') &&
+                statusFilter === 'active'
+              ) {
+                setStatusFilter('any')
+              }
             }}
+            statusOptions={statusOptions}
+            activeStatus={statusFilter}
+            onSelectStatus={(id) => {
+              setStatusFilter(id)
+              setDuplicatesFocusKey(null)
+              if (id !== 'active' && id !== 'any') setFilter('all')
+            }}
+            activeSort={leadSort}
+            onSelectSort={setLeadSort}
           />
 
-          {filter === 'decide_apply' ? (
-            <div className="decide-under-priority">
-              <p className="hint-line">
-                Decide / apply is package and review work — not part of the contact ranking above.
-              </p>
-              <DecideApplyStage
-                data={data.stages.decideApply}
-                onViewDuplicates={onViewDuplicates}
-                highlightKey={highlightKey}
-                searchIndex={searchIndex}
-                onJumpToResult={onJumpToResult}
-                allTabsSearch={allTabsSearch}
-                onAllTabsSearchChange={setAllTabsSearch}
-              />
-            </div>
-          ) : filter === 'duplicates_skipped' ? (
-            <DuplicatesSkippedPanel
-              leads={data.archivedLeads ?? []}
-              focusSurvivorKey={duplicatesFocusKey}
-              highlightKey={highlightKey}
-              onClearFocus={() => setDuplicatesFocusKey(null)}
-              onJumpToSurvivor={onJumpToSurvivor}
-              searchIndex={searchIndex}
-              onJumpToResult={onJumpToResult}
-              allTabsSearch={allTabsSearch}
-              onAllTabsSearchChange={setAllTabsSearch}
-            />
-          ) : filter === 'archived' ? (
-            <ArchivedLeadsPanel
-              leads={data.archivedLeads ?? []}
-              onViewDuplicates={onViewDuplicates}
-              highlightKey={highlightKey}
-              searchIndex={searchIndex}
-              onJumpToResult={onJumpToResult}
-              allTabsSearch={allTabsSearch}
-              onAllTabsSearchChange={setAllTabsSearch}
-            />
-          ) : (
-            <ContactPriorityQueue
-              items={filtered}
-              filterLabel={filterLabel}
-              onReplySent={onReplySent}
-              replySentDone={replySentDone}
-              replyScanningId={replyScanningId}
-              replyScanBusy={busy}
-              onViewDuplicates={onViewDuplicates}
-              highlightKey={highlightKey}
-              searchIndex={searchIndex}
-              onJumpToResult={onJumpToResult}
-              allTabsSearch={allTabsSearch}
-              onAllTabsSearchChange={setAllTabsSearch}
-            />
+          {duplicatesFocusKey && (
+            <p className="hint-line duplicate-filter-banner">
+              Showing leads skipped as a duplicate of <strong>{duplicateFocusLabel}</strong>.{' '}
+              <button type="button" className="link-button" onClick={() => setDuplicatesFocusKey(null)}>
+                Clear
+              </button>
+            </p>
           )}
+
+          <ContactPriorityQueue
+            items={filtered}
+            filterLabel={filterLabel}
+            onReplySent={onReplySent}
+            replySentDone={replySentDone}
+            replyScanningId={replyScanningId}
+            replyScanBusy={busy}
+            onViewDuplicates={onViewDuplicates}
+            onJumpToSurvivor={onJumpToSurvivor}
+            highlightKey={highlightKey}
+            searchIndex={searchIndex}
+            onJumpToResult={onJumpToResult}
+          />
         </section>
       )}
 
@@ -640,7 +656,7 @@ export default function App() {
           // that inner scrollTop too (2026-08-18).
           document.querySelector('.contact-priority')?.scrollTo({ top: 0, behavior: 'auto' })
         }}
-        title="Scroll back to the top — makes the tab bar visible and clickable again"
+        title="Scroll back to the top — filters and search"
       >
         ↑ Back to top
       </button>

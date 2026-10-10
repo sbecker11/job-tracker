@@ -1,4 +1,4 @@
-"""Local HTTP API for Pending Actions "Find JD email" (IMAP + leads.db).
+"""Local HTTP API for Pending Actions "Find JD email" (IMAP + full leads.db + package files).
 
     python scripts/find_mail_api.py --port 3175
 
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -19,6 +20,7 @@ _SRC = _REPO_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+from job_tracker.cli.export_communications import export_job_history  # noqa: E402
 from job_tracker.pipeline.find_mail import search  # noqa: E402
 from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect  # noqa: E402
 
@@ -44,16 +46,30 @@ class FindMailHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        if parsed.path.rstrip("/") not in {"/api/find-mail", "/find-mail"}:
-            self._send(404, {"error": "not found"})
+        path = parsed.path.rstrip("/")
+        qs = parse_qs(parsed.query)
+        if path in {"/api/find-mail", "/find-mail"}:
+            query = (qs.get("q") or [""])[0]
+            conn = connect(self.db_path)
+            try:
+                result = search(query, conn=conn)
+            finally:
+                conn.close()
+            self._send(200, result)
             return
-        query = (parse_qs(parsed.query).get("q") or [""])[0]
-        conn = connect(self.db_path)
-        try:
-            result = search(query, conn=conn)
-        finally:
-            conn.close()
-        self._send(200, result)
+        if path in {"/api/view-comms", "/view-comms"}:
+            company = (qs.get("company") or [""])[0]
+            title = (qs.get("title") or [""])[0]
+            result = export_job_history(company=company, title=title, db_path=self.db_path)
+            if not result.get("ok"):
+                self._send(400 if result.get("error") != "not found" else 404, result)
+                return
+            out_path = result.get("path") or ""
+            if out_path:
+                subprocess.Popen(["open", out_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self._send(200, result)
+            return
+        self._send(404, {"error": "not found"})
 
 
 def main(argv: list[str] | None = None) -> int:

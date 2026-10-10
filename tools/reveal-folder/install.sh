@@ -30,8 +30,10 @@ cp -R "${BUILD_DIR}/${APP_NAME}" "${DEST_APP}"
   -f "${DEST_APP}"
 
 # Cold-launch once so macOS binds revealfolder:// → this app.
-open "${DEST_APP}"
-sleep 0.5
+if [[ "${JOB_TRACKER_HELPER_SKIP_OPEN:-}" != "1" ]]; then
+  open "${DEST_APP}"
+  sleep 0.5
+fi
 
 echo "Installed: ${DEST_APP}"
 echo "URL scheme: revealfolder://reveal?path=/absolute/path/to/folder"

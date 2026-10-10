@@ -1,19 +1,23 @@
-"""Find the original recruiter JD email on Spexture IMAP and/or in leads.db.
+"""Find recruiter mail, leads, and package documents.
 
 Used by the Pending Actions "Find JD email" box. Hostinger's own search only
 looks at the currently open folder (usually Inbox), so a message the 3-minute
 tick already moved into JobTracker.* is invisible there. This module:
 
-- **before the tick** — IMAP TEXT/FROM/SUBJECT across Inbox + JobTracker folders
-- **after the tick** — job_contacts / job_conversations / unmatched_messages
+- **before the tick** — IMAP TEXT/FROM/SUBJECT across every Spexture folder
+- **after the tick** — every ``leads.db`` table and text column, every lead
+  status, plus résumé-package files on disk (JD, reviews, communications, …)
 
 Never logs IMAP passwords. IMAP select is readonly (does not \\Seen or move).
 """
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
+import zipfile
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
@@ -21,7 +25,7 @@ from job_tracker.email.imap_reader import ImapAccount, connect as imap_connect, 
 
 HOSTINGER_MAILBOX_BASE = "https://mail.hostinger.com/0/mailboxes"
 
-# Same folders the Spexture tick actually uses (see triage_imap_inbox.py).
+# Fallback if IMAP LIST fails. The live search walks every folder.
 FIND_MAIL_FOLDERS = (
     "INBOX",
     "INBOX.JobTracker.Linked",
@@ -30,11 +34,29 @@ FIND_MAIL_FOLDERS = (
     "INBOX.JobTracker.PURSUE",
     "INBOX.JobTracker.NeedsFollowup",
     "INBOX.Junk",
+    "INBOX.Sent",
+    "INBOX.Archive",
+    "INBOX.Drafts",
+    "INBOX.Trash",
 )
 
 _MAX_IMAP_PER_FOLDER = 8
 _SNIPPET_LEN = 400
 _MIN_QUERY_LEN = 2
+_MAX_FILE_BYTES = 4_000_000
+_MAX_FILE_CONTENT_SCANS = 500
+_TEXT_SUFFIXES = {".txt", ".log", ".md", ".json", ".csv", ".html", ".xml", ".webloc", ".eml"}
+_OFFICE_SUFFIXES = {".docx", ".odt", ".dotx"}
+
+# (table, job-key column). job_leads uses normalized_key.
+_LEAD_TABLES: tuple[tuple[str, str], ...] = (
+    ("job_leads", "normalized_key"),
+    ("job_contacts", "job_key"),
+    ("job_conversations", "job_key"),
+    ("job_documents", "job_key"),
+    ("job_meetings", "job_key"),
+    ("job_offers", "job_key"),
+)
 
 
 def digits_only(value: str) -> str:
@@ -92,6 +114,8 @@ def _hit(
     title: str = "",
     job_key: str = "",
     contact_name: str = "",
+    status: str = "",
+    match_fields: list[str] | None = None,
 ) -> dict[str, Any]:
     folder = folder or ""
     job_key = job_key or ""
@@ -107,172 +131,450 @@ def _hit(
         "title": title or "",
         "job_key": job_key,
         "contact_name": contact_name or "",
+        "status": status or "",
+        "match_fields": list(match_fields or []),
         "hostinger_url": hostinger_mailbox_url(folder) if folder else "",
         "lead_href": lead_href(job_key) if job_key else "",
     }
 
 
-def search_db(conn: sqlite3.Connection, query: str) -> list[dict[str, Any]]:
-    """After-tick hits: stored contacts, conversation bodies, unmatched queue."""
+def _table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
+    try:
+        return [str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")]
+    except sqlite3.OperationalError:
+        return []
+
+
+def _cell_matches(value: object, needle: str, needle_digits: str) -> bool:
+    if value is None:
+        return False
+    text = str(value)
+    if needle and needle in text.lower():
+        return True
+    if len(needle_digits) >= 7 and needle_digits in digits_only(text):
+        return True
+    return False
+
+
+def _row_match_fields(
+    row: sqlite3.Row, columns: list[str], needle: str, needle_digits: str, *, table: str
+) -> tuple[list[str], str]:
+    fields: list[str] = []
+    snippet = ""
+    for col in columns:
+        try:
+            value = row[col]
+        except (IndexError, KeyError):
+            continue
+        if not _cell_matches(value, needle, needle_digits):
+            continue
+        fields.append(f"{table}.{col}")
+        if not snippet:
+            snippet = str(value)
+    return fields, snippet
+
+
+def search_db(
+    conn: sqlite3.Connection,
+    query: str,
+    *,
+    output_root: Path | None = None,
+    skip_files: bool = False,
+) -> list[dict[str, Any]]:
+    """After-tick hits: every lead, every CRM/text column, package files."""
     q = query.strip()
     if len(q) < _MIN_QUERY_LEN:
         return []
     like = _like(q)
+    needle = q.lower()
     needle_digits = digits_only(q)
     hits: list[dict[str, Any]] = []
     seen: set[tuple[str, ...]] = set()
+    fields_by_key: dict[str, list[str]] = {}
+    snippet_by_key: dict[str, str] = {}
 
     def add(hit: dict[str, Any]) -> None:
-        key = (hit["source"], hit.get("job_key", ""), hit.get("from_address", ""), hit.get("subject", ""), hit.get("date", ""))
+        key = (
+            hit["source"],
+            hit.get("job_key", ""),
+            hit.get("from_address", ""),
+            hit.get("subject", ""),
+            hit.get("date", ""),
+        )
         if key in seen:
             return
         seen.add(key)
         hits.append(hit)
-
-    contact_sql = """
-        SELECT c.name, c.email, c.phone, c.job_key, l.company, l.title
-        FROM job_contacts c
-        JOIN job_leads l ON l.normalized_key = c.job_key
-        WHERE lower(ifnull(c.name, '')) LIKE ?
-           OR lower(ifnull(c.email, '')) LIKE ?
-           OR ifnull(c.phone, '') LIKE ?
-    """
-    contact_params: list[str] = [like, like, like]
-    if len(needle_digits) >= 7:
-        contact_sql += " OR replace(replace(replace(replace(ifnull(c.phone,''),'-',''),'(',''),')',''),' ','') LIKE ?"
-        contact_params.append(f"%{needle_digits}%")
-
-    for row in conn.execute(contact_sql, contact_params):
-        add(
-            _hit(
-                source="db",
-                when="after_tick",
-                from_address=row["email"] or "",
-                subject="",
-                date="",
-                folder="",
-                snippet=f"Contact on file: {row['name'] or row['email'] or row['phone']}",
-                company=row["company"],
-                title=row["title"],
-                job_key=row["job_key"],
-                contact_name=row["name"] or "",
-            )
-        )
-
-    for row in conn.execute(
-        """
-        SELECT conv.summary, conv.body_text, conv.occurred_at, conv.job_key,
-               l.company, l.title, k.name AS contact_name, k.email AS contact_email
-        FROM job_conversations conv
-        JOIN job_leads l ON l.normalized_key = conv.job_key
-        LEFT JOIN job_contacts k ON k.id = conv.contact_id
-        WHERE lower(ifnull(conv.summary, '')) LIKE ?
-           OR lower(ifnull(conv.body_text, '')) LIKE ?
-           OR lower(ifnull(k.name, '')) LIKE ?
-           OR lower(ifnull(k.email, '')) LIKE ?
-           OR lower(ifnull(l.company, '')) LIKE ?
-           OR lower(ifnull(l.title, '')) LIKE ?
-        ORDER BY conv.occurred_at DESC
-        LIMIT 40
-        """,
-        (like, like, like, like, like, like),
-    ):
-        add(
-            _hit(
-                source="db",
-                when="after_tick",
-                from_address=row["contact_email"] or "",
-                subject=row["summary"] or "",
-                date=row["occurred_at"] or "",
-                folder="",
-                snippet=row["body_text"] or row["summary"] or "",
-                company=row["company"],
-                title=row["title"],
-                job_key=row["job_key"],
-                contact_name=row["contact_name"] or "",
-            )
-        )
-
-    for row in conn.execute(
-        """
-        SELECT l.normalized_key, l.company, l.title, l.last_seen
-        FROM job_leads l
-        WHERE lower(ifnull(l.company, '')) LIKE ?
-           OR lower(ifnull(l.title, '')) LIKE ?
-        ORDER BY ifnull(l.last_seen, '') DESC
-        LIMIT 20
-        """,
-        (like, like),
-    ):
-        latest = conn.execute(
-            """
-            SELECT conv.summary, conv.body_text, conv.occurred_at, k.name, k.email
-            FROM job_conversations conv
-            LEFT JOIN job_contacts k ON k.id = conv.contact_id
-            WHERE conv.job_key = ?
-            ORDER BY conv.occurred_at DESC
-            LIMIT 1
-            """,
-            (row["normalized_key"],),
-        ).fetchone()
-        add(
-            _hit(
-                source="db",
-                when="after_tick",
-                from_address=(latest["email"] if latest else "") or "",
-                subject=(latest["summary"] if latest else "") or f"{row['title']} @ {row['company']}",
-                date=(latest["occurred_at"] if latest else "") or (row["last_seen"] or ""),
-                folder="",
-                snippet=(latest["body_text"] if latest else "")
-                or f"Lead on file: {row['title']} @ {row['company']}",
-                company=row["company"],
-                title=row["title"],
-                job_key=row["normalized_key"],
-                contact_name=(latest["name"] if latest else "") or "",
-            )
-        )
-
-    try:
-        unmatched_rows = conn.execute(
-            """
-            SELECT from_address, subject, body_text, detected_at, resolved_job_key, thread_id
-            FROM unmatched_messages
-            WHERE lower(ifnull(from_address, '')) LIKE ?
-               OR lower(ifnull(subject, '')) LIKE ?
-               OR lower(ifnull(body_text, '')) LIKE ?
-            ORDER BY detected_at DESC
-            LIMIT 20
-            """,
-            (like, like, like),
-        ).fetchall()
-    except sqlite3.OperationalError:
-        unmatched_rows = []
-
-    for row in unmatched_rows:
-        job_key = row["resolved_job_key"] or ""
-        company = title = ""
+        job_key = (hit.get("job_key") or "").strip()
         if job_key:
-            lead = conn.execute(
-                "SELECT company, title FROM job_leads WHERE normalized_key = ?", (job_key,)
-            ).fetchone()
-            if lead:
-                company, title = lead["company"], lead["title"]
+            fields_by_key.setdefault(job_key, []).extend(hit.get("match_fields") or [])
+            if hit.get("snippet") and job_key not in snippet_by_key:
+                snippet_by_key[job_key] = hit["snippet"]
+
+    def remember(job_key: str, fields: list[str], snippet: str) -> None:
+        job_key = (job_key or "").strip()
+        if not job_key or not fields:
+            return
+        fields_by_key.setdefault(job_key, []).extend(fields)
+        if snippet and job_key not in snippet_by_key:
+            snippet_by_key[job_key] = snippet
+
+    for table, key_col in _LEAD_TABLES:
+        columns = _table_columns(conn, table)
+        if not columns or key_col not in columns:
+            continue
+        where = " OR ".join(f"lower(ifnull({col}, '')) LIKE ?" for col in columns)
+        params: list[str] = [like] * len(columns)
+        try:
+            rows = conn.execute(f"SELECT * FROM {table} WHERE {where}", params).fetchall()
+        except sqlite3.OperationalError:
+            continue
+        for row in rows:
+            fields, snippet = _row_match_fields(row, columns, needle, needle_digits, table=table)
+            remember(row[key_col] or "", fields, snippet)
+
+    if len(needle_digits) >= 7:
+        contact_cols = _table_columns(conn, "job_contacts")
+        if "phone" in contact_cols:
+            for row in conn.execute(
+                "SELECT * FROM job_contacts WHERE "
+                "replace(replace(replace(replace(ifnull(phone,''),'-',''),'(',''),')',''),' ','') LIKE ?",
+                (f"%{needle_digits}%",),
+            ):
+                fields, snippet = _row_match_fields(
+                    row, contact_cols, needle, needle_digits, table="job_contacts"
+                )
+                remember(row["job_key"] or "", fields or ["job_contacts.phone"], snippet or row["phone"])
+
+    unmatched_cols = _table_columns(conn, "unmatched_messages")
+    if unmatched_cols:
+        where = " OR ".join(f"lower(ifnull({col}, '')) LIKE ?" for col in unmatched_cols)
+        try:
+            unmatched_rows = conn.execute(
+                f"SELECT * FROM unmatched_messages WHERE {where}",
+                tuple([like] * len(unmatched_cols)),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            unmatched_rows = []
+        for row in unmatched_rows:
+            fields, snippet = _row_match_fields(
+                row, unmatched_cols, needle, needle_digits, table="unmatched_messages"
+            )
+            job_key = ""
+            if "resolved_job_key" in unmatched_cols:
+                job_key = row["resolved_job_key"] or ""
+            if job_key:
+                remember(job_key, fields, snippet)
+            company = title = status = ""
+            if job_key:
+                lead = conn.execute(
+                    "SELECT company, title, status FROM job_leads WHERE normalized_key = ?",
+                    (job_key,),
+                ).fetchone()
+                if lead:
+                    company, title, status = lead["company"], lead["title"], lead["status"] or ""
+            add(
+                _hit(
+                    source="db",
+                    when="after_tick",
+                    from_address=row["from_address"] if "from_address" in unmatched_cols else "",
+                    subject=row["subject"] if "subject" in unmatched_cols else "",
+                    date=row["detected_at"] if "detected_at" in unmatched_cols else "",
+                    snippet=snippet or (row["body_text"] if "body_text" in unmatched_cols else ""),
+                    company=company,
+                    title=title,
+                    job_key=job_key,
+                    status=status,
+                    match_fields=fields,
+                )
+            )
+
+    processed_cols = _table_columns(conn, "processed_messages")
+    if processed_cols:
+        where = " OR ".join(f"lower(ifnull({col}, '')) LIKE ?" for col in processed_cols)
+        try:
+            processed_rows = conn.execute(
+                f"SELECT * FROM processed_messages WHERE {where}",
+                tuple([like] * len(processed_cols)),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            processed_rows = []
+        for row in processed_rows:
+            fields, snippet = _row_match_fields(
+                row, processed_cols, needle, needle_digits, table="processed_messages"
+            )
+            keys: list[str] = []
+            raw_keys = row["lead_keys"] if "lead_keys" in processed_cols else ""
+            if raw_keys:
+                try:
+                    parsed = json.loads(raw_keys)
+                    if isinstance(parsed, list):
+                        keys = [str(k) for k in parsed if k]
+                    elif parsed:
+                        keys = [str(parsed)]
+                except (TypeError, json.JSONDecodeError):
+                    keys = [str(raw_keys)]
+            for job_key in keys:
+                remember(job_key, fields, snippet)
+
+    _search_document_contents(conn, needle, fields_by_key, snippet_by_key)
+    if not skip_files and output_root is not None:
+        _search_package_files(conn, output_root, needle, fields_by_key, snippet_by_key)
+
+    for job_key, fields in fields_by_key.items():
+        lead = conn.execute(
+            "SELECT company, title, status, last_seen FROM job_leads WHERE normalized_key = ?",
+            (job_key,),
+        ).fetchone()
+        if not lead:
+            continue
         add(
             _hit(
                 source="db",
                 when="after_tick",
-                from_address=row["from_address"] or "",
-                subject=row["subject"] or "",
-                date=row["detected_at"] or "",
-                folder="",
-                snippet=row["body_text"] or "",
-                company=company,
-                title=title,
+                subject=f"{lead['title']} @ {lead['company']}",
+                date=lead["last_seen"] or "",
+                snippet=snippet_by_key.get(job_key) or f"Lead on file: {lead['title']} @ {lead['company']}",
+                company=lead["company"],
+                title=lead["title"],
                 job_key=job_key,
+                status=lead["status"] or "",
+                match_fields=fields,
             )
         )
 
-    return hits
+    collapsed = _collapse_db_hits_to_leads(conn, hits)
+    for hit in collapsed:
+        job_key = (hit.get("job_key") or "").strip()
+        if job_key and fields_by_key.get(job_key):
+            hit["match_fields"] = sorted(set(fields_by_key[job_key]))
+            extra = "matched in " + ", ".join(_short_field(f) for f in hit["match_fields"][:8])
+            snippet = hit.get("snippet") or ""
+            if extra not in snippet:
+                hit["snippet"] = _snippet((snippet + " · " + extra).strip(" ·"))
+    return collapsed
+
+
+def _short_field(field: str) -> str:
+    if field.startswith("package_file."):
+        return f"package file ({field.split('.', 1)[1]})"
+    name = field.split(".")[-1].replace("_", " ")
+    aliases = {
+        "jd text": "JD",
+        "body text": "message body",
+        "path or url": "document",
+        "from address": "from",
+        "llm job summary": "LLM review",
+        "llm rationale": "LLM review",
+        "rejection email text": "rejection",
+        "package file": "package file",
+    }
+    return aliases.get(name, name)
+
+
+def _office_xml_text(path: Path) -> str:
+    try:
+        with zipfile.ZipFile(path) as zf:
+            names = set(zf.namelist())
+            chunks: list[str] = []
+            for candidate in ("word/document.xml", "content.xml"):
+                if candidate not in names:
+                    continue
+                xml = zf.read(candidate)
+                chunks.append(re.sub(rb"<[^>]+>", b" ", xml).decode("utf-8", "replace"))
+            return " ".join(chunks)
+    except Exception:
+        return ""
+
+
+def _file_text(path: Path) -> str:
+    try:
+        if path.stat().st_size > _MAX_FILE_BYTES:
+            return ""
+    except OSError:
+        return ""
+    suffix = path.suffix.lower()
+    if suffix in _TEXT_SUFFIXES:
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+    if suffix in _OFFICE_SUFFIXES:
+        return _office_xml_text(path)
+    return ""
+
+
+def _search_package_files(
+    conn: sqlite3.Connection,
+    output_root: Path,
+    needle: str,
+    fields_by_key: dict[str, list[str]],
+    snippet_by_key: dict[str, str],
+) -> None:
+    root = Path(output_root)
+    if not needle or not root.is_dir():
+        return
+    from job_tracker.pipeline.llm_apply import _safe_filename
+
+    index: dict[tuple[str, str], str] = {}
+    for row in conn.execute("SELECT normalized_key, company, title FROM job_leads"):
+        index[(_safe_filename(row["company"]).lower(), _safe_filename(row["title"]).lower())] = (
+            row["normalized_key"]
+        )
+
+    scans = 0
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        if path.name.startswith("."):
+            continue
+        rel = path.relative_to(root)
+        parts = rel.parts
+        if len(parts) < 2:
+            continue
+        company_safe, title_safe = parts[0].lower(), parts[1].lower()
+        job_key = index.get((company_safe, title_safe), "")
+        if not job_key:
+            continue
+        name_blob = f"{path.name} {rel.as_posix()}".lower()
+        matched = needle in name_blob
+        snippet = path.name
+        if not matched and path.suffix.lower() in _TEXT_SUFFIXES | _OFFICE_SUFFIXES:
+            if scans >= _MAX_FILE_CONTENT_SCANS:
+                continue
+            scans += 1
+            text = _file_text(path)
+            if needle in text.lower():
+                matched = True
+                snippet = text
+        if matched:
+            fields_by_key.setdefault(job_key, []).append(f"package_file.{path.name}")
+            if job_key not in snippet_by_key:
+                snippet_by_key[job_key] = snippet
+
+
+def _search_document_contents(
+    conn: sqlite3.Connection,
+    needle: str,
+    fields_by_key: dict[str, list[str]],
+    snippet_by_key: dict[str, str],
+) -> None:
+    """Read files recorded on job_documents, including paths outside the package tree."""
+    doc_cols = _table_columns(conn, "job_documents")
+    if "path_or_url" not in doc_cols or not needle:
+        return
+    scans = 0
+    for row in conn.execute("SELECT job_key, path_or_url FROM job_documents"):
+        raw = (row["path_or_url"] or "").strip()
+        if not raw or raw.lower().startswith(("http://", "https://")):
+            continue
+        path = Path(raw).expanduser()
+        if not path.is_file():
+            continue
+        if needle in path.name.lower() or needle in str(path).lower():
+            fields_by_key.setdefault(row["job_key"], []).append("job_documents.path_or_url")
+            snippet_by_key.setdefault(row["job_key"], path.name)
+            continue
+        if path.suffix.lower() not in _TEXT_SUFFIXES | _OFFICE_SUFFIXES:
+            continue
+        if scans >= _MAX_FILE_CONTENT_SCANS:
+            continue
+        scans += 1
+        text = _file_text(path)
+        if needle in text.lower():
+            fields_by_key.setdefault(row["job_key"], []).append("job_documents.path_or_url")
+            snippet_by_key.setdefault(row["job_key"], text)
+
+
+def _collapse_db_hits_to_leads(
+    conn: sqlite3.Connection, hits: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """One row per tracked lead. Unmatched mail with no job_key stays as-is."""
+    from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT
+    from job_tracker.pipeline.pending_workflow import _company_folder_abs, _package_folder_abs
+
+    by_key: dict[str, dict[str, Any]] = {}
+    leftover: list[dict[str, Any]] = []
+    for hit in hits:
+        key = (hit.get("job_key") or "").strip()
+        if not key:
+            leftover.append(hit)
+            continue
+        prev = by_key.get(key)
+        if prev is None:
+            by_key[key] = dict(hit)
+            continue
+        if (hit.get("date") or "") > (prev.get("date") or ""):
+            prev["date"] = hit.get("date") or prev.get("date") or ""
+        if not prev.get("from_address") and hit.get("from_address"):
+            prev["from_address"] = hit["from_address"]
+        if not prev.get("contact_name") and hit.get("contact_name"):
+            prev["contact_name"] = hit["contact_name"]
+        if not prev.get("status") and hit.get("status"):
+            prev["status"] = hit["status"]
+        prev_fields = list(prev.get("match_fields") or [])
+        prev_fields.extend(hit.get("match_fields") or [])
+        prev["match_fields"] = prev_fields
+
+    out: list[dict[str, Any]] = []
+    for key, hit in by_key.items():
+        contact = conn.execute(
+            "SELECT name, email FROM job_contacts WHERE job_key = ? ORDER BY id LIMIT 1",
+            (key,),
+        ).fetchone()
+        if contact:
+            if not hit.get("from_address") and contact["email"]:
+                hit["from_address"] = contact["email"]
+            if not hit.get("contact_name") and contact["name"]:
+                hit["contact_name"] = contact["name"]
+        company = hit.get("company") or ""
+        title = hit.get("title") or ""
+        comm_count = int(
+            conn.execute(
+                "SELECT COUNT(*) AS n FROM job_conversations WHERE job_key = ?", (key,)
+            ).fetchone()["n"]
+        )
+        folder_path, _ready = _package_folder_abs(
+            conn,
+            company=company or "Unknown",
+            title=title or company or "Unknown",
+            output_root=DEFAULT_OUTPUT_ROOT,
+        )
+        company_folder = _company_folder_abs(
+            company=company or "Unknown", output_root=DEFAULT_OUTPUT_ROOT
+        )
+        who = hit.get("contact_name") or hit.get("from_address") or ""
+        status = hit.get("status") or ""
+        bits = [who, f"{comm_count} communication" + ("" if comm_count == 1 else "s")]
+        if status:
+            bits.append(status)
+        hit["subject"] = " — ".join(p for p in (company, title) if p) or hit.get("subject") or ""
+        hit["snippet"] = " · ".join(b for b in bits if b)
+        hit["match_fields"] = sorted(set(hit.get("match_fields") or []))
+        hit["comm_count"] = comm_count
+        hit["folder_path"] = folder_path
+        hit["company_folder_path"] = company_folder
+        hit["reveal_url"] = f"revealfolder://reveal?path={quote(folder_path)}"
+        out.append(hit)
+    out.sort(key=lambda h: h.get("date") or "", reverse=True)
+    return out + leftover
+
+
+def _decode_imap_folder(raw: object) -> str:
+    text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+    match = re.search(r' "([^"]+)"\s*$', text) or re.search(r" ([^\s]+)\s*$", text)
+    return match.group(1) if match else text
+
+
+def _list_imap_folders(imap) -> list[str]:
+    try:
+        status, boxes = imap.list()
+    except Exception:
+        return list(FIND_MAIL_FOLDERS)
+    if status != "OK" or not boxes:
+        return list(FIND_MAIL_FOLDERS)
+    names = [_decode_imap_folder(box) for box in boxes]
+    return [n for n in names if n] or list(FIND_MAIL_FOLDERS)
 
 
 def search_imap_folders(query: str, *, account: ImapAccount | None = None) -> list[dict[str, Any]]:
@@ -285,7 +587,7 @@ def search_imap_folders(query: str, *, account: ImapAccount | None = None) -> li
     hits: list[dict[str, Any]] = []
     try:
         criteria = imap_search_criteria(q)
-        for folder in FIND_MAIL_FOLDERS:
+        for folder in _list_imap_folders(imap):
             try:
                 status, _ = imap.select(folder, readonly=True)
             except Exception:
@@ -321,15 +623,62 @@ def search_imap_folders(query: str, *, account: ImapAccount | None = None) -> li
     return hits
 
 
+def _addr_key(value: str) -> str:
+    from email.utils import parseaddr
+
+    _, addr = parseaddr(value or "")
+    return (addr or value or "").strip().lower()
+
+
+def _imap_not_already_tracked(
+    conn: sqlite3.Connection,
+    imap_hits: list[dict[str, Any]],
+    db_hits: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep IMAP only when it is not already a tracked lead; one row per sender."""
+    tracked = {_addr_key(h.get("from_address") or "") for h in db_hits}
+    for hit in db_hits:
+        key = (hit.get("job_key") or "").strip()
+        if not key:
+            continue
+        for row in conn.execute("SELECT email FROM job_contacts WHERE job_key = ?", (key,)):
+            tracked.add(_addr_key(row["email"] or ""))
+    tracked.discard("")
+    seen: set[str] = set()
+    kept: list[dict[str, Any]] = []
+    for hit in imap_hits:
+        key = _addr_key(hit.get("from_address") or "")
+        if key and key in tracked:
+            continue
+        dedupe = key or (hit.get("subject") or "")
+        if dedupe in seen:
+            continue
+        if dedupe:
+            seen.add(dedupe)
+        kept.append(hit)
+    return kept
+
+
 def search(
     query: str,
     *,
     conn: sqlite3.Connection,
     imap_search: Callable[[str], list[dict[str, Any]]] | None = None,
     skip_imap: bool = False,
+    output_root: Path | None = None,
+    skip_files: bool = False,
 ) -> dict[str, Any]:
     q = (query or "").strip()
-    db_hits = search_db(conn, q) if len(q) >= _MIN_QUERY_LEN else []
+    file_root = output_root
+    if file_root is None and not skip_files:
+        from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT
+
+        file_root = DEFAULT_OUTPUT_ROOT
+    db_hits = (
+        search_db(conn, q, output_root=file_root, skip_files=skip_files)
+        if len(q) >= _MIN_QUERY_LEN
+        else []
+    )
     imap_hits: list[dict[str, Any]] = []
     imap_error = ""
     if skip_imap:
@@ -344,7 +693,7 @@ def search(
             imap_error = str(exc)
     return {
         "query": q,
-        "imap": imap_hits,
+        "imap": _imap_not_already_tracked(conn, imap_hits, db_hits),
         "db": db_hits,
         "imap_error": imap_error,
     }

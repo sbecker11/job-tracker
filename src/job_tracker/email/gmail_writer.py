@@ -13,6 +13,8 @@ edits or removes that upstream label.
 
 from __future__ import annotations
 
+from job_tracker.email.gmail_reader import execute_gmail
+
 LABEL_PREFIX = "JobTracker/"
 
 # Renamed 2026-07-07 (were ACCEPT/DENY) to match the LLM Match Framework's
@@ -46,7 +48,7 @@ def find_label_id(service, label_name: str) -> str | None:
     missing — unlike `get_or_create_label`, appropriate for checking against
     a label this repo doesn't own (e.g. the recruiting account's own
     Gmail-filter-created "Job-Digests" label)."""
-    labels = service.users().labels().list(userId="me").execute().get("labels", [])
+    labels = execute_gmail(service.users().labels().list(userId="me")).get("labels", [])
     for label in labels:
         if label["name"] == label_name:
             return label["id"]
@@ -55,11 +57,11 @@ def find_label_id(service, label_name: str) -> str | None:
 
 def get_or_create_label(service, label_name: str) -> str:
     """Return the Gmail label id for `label_name`, creating it if needed."""
-    labels = service.users().labels().list(userId="me").execute().get("labels", [])
+    labels = execute_gmail(service.users().labels().list(userId="me")).get("labels", [])
     for label in labels:
         if label["name"] == label_name:
             return label["id"]
-    created = (
+    created = execute_gmail(
         service.users()
         .labels()
         .create(
@@ -70,7 +72,6 @@ def get_or_create_label(service, label_name: str) -> str:
                 "messageListVisibility": "show",
             },
         )
-        .execute()
     )
     return created["id"]
 
@@ -92,8 +93,10 @@ def label_and_archive(
     visible for a human instead of getting filed away as if fully handled.
     """
     remove_ids = ["INBOX", *(remove_label_ids or [])] if archive else list(remove_label_ids or [])
-    service.users().messages().modify(
-        userId="me",
-        id=message_id,
-        body={"addLabelIds": [label_id], "removeLabelIds": remove_ids},
-    ).execute()
+    execute_gmail(
+        service.users().messages().modify(
+            userId="me",
+            id=message_id,
+            body={"addLabelIds": [label_id], "removeLabelIds": remove_ids},
+        )
+    )

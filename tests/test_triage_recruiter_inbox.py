@@ -95,6 +95,21 @@ def test_triage_no_messages(monkeypatch, mock_gmail, tmp_path: Path, capsys):
     assert "No messages matched" in capsys.readouterr().err
 
 
+def test_triage_gmail_quota_on_list_exits_0(monkeypatch, mock_gmail, tmp_path: Path, capsys):
+    """2026-09-28: classify already deferred on Gmail quota; messages.list
+    403'd immediately after and HALTed the hourly schedule. Exit 0 so
+    Spexture IMAP + render still run; next hour retries recruiter_job mail."""
+    def _boom(*_a, **_k):
+        raise triage_cli.GmailQuotaExceeded("rateLimitExceeded")
+
+    monkeypatch.setattr(triage_cli, "list_message_ids", _boom)
+    rc = triage_main(["--dry-run", "--db", str(tmp_path / "leads.db")])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "no HALT" in err
+    assert "triage_recruiter_inbox list" in err
+
+
 def test_triage_dry_run_prints(monkeypatch, mock_gmail, tmp_path: Path, capsys):
     monkeypatch.setattr(triage_cli, "list_message_ids", lambda *a, **k: ["msg-1"])
     monkeypatch.setattr(triage_cli, "fetch_message", lambda *a, **k: _msg())

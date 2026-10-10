@@ -6,6 +6,7 @@ import base64
 import html
 import os
 import re
+import sys
 from email.utils import parseaddr
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,80 @@ KNOWN_ACCOUNTS: tuple[str, ...] = ()
 
 # Names that must never be passed to Gmail read/write CLIs in this repo.
 BLOCKED_ACCOUNTS = frozenset({"personal_hub"})
+
+# Gmail "Units per minute per user" is a rolling 60s window. Classify already
+# defers on 403 rateLimitExceeded (comms-migration, 2026-09-25); the next
+# hourly step used to call messages.list immediately and HALT (live
+# 2026-09-28: triage_recruiter_inbox after classify deferred 39 messages).
+# Cycle CLIs must catch `GmailQuotaExceeded`, exit 0, and leave remaining
+# mail for the next hour.
+RATE_LIMIT_MARKERS = (
+    "ratelimitexceeded",
+    "userratelimitexceeded",
+    "quota exceeded",
+    "rate limit",
+)
+
+
+class GmailQuotaExceeded(Exception):
+    """Gmail 403/429 per-user query quota (`rateLimitExceeded`).
+
+    Hourly-cycle CLIs catch this, leave remaining mail for the next hour,
+    and return 0 so recruiting-automation does not write HALT.
+    """
+
+
+def is_gmail_rate_limit(exc: BaseException) -> bool:
+    """True for Gmail 429 / 403 quota (`rateLimitExceeded`) errors."""
+    resp = getattr(exc, "resp", None)
+    status = getattr(resp, "status", None)
+    if status is None:
+        status = getattr(exc, "status_code", None)
+    try:
+        status_i = int(status) if status is not None else 0
+    except (TypeError, ValueError):
+        status_i = 0
+    blob = str(exc).lower()
+    if status_i == 429:
+        return True
+    if status_i in (403, 429) and any(marker in blob for marker in RATE_LIMIT_MARKERS):
+        return True
+    if status_i == 0 and any(marker in blob for marker in RATE_LIMIT_MARKERS):
+        return True
+    return False
+
+
+def execute_gmail(request: Any) -> Any:
+    """`request.execute()` — Gmail rate limits become `GmailQuotaExceeded`.
+
+    Sleeping through a per-minute quota would stall Spexture IMAP and the
+    rest of the hourly cycle. Cycle CLIs catch `GmailQuotaExceeded` and
+    exit 0 so the next hour retries.
+    """
+    try:
+        return request.execute()
+    except Exception as exc:
+        if is_gmail_rate_limit(exc):
+            raise GmailQuotaExceeded(str(exc)) from exc
+        raise
+
+
+def defer_gmail_quota(
+    during: str,
+    *,
+    remaining: int | None = None,
+    processed: int | None = None,
+) -> int:
+    """Stderr line matching comms-migration's classify deferral; return 0."""
+    head = f"Gmail quota exhausted during {during}"
+    if processed is not None:
+        head += f" after {processed} message(s)"
+    if remaining is not None:
+        head += f"; deferring {remaining} to the next hour"
+    else:
+        head += "; deferring remaining mail to the next hour"
+    print(f"{head} (exit 0, no HALT).", file=sys.stderr)
+    return 0
 
 
 def reject_blocked_account(account: str | None) -> None:
@@ -278,7 +353,7 @@ def list_message_ids(
             .messages()
             .list(userId="me", q=q, maxResults=max_results, pageToken=page_token)
         )
-        response = request.execute()
+        response = execute_gmail(request)
         for item in response.get("messages") or []:
             ids.append(item["id"])
             if limit is not None and len(ids) >= limit:
@@ -293,11 +368,10 @@ def list_message_ids(
 
 
 def fetch_message(service, message_id: str) -> EmailMessage:
-    raw = (
+    raw = execute_gmail(
         service.users()
         .messages()
         .get(userId="me", id=message_id, format="full")
-        .execute()
     )
     return parse_gmail_message(raw)
 

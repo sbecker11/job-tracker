@@ -1,8 +1,19 @@
 """Template qualifying replies for LinkedIn InMail pitches (2026-08-04).
 
-Goal: make the "ask W2 / end client / remote before sending a résumé" loop
-zero-compose for Shawn — draft text + thread URL land in pending-actions
-with a one-click Copy button. Never auto-sends.
+Two first-touch tracks:
+
+- **JD-first** (default): ask W2 / end client / remote / rate (and a pasted
+  JD when the pitch is thin) before sending a résumé. Used when the InMail
+  already has real JD substance, or when the recruiter is not asking for a
+  résumé/call as the next step.
+- **Screen-first**: recruiter wants a latest résumé and/or a call *before*
+  they will share a JD (or even the end client). Send the generic latest
+  résumé — never a JD-tailored package and never the indexed master file —
+  offer to talk, and only name standing structural constraints (no C2C;
+  remote-first from Lehi). JD evaluation (§11) waits until they actually
+  send a description.
+
+Never auto-sends.
 
 Also: free heuristic extraction of Position + agency/company from common
 InMail shapes (e.g. Madhvendra / KPG99) so those pitches become stub leads
@@ -70,6 +81,29 @@ _JD_SUBSTANCE_RE = re.compile(
     re.I | re.M,
 )
 
+# Recruiter wants a résumé and/or a call before they will share a real JD.
+_SCREEN_RESUME_ASK_RE = re.compile(
+    r"(?i)\b("
+    r"send (me )?(your |a |over a copy of your )?(resume|résumé|cv)|"
+    r"copy of your (resume|résumé|cv)|"
+    r"please (share|send|attach).{0,40}(resume|résumé|cv)|"
+    r"looking forward to (receiving |seeing )?(your )?(resume|résumé|cv)"
+    r")\b"
+)
+_SCREEN_CALL_BEFORE_JD_RE = re.compile(
+    r"(?i)("
+    r"availability to discuss|"
+    r"some availability|"
+    r"schedule a (quick )?call|"
+    r"open to a (confidential )?chat|"
+    r"when we speak|"
+    r"once we (talk|speak|connect)|"
+    r"after (we|our) (call|chat|conversation)|"
+    r"share (who the client is|the (client|jd|job description)).{0,40}when|"
+    r"i can share (who the client is|the client|more) when we"
+    r")"
+)
+
 
 @dataclass
 class PitchGaps:
@@ -78,6 +112,8 @@ class PitchGaps:
     needs_engagement: bool = True
     needs_remote: bool = True
     needs_rate_band: bool = True
+    # Recruiter wants a résumé and/or call before they will share a real JD.
+    screen_first: bool = False
 
 
 @dataclass
@@ -192,6 +228,12 @@ def detect_pitch_gaps(text: str, *, subject: str = "") -> PitchGaps:
         gaps.needs_remote = False
     if re.search(r"(?i)\b(w2|1099|c2c)\b", blob):
         gaps.needs_engagement = False
+    gaps.screen_first = bool(
+        gaps.needs_jd
+        and (
+            _SCREEN_RESUME_ASK_RE.search(blob) or _SCREEN_CALL_BEFORE_JD_RE.search(blob)
+        )
+    )
     return gaps
 
 
@@ -214,41 +256,47 @@ def draft_qualifying_reply(text: str, *, subject: str = "", known_recruiter_name
     gaps = detect_pitch_gaps(text, subject=subject)
     role = extract_role_heuristic(text)
 
-    asks: list[str] = []
-    if gaps.needs_jd:
-        asks.append(
-            "Could you paste the job description into the thread (LinkedIn attachments don't always come through on my side)?"
-        )
-    if gaps.needs_end_client:
-        asks.append("Who is the end client / hiring company?")
-    if gaps.needs_engagement:
-        asks.append(
-            "Is the engagement W2 or 1099 direct-to-individual? I'm not set up for C2C."
-        )
-    if gaps.needs_remote:
-        asks.append("Is the role fully remote (US), or is there an onsite/hybrid requirement?")
-    if gaps.needs_rate_band:
-        asks.append("What's the rate or salary band for the role?")
-
-    if not asks:
-        asks.append(
-            "Happy to take a look — could you confirm end client, W2 vs 1099-direct (not C2C), remote status, and the rate/salary band?"
-        )
-
-    if len(asks) == 1:
-        ask_block = asks[0]
-    else:
-        ask_block = "A few quick clarifiers before I send a résumé:\n" + "\n".join(
-            f"- {a}" for a in asks
-        )
-
     greeting = f"Hi {first}," if first else "Hi,"
     interest = "Thanks for reaching out"
     if role and role.title:
         interest += f" about the {role.title} role"
     interest += "."
 
-    body = f"{greeting}\n\n{interest} {ask_block}\n\nBest, Shawn"
+    if gaps.screen_first:
+        body = _draft_screen_first_body(
+            greeting=greeting,
+            interest=interest,
+            gaps=gaps,
+        )
+    else:
+        asks: list[str] = []
+        if gaps.needs_jd:
+            asks.append(
+                "Could you paste the job description into the thread (LinkedIn attachments don't always come through on my side)?"
+            )
+        if gaps.needs_end_client:
+            asks.append("Who is the end client / hiring company?")
+        if gaps.needs_engagement:
+            asks.append(
+                "Is the engagement W2 or 1099 direct-to-individual? I'm not set up for C2C."
+            )
+        if gaps.needs_remote:
+            asks.append("Is the role fully remote (US), or is there an onsite/hybrid requirement?")
+        if gaps.needs_rate_band:
+            asks.append("What's the rate or salary band for the role?")
+
+        if not asks:
+            asks.append(
+                "Happy to take a look — could you confirm end client, W2 vs 1099-direct (not C2C), remote status, and the rate/salary band?"
+            )
+
+        if len(asks) == 1:
+            ask_block = asks[0]
+        else:
+            ask_block = "A few quick clarifiers before I send a résumé:\n" + "\n".join(
+                f"- {a}" for a in asks
+            )
+        body = f"{greeting}\n\n{interest} {ask_block}\n\nBest, Shawn"
     # House-rule safety: never invent a dollar figure; asking for their band is fine.
     return QualifyingDraft(
         recruiter_name=name,
@@ -258,6 +306,35 @@ def draft_qualifying_reply(text: str, *, subject: str = "", known_recruiter_name
         body=body,
         company_guess=role.company if role else "",
         title_guess=role.title if role else "",
+    )
+
+
+def _draft_screen_first_body(*, greeting: str, interest: str, gaps: PitchGaps) -> str:
+    """Résumé + call now; JD (and tailored package) only after they talk."""
+    notes: list[str] = []
+    if gaps.needs_engagement:
+        notes.append(
+            "I'm targeting W2 or 1099 direct-to-individual — not set up for C2C."
+        )
+    if gaps.needs_remote:
+        notes.append(
+            "I'm remote-first from Lehi, UT; hybrid in or near Salt Lake City is fine, onsite-only elsewhere isn't."
+        )
+    notes_block = ""
+    if notes:
+        notes_block = (
+            "A couple of structural notes so we don't waste the call:\n"
+            + "\n".join(f"- {n}" for n in notes)
+            + "\n\n"
+        )
+    return (
+        f"{greeting}\n\n"
+        f"{interest} I'll send my latest résumé with this note — happy to jump on a "
+        f"call once you've had a look. Send a couple of times that work for you.\n\n"
+        f"{notes_block}"
+        f"If it's a fit after we talk, a pasted job description is the most useful "
+        f"next step on my side.\n\n"
+        f"Best, Shawn"
     )
 
 

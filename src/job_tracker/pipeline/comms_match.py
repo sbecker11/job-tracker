@@ -41,7 +41,19 @@ from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_EXTRAC
 from job_tracker.pipeline.llm_extract import extract_roles_llm_cached
 from job_tracker.pipeline.qualifying_reply import extract_role_heuristic
 
-MatchTier = str  # "thread_id" | "contact_email" | "llm_company_title" | "llm_company_only" | "llm_new_lead" | "heuristic_company_title" | "heuristic_new_lead" | "unmatched"
+MatchTier = str  # "thread_id" | "contact_email" | "named_end_client" | "llm_company_title" | "llm_company_only" | "llm_new_lead" | "heuristic_company_title" | "heuristic_new_lead" | "unmatched"
+
+# Recruiter/agency umbrella leads (PCC "end-client TBD", staffing firms).
+# When a later message in that thread names a different existing company+title
+# (the end client), file the communication on that job instead.
+_AGENCY_LEAD_MARKERS = (
+    "recruitment",
+    "recruiting",
+    "staffing",
+    "end-client",
+    "endclient",
+    "end client",
+)
 
 
 @dataclass
@@ -107,6 +119,71 @@ def _outcome_from_role(conn: sqlite3.Connection, role: ExtractedRole, *, source:
     return None
 
 
+def _is_agency_or_tbd_lead(conn: sqlite3.Connection, job_key: str) -> bool:
+    row = conn.execute(
+        "SELECT company, title FROM job_leads WHERE normalized_key = ?", (job_key,)
+    ).fetchone()
+    if not row:
+        return False
+    blob = f"{row['company'] or ''} {row['title'] or ''}".lower()
+    return any(marker in blob for marker in _AGENCY_LEAD_MARKERS)
+
+
+def existing_jobs_named_in_text(conn: sqlite3.Connection, text: str) -> list[str]:
+    """Keys of existing leads whose company AND title both appear in `text`.
+
+    Used so a PCC/agency thread that later names "Metabody" + "Staff AI Engineer"
+    files onto that end-client lead. Title must be reasonably specific (≥8 chars)
+    so "Engineer" alone cannot hijack matching.
+    """
+    blob = (text or "").lower()
+    if len(blob) < 8:
+        return []
+    keys: list[str] = []
+    seen: set[str] = set()
+    try:
+        rows = conn.execute(
+            "SELECT normalized_key, company, title FROM job_leads "
+            "WHERE ifnull(deleted_at, '') = ''"
+        )
+    except sqlite3.OperationalError:
+        rows = conn.execute("SELECT normalized_key, company, title FROM job_leads")
+    for row in rows:
+        company = (row["company"] or "").strip()
+        title = (row["title"] or "").strip()
+        if len(company) < 3 or len(title) < 8:
+            continue
+        if company.lower() in blob and title.lower() in blob:
+            key = row["normalized_key"]
+            if key not in seen:
+                seen.add(key)
+                keys.append(key)
+    return keys
+
+
+def _prefer_named_end_client(
+    conn: sqlite3.Connection,
+    job_key: str | None,
+    message: EmailMessage,
+    *,
+    tier: MatchTier,
+    reason: str,
+) -> MatchOutcome:
+    """If the body uniquely names a different existing job, and the thread/
+    contact hit is an agency/TBD umbrella, file on the named end-client job."""
+    named = existing_jobs_named_in_text(conn, message.combined_text or "")
+    if len(named) == 1 and named[0] != job_key:
+        if job_key is None or _is_agency_or_tbd_lead(conn, job_key):
+            return MatchOutcome(
+                named[0],
+                "named_end_client",
+                f"body names existing job {named[0]!r}; superseded {tier} match {job_key!r}",
+            )
+    if job_key:
+        return MatchOutcome(job_key, tier, reason)
+    return MatchOutcome(None, "unmatched", reason)
+
+
 def match_message_to_job(
     conn: sqlite3.Connection,
     message: EmailMessage,
@@ -121,13 +198,25 @@ def match_message_to_job(
     (inbound: `from_address`; outbound: `to_address`)."""
     job_key = store.find_job_by_thread_id(conn, message.thread_id)
     if job_key:
-        return MatchOutcome(job_key, "thread_id", f"thread_id {message.thread_id!r} already linked to this job")
+        return _prefer_named_end_client(
+            conn,
+            job_key,
+            message,
+            tier="thread_id",
+            reason=f"thread_id {message.thread_id!r} already linked to this job",
+        )
 
     other_address = message.from_address if direction == "inbound" else message.to_address
     if other_address.strip().lower() not in store.GENERIC_RELAY_ADDRESSES:
         job_key = store.find_job_by_contact_email(conn, other_address)
         if job_key:
-            return MatchOutcome(job_key, "contact_email", f"{other_address!r} already on file as a contact")
+            return _prefer_named_end_client(
+                conn,
+                job_key,
+                message,
+                tier="contact_email",
+                reason=f"{other_address!r} already on file as a contact",
+            )
 
     # Free heuristic before paid LLM (2026-08-04): structured InMails with
     # Position: + agency Inc line become stub leads without API spend.

@@ -190,6 +190,8 @@ cd pending-actions-ui && npm run dev
 
 `install.sh` bakes the current `node` absolute path into the plist (launchd
 does not source nvm). After an `nvm` Node upgrade, re-run `install.sh`.
+It also runs `tools/install-pending-action-handlers.sh` so every Pending
+Actions URL scheme (`refreshpending://`, `revealfolder://`, …) is registered.
 This is separate from sibling `recruiting-automation`'s hourly cycle agent
 (`com.sbecker11.recruiting-automation`).
 

@@ -1,4 +1,6 @@
-import { useState, type FormEvent } from 'react'
+import { useState, type FormEvent, type MouseEvent } from 'react'
+import { revealFolderUrl } from '../lib/links'
+import { HistoryLink } from './HistoryLink'
 
 export type FindMailHit = {
   source: string
@@ -12,6 +14,12 @@ export type FindMailHit = {
   title: string
   job_key: string
   contact_name: string
+  status?: string
+  comm_count?: number
+  match_fields?: string[]
+  folder_path?: string
+  company_folder_path?: string
+  reveal_url?: string
   hostinger_url: string
   lead_href: string
 }
@@ -43,7 +51,17 @@ async function fetchFindMail(query: string): Promise<FindMailResult> {
   )
 }
 
-function HitList({ title, hits, empty }: { title: string; hits: FindMailHit[]; empty: string }) {
+function HitList({
+  title,
+  hits,
+  empty,
+  onOpenLead,
+}: {
+  title: string
+  hits: FindMailHit[]
+  empty: string
+  onOpenLead?: (jobKey: string) => void
+}) {
   return (
     <div className="find-mail-group">
       <h3>{title}</h3>
@@ -51,39 +69,66 @@ function HitList({ title, hits, empty }: { title: string; hits: FindMailHit[]; e
         <p className="find-mail-empty">{empty}</p>
       ) : (
         <ul>
-          {hits.map((hit, i) => (
-            <li key={`${hit.source}-${hit.folder}-${hit.subject}-${hit.date}-${i}`}>
-              <div className="find-mail-hit-head">
-                <strong>{hit.subject || '(no subject)'}</strong>
-                {hit.folder ? <span className="find-mail-folder">{hit.folder}</span> : null}
-              </div>
-              <div className="find-mail-meta">
-                {[hit.from_address, hit.contact_name, hit.date, hit.company && hit.title ? `${hit.company} — ${hit.title}` : hit.company || hit.title]
-                  .filter(Boolean)
-                  .join(' · ')}
-              </div>
-              {hit.snippet ? <p className="find-mail-snippet">{hit.snippet}</p> : null}
-              <p className="find-mail-links">
-                {hit.hostinger_url ? (
-                  <a className="btn link" href={hit.hostinger_url} target="_blank" rel="noreferrer">
-                    Open in Hostinger
-                  </a>
-                ) : null}
-                {hit.lead_href ? (
-                  <a className="btn link" href={hit.lead_href}>
-                    Open lead
-                  </a>
-                ) : null}
-              </p>
-            </li>
-          ))}
+          {hits.map((hit, i) => {
+            const leadLabel = [hit.company, hit.title].filter(Boolean).join(' — ')
+            const statusNote = hit.status ? ` (${hit.status})` : ''
+            const folderHref = hit.reveal_url || revealFolderUrl(hit.folder_path) || revealFolderUrl(hit.company_folder_path)
+            const openLead = (e: MouseEvent<HTMLAnchorElement>) => {
+              if (!hit.job_key || !onOpenLead) return
+              e.preventDefault()
+              onOpenLead(hit.job_key)
+            }
+            return (
+              <li key={`${hit.source}-${hit.job_key || hit.subject}-${hit.date}-${i}`}>
+                <div className="find-mail-hit-head">
+                  <strong>{leadLabel || hit.subject || '(no subject)'}</strong>
+                  {hit.folder ? <span className="find-mail-folder">{hit.folder}</span> : null}
+                </div>
+                <div className="find-mail-meta">
+                  {[
+                    hit.from_address,
+                    hit.contact_name,
+                    hit.snippet,
+                    hit.date,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </div>
+                <p className="find-mail-links">
+                  {folderHref ? (
+                    <a className="btn link" href={folderHref}>
+                      Open folder
+                    </a>
+                  ) : null}
+                  {hit.company && hit.title ? (
+                    <HistoryLink company={hit.company} title={hit.title} className="btn link" />
+                  ) : null}
+                  {hit.job_key && hit.lead_href ? (
+                    <a
+                      className="btn link"
+                      href={hit.lead_href}
+                      onClick={openLead}
+                      title="Jump to this lead in the list below"
+                    >
+                      Open lead{statusNote}
+                    </a>
+                  ) : null}
+                  {hit.hostinger_url ? (
+                    <a className="btn link" href={hit.hostinger_url} target="_blank" rel="noreferrer">
+                      Open in Hostinger
+                    </a>
+                  ) : null}
+                </p>
+              </li>
+            )
+          })}
         </ul>
       )}
     </div>
   )
 }
 
-export function FindMailSearch() {
+export function FindMailSearch({ onOpenLead }: { onOpenLead?: (jobKey: string) => void }) {
   const [query, setQuery] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -93,7 +138,7 @@ export function FindMailSearch() {
     e.preventDefault()
     const q = query.trim()
     if (q.length < 2) {
-      setError('Type at least 2 characters (name, email, or phone).')
+      setError('Type at least 2 characters.')
       setResult(null)
       return
     }
@@ -122,7 +167,7 @@ export function FindMailSearch() {
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Name, email, phone, company, or job title"
+            placeholder="Any field — name, JD, notes, files, company, title…"
             autoComplete="off"
           />
           <button type="submit" className="btn link regen-btn" disabled={busy}>
@@ -131,20 +176,22 @@ export function FindMailSearch() {
         </div>
       </form>
       <p className="find-mail-hint">
-        Live Spexture IMAP (Inbox + JobTracker) plus the tracker: recruiter name/email/phone, company, and job title.
+        Every lead and status, every stored field, package documents, plus live Spexture IMAP (all folders).
       </p>
       {error && <p className="find-mail-error">{error}</p>}
       {result && (
         <div className="find-mail-results">
           <HitList
-            title="On Spexture now (before or after the 3-min tick)"
+            title="On Spexture now (all IMAP folders)"
             hits={result.imap}
             empty="No IMAP match — not on Spexture, still delivering, or IMAP error above."
+            onOpenLead={onOpenLead}
           />
           <HitList
-            title="In the tracker (after the tick)"
+            title="In the tracker (all leads, fields, and package files)"
             hits={result.db}
-            empty="No stored contact or conversation yet — the tick has not linked this mail."
+            empty="No stored lead, field, or package file matched — try another spelling."
+            onOpenLead={onOpenLead}
           />
         </div>
       )}

@@ -94,8 +94,10 @@ from job_tracker.cli.scan_communications import (
 from job_tracker.email import gmail_writer
 from job_tracker.email.gmail_reader import (
     KNOWN_ACCOUNTS,
+    GmailQuotaExceeded,
     default_credentials_path,
     default_token_path,
+    defer_gmail_quota,
     fetch_message,
     get_gmail_service,
     get_gmail_service_writable,
@@ -400,7 +402,10 @@ def main(argv: list[str] | None = None) -> int:
     query = args.query
     if args.newer_than:
         query = f"{query} newer_than:{args.newer_than}d"
-    message_ids = list_message_ids(service, query=query, limit=args.inbox_batch_message_cap)
+    try:
+        message_ids = list_message_ids(service, query=query, limit=args.inbox_batch_message_cap)
+    except GmailQuotaExceeded:
+        return defer_gmail_quota("triage_recruiter_inbox list")
 
     if not message_ids:
         print("No messages matched the query.", file=sys.stderr)
@@ -424,19 +429,19 @@ def main(argv: list[str] | None = None) -> int:
     linked_label_id: str | None = None
     linkedin_label_ids: dict[str, str] | None = None
     linkedin_handled_count = 0
-    if not args.dry_run:
-        outcome_label_ids = {
-            outcome: gmail_writer.get_or_create_label(service, label) for outcome, label in _OUTCOME_LABELS.items()
-        }
-        job_digests_label_id = gmail_writer.find_label_id(service, JOB_DIGESTS_LABEL_NAME)
-        linked_label_id = gmail_writer.get_or_create_label(service, gmail_writer.LINKED_LABEL)
-        linkedin_label_ids = {
-            "linked": linked_label_id,
-            "needs_followup": gmail_writer.get_or_create_label(service, gmail_writer.NEEDS_FOLLOWUP_LABEL),
-            "remove": list(outcome_label_ids.values()),
-        }
-
     try:
+        if not args.dry_run:
+            outcome_label_ids = {
+                outcome: gmail_writer.get_or_create_label(service, label) for outcome, label in _OUTCOME_LABELS.items()
+            }
+            job_digests_label_id = gmail_writer.find_label_id(service, JOB_DIGESTS_LABEL_NAME)
+            linked_label_id = gmail_writer.get_or_create_label(service, gmail_writer.LINKED_LABEL)
+            linkedin_label_ids = {
+                "linked": linked_label_id,
+                "needs_followup": gmail_writer.get_or_create_label(service, gmail_writer.NEEDS_FOLLOWUP_LABEL),
+                "remove": list(outcome_label_ids.values()),
+            }
+
         # Dual bound: message list is already capped by inbox_batch_message_cap;
         # wall budget stops mid-list cleanly so a heavy LLM batch does not trip
         # recruiting-automation's hard step_stall_kill (HALT).
@@ -533,6 +538,10 @@ def main(argv: list[str] | None = None) -> int:
                     conn=conn,
                     rejection_cooldown_days=args.rejection_cooldown_days,
                 )
+            except GmailQuotaExceeded:
+                # Do not skip-and-continue: every remaining messages.get
+                # would 403 too. Break the batch; next hour retries.
+                raise
             except Exception as exc:
                 # One bad message (a timed-out API call, a transient Gmail
                 # 5xx, ...) must not take the whole batch down with it —
@@ -709,6 +718,13 @@ def main(argv: list[str] | None = None) -> int:
                 label_applied=_OUTCOME_LABELS[result.outcome],
                 archived=should_archive,
             )
+    except GmailQuotaExceeded:
+        remaining = max(0, len(message_ids) - skipped_already_processed - linked_to_existing_count - linkedin_handled_count - len(results) - len(errored_message_ids))
+        defer_gmail_quota(
+            "triage_recruiter_inbox",
+            processed=len(results),
+            remaining=remaining,
+        )
     finally:
         conn.close()
 

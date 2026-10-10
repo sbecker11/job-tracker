@@ -64,7 +64,8 @@ python scripts/triage_recruiter_inbox.py --dry-run --inbox-batch-message-cap 5
 | List pursue leads | `python scripts/list_leads.py --verdict pursue` |
 | Apply package for one lead | `python scripts/apply_package.py --company "…" --title "…"` |
 | Pending-actions HTML | `python scripts/render_pending_actions.py --no-rescore` |
-| React UI (port 3174) | `./tools/pending-actions-ui-server/install.sh` |
+| React UI (port 3174) | `./tools/pending-actions-ui-server/install.sh` (also installs URL handlers) |
+| Pending Actions URL handlers | `./tools/install-pending-action-handlers.sh` |
 | Coverage | `./scripts/coverage.sh` |
 | Workspace coverage | `../report-coverage.sh` |
 

@@ -8,10 +8,11 @@ export function revealFolderUrl(folderPath?: string): string | null {
   return `revealfolder://reveal?path=${encodeURIComponent(folderPath)}`
 }
 
-/** Export + open this lead's job_conversations ODT (tools/view-communications/). */
+/** Export + open this lead's job_conversations ODT via the local API.
+ * Cursor's embedded browser cannot launch viewcomms:// ("no application set"). */
 export function viewCommunicationsUrl(company?: string, title?: string): string | null {
   if (!company?.trim() || !title?.trim()) return null
-  return `viewcomms://open?company=${encodeURIComponent(company)}&title=${encodeURIComponent(title)}`
+  return `/api/view-comms?company=${encodeURIComponent(company)}&title=${encodeURIComponent(title)}`
 }
 
 export function formatDecidedAt(iso?: string): string {

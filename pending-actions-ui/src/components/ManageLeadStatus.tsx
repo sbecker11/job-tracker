@@ -13,7 +13,7 @@ export const LEAD_STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: 'offered', label: 'Offered' },
   { value: 'accepted', label: 'Accepted' },
   { value: 'started', label: 'Started' },
-  { value: 'skipped', label: 'Skipped' },
+  { value: 'skipped', label: 'Closed - skipped' },
   { value: 'rejected', label: 'Rejected' },
   { value: 'deleted', label: 'Deleted' },
   { value: 'unavailable', label: 'Unavailable' },

@@ -11,10 +11,11 @@ from job_tracker.pipeline.find_mail import (
     search,
     search_db,
 )
-from job_tracker.pipeline.models import JobContact, JobConversation, JobLead, UnmatchedMessage
+from job_tracker.pipeline.models import JobContact, JobConversation, JobDocument, JobLead, UnmatchedMessage
 from job_tracker.pipeline.store import (
     add_job_contact,
     add_job_conversation,
+    add_job_document,
     connect,
     record_unmatched_message,
     upsert_lead,
@@ -117,6 +118,36 @@ def test_search_db_matches_unmatched_from(tmp_path: Path):
     assert any(h["subject"] == "Urgent JD" for h in hits)
 
 
+def test_search_db_collapses_many_conversations_to_one_lead(tmp_path: Path):
+    db = _db(tmp_path)
+    conn = connect(db)
+    key = "artech::data engineer"
+    add_job_contact(
+        conn,
+        JobContact(job_key=key, name="Ramdas Sakthivel", email="ramdas@arthurgrand.com"),
+    )
+    for i, summary in enumerate(("JD", "Rate Confirmation", "Re: Rate Confirmation")):
+        add_job_conversation(
+            conn,
+            JobConversation(
+                job_key=key,
+                message_id=f"m-{i}",
+                summary=summary,
+                body_text=f"From ramdas@arthurgrand.com — {summary}",
+                direction="inbound",
+                channel="email",
+            ),
+        )
+    hits = search_db(conn, "ramdas@arthurgrand.com")
+    conn.close()
+    keyed = [h for h in hits if h.get("job_key") == key]
+    assert len(keyed) == 1
+    assert keyed[0]["comm_count"] == 3
+    assert keyed[0]["subject"] == "Artech — Data Engineer"
+    assert keyed[0]["reveal_url"].startswith("revealfolder://")
+    assert keyed[0]["folder_path"]
+
+
 def test_search_combines_db_and_mocked_imap(tmp_path: Path):
     db = _db(tmp_path)
     conn = connect(db)
@@ -137,11 +168,39 @@ def test_search_combines_db_and_mocked_imap(tmp_path: Path):
             }
         ]
 
-    result = search("Aakriti", conn=conn, imap_search=fake_imap)
+    result = search("Aakriti", conn=conn, imap_search=fake_imap, skip_files=True)
     conn.close()
-    assert result["imap"][0]["folder"] == "INBOX"
+    assert result["imap"] == []  # same sender is already the tracked lead
     assert result["db"]
     assert result["imap_error"] == ""
+
+
+def test_search_keeps_imap_when_sender_is_not_a_tracked_lead(tmp_path: Path):
+    db = _db(tmp_path)
+    conn = connect(db)
+
+    def fake_imap(_query: str):
+        return [
+            {
+                "source": "imap",
+                "when": "before_tick",
+                "from_address": "new.recruiter@example.com",
+                "subject": "New JD",
+                "folder": "INBOX",
+            },
+            {
+                "source": "imap",
+                "when": "before_tick",
+                "from_address": "new.recruiter@example.com",
+                "subject": "Re: New JD",
+                "folder": "INBOX",
+            },
+        ]
+
+    result = search("new.recruiter@example.com", conn=conn, imap_search=fake_imap, skip_files=True)
+    conn.close()
+    assert len(result["imap"]) == 1
+    assert result["imap"][0]["from_address"] == "new.recruiter@example.com"
 
 
 def test_search_skip_imap_still_returns_db(tmp_path: Path):
@@ -151,7 +210,77 @@ def test_search_skip_imap_still_returns_db(tmp_path: Path):
         conn,
         JobContact(job_key="artech::data engineer", name="Aakriti Luitel", email="aakriti.luitel@artech.com"),
     )
-    result = search("Aakriti", conn=conn, skip_imap=True)
+    result = search("Aakriti", conn=conn, skip_imap=True, skip_files=True)
     conn.close()
     assert result["imap"] == []
     assert result["db"]
+
+
+def test_search_db_matches_jd_text_on_skipped_lead(tmp_path: Path):
+    db = tmp_path / "leads.db"
+    conn = connect(db)
+    upsert_lead(
+        conn,
+        JobLead(
+            company="DASH2 Group",
+            title="Software Engineer",
+            source_message_id="m-poelman",
+            source_label="single-jd",
+            status="skipped",
+            jd_text="Follow up from Elder Poelman at the Employment Center.",
+        ),
+    )
+    hits = search_db(conn, "Poelman")
+    conn.close()
+    keyed = [h for h in hits if h.get("company") == "DASH2 Group"]
+    assert keyed
+    assert keyed[0]["status"] == "skipped"
+    assert any("jd_text" in f for f in keyed[0].get("match_fields") or [])
+
+
+def test_search_db_matches_notes_field(tmp_path: Path):
+    db = _db(tmp_path)
+    conn = connect(db)
+    conn.execute(
+        "UPDATE job_leads SET notes = ? WHERE normalized_key = ?",
+        ("Called Elder Poelman back on Friday", "artech::data engineer"),
+    )
+    conn.commit()
+    hits = search_db(conn, "Poelman")
+    conn.close()
+    assert any(h.get("job_key") == "artech::data engineer" for h in hits)
+    assert any(
+        "notes" in f for h in hits for f in (h.get("match_fields") or []) if h.get("job_key") == "artech::data engineer"
+    )
+
+
+def test_search_db_matches_package_file_contents(tmp_path: Path):
+    from job_tracker.pipeline.llm_apply import _safe_filename
+
+    db = _db(tmp_path)
+    conn = connect(db)
+    root = tmp_path / "packages"
+    role = root / _safe_filename("Artech") / _safe_filename("Data Engineer")
+    role.mkdir(parents=True)
+    (role / "Followup.txt").write_text("Elder Poelman asked me to check Mecor.")
+    hits = search_db(conn, "Poelman", output_root=root)
+    conn.close()
+    keyed = [h for h in hits if h.get("job_key") == "artech::data engineer"]
+    assert keyed
+    assert any("Followup.txt" in f for f in keyed[0].get("match_fields") or [])
+
+
+def test_search_db_matches_job_document_file(tmp_path: Path):
+    db = _db(tmp_path)
+    conn = connect(db)
+    doc = tmp_path / "counselor-notes.txt"
+    doc.write_text("Recommendations from John Poelman: Silicon Slopes job board.")
+    add_job_document(
+        conn,
+        JobDocument(job_key="artech::data engineer", doc_type="other", path_or_url=str(doc)),
+    )
+    hits = search_db(conn, "Poelman")
+    conn.close()
+    keyed = [h for h in hits if h.get("job_key") == "artech::data engineer"]
+    assert keyed
+    assert any("job_documents" in f for f in keyed[0].get("match_fields") or [])

@@ -106,3 +106,11 @@ echo "           ${LOG_DIR}/find-mail-api.launchd.{out,err}.log"
 echo ""
 echo "Starts at login/reboot (RunAtLoad) and restarts if it dies (KeepAlive)."
 echo "Stop with: ${ROOT}/stop.sh"
+
+if [[ "${JOB_TRACKER_SKIP_HANDLER_INSTALL:-}" == "1" ]]; then
+  echo "Skipping Pending Actions URL handlers (JOB_TRACKER_SKIP_HANDLER_INSTALL=1)."
+else
+  echo ""
+  echo "Installing Pending Actions URL handlers…"
+  "${ROOT}/../install-pending-action-handlers.sh"
+fi
