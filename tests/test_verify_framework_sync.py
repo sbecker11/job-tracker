@@ -26,6 +26,7 @@ _CLAUDE_FIXTURE = """\
 | **Angular** as load-bearing requirement | Dealbreaker |
 | **.NET / C#** as load-bearing requirement | Dealbreaker |
 | **Onsite-only, not in/near Lehi, UT** | Dealbreaker |
+| **Remote, but must be located in the Eastern time zone** | Dealbreaker |
 | **W2-only** | NOT a concern |
 | **1099 direct-to-individual** | NOT a concern |
 | **US citizen required** | NOT a concern |
@@ -50,6 +51,7 @@ def _minimal_framework() -> dict:
             {"id": "angular", "label": "Angular", "keywords": ["angular"]},
             {"id": "dotnet", "label": ".NET", "keywords": [".net"]},
             {"id": "onsite_only", "label": "Onsite", "keywords": ["onsite only"]},
+            {"id": "eastern_time_required", "label": "Eastern time", "keywords": ["eastern time"]},
         ],
         "not_dealbreakers": [
             {"id": "w2_only", "label": "W2-only"},

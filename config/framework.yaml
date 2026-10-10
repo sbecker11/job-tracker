@@ -86,6 +86,20 @@ dealbreakers:
       - "(on-?site|in-office|in office)[^.]{0,60}(\\b3\\b|\\b4\\b|\\b5\\b|three|four|five)\\+?\\s*days?\\s*(a|per|/)\\s*week"
     min_hits: 1
     verdict: "Dealbreaker — onsite-only, not in/near Lehi, UT"
+  - id: eastern_time_required
+    label: "Remote but must be located in / work Eastern time"
+    # Added 2026-10-09 (Shawn): remote roles that require living in the
+    # Eastern time zone or working Eastern business hours are a skip. Targets
+    # the requirement only — a company merely headquartered on the East
+    # Coast is not a hit. EST/EDT/ET are matched case-sensitively via
+    # (?-i:...) so "et"/"best"/"interest" never fire.
+    keywords:
+      - "(located|locate|reside|residing|resident|based|live|living|candidates)\\b[^.\\n]{0,60}(eastern (standard )?time|\\b(?-i:EST|EDT|ET)\\b|east coast)(?![^.\\n]{0,40}prefer)"
+      - "(eastern (standard )?time|\\b(?-i:EST|EDT|ET)\\b)[^.\\n]{0,15}(time ?zones?|tz)\\b[^.\\n]{0,40}(only|required|must)"
+      - "\\b\\d{1,2}(:\\d{2})?\\s*(am|a\\.m\\.)?\\s*(-|–|to)\\s*\\d{1,2}(:\\d{2})?\\s*(pm|p\\.m\\.)\\s*\\(?(?-i:EST|EDT|ET)\\b"
+      - "(eastern|east coast|\\b(?-i:EST|EDT|ET))\\s*(time\\s*)?\\(?(business|working|work|core|office)\\s*hours"
+    min_hits: 1
+    verdict: "Dealbreaker — remote but restricted to Eastern time zone / hours"
 
 # Explicitly NOT a dealbreaker (CLAUDE.md §3) — never flagged.
 # Documentation for humans + LLM-facing sync; the keyword scorer only

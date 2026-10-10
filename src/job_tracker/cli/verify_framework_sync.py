@@ -30,6 +30,7 @@ _DEALBREAKER_MARKERS: dict[str, tuple[str, ...]] = {
     "angular": ("angular",),
     "dotnet": (".net", "c#"),
     "onsite_only": ("onsite-only", "onsite only"),
+    "eastern_time_required": ("eastern time",),
 }
 
 _NOT_DEALBREAKER_MARKERS: dict[str, tuple[str, ...]] = {
