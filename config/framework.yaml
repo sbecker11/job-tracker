@@ -223,6 +223,8 @@ skills:
     weight: 2
   - keyword: "kubernetes"
     weight: 2
+  - keyword: "terraform"
+    weight: 2
   - keyword: "microservices"
     weight: 2
 
@@ -311,7 +313,6 @@ generic_tech_vocabulary:
   - keyword: "\\bgcp\\b"
   - keyword: "google cloud"
   # Infra / DevOps
-  - keyword: "terraform"
   - keyword: "ansible"
   - keyword: "cloudformation"
   - keyword: "\\bhelm\\b"
