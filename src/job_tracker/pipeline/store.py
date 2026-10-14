@@ -8,6 +8,7 @@ last_seen instead of creating a duplicate row.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -167,7 +168,11 @@ CREATE TABLE IF NOT EXISTS unmatched_messages (
     -- Set when Shawn dismisses a LinkedIn reply card from pending-actions
     -- (2026-08-04) without resolving onto a job — keeps the audit row but
     -- drops it from the unmatched / LinkedIn-replies queues.
-    dismissed_at TEXT
+    dismissed_at TEXT,
+    -- message_id of the newer row in the same conversation (2026-10-14):
+    -- the Gmail-API and IMAP copies of one notification, or an older
+    -- message in the same LinkedIn thread. Hidden from the queue.
+    superseded_by TEXT
 );
 """
 
@@ -283,6 +288,8 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     ("job_conversations", "body_text", "ALTER TABLE job_conversations ADD COLUMN body_text TEXT"),
     # LinkedIn reply-card dismiss from pending-actions (2026-08-04).
     ("unmatched_messages", "dismissed_at", "ALTER TABLE unmatched_messages ADD COLUMN dismissed_at TEXT"),
+    # One open row per conversation (2026-10-14) — see record_unmatched_message().
+    ("unmatched_messages", "superseded_by", "ALTER TABLE unmatched_messages ADD COLUMN superseded_by TEXT"),
     # Duplicate-lead linkage (2026-08-17) — see mark_duplicate()/
     # list_duplicates_of() below. NULL for every lead skipped for its own
     # reasons (dealbreaker, JD mismatch, no longer interested, etc.); only
@@ -1934,11 +1941,109 @@ def is_communication_seen(conn: sqlite3.Connection, message_id: str) -> bool:
     return False
 
 
+# LinkedIn's per-conversation link, present in nearly every InMail /
+# message-reply notification. Stable across every notification about one
+# conversation, unlike the email thread id (each notification is its own
+# email thread) or the From address (a shared relay).
+_LINKEDIN_THREAD_RE = re.compile(r"linkedin\.com/messaging/thread/([A-Za-z0-9_\-=%]+)")
+
+# The Gmail-API and IMAP readers both ingest the same notification under
+# different ids (hex vs imap:<Message-ID>), and detected_at is scan time, so
+# the two copies can land a deferred cycle or two apart.
+_SAME_EMAIL_WINDOW = timedelta(hours=3)
+
+
+def linkedin_thread_key(text: str) -> str:
+    """The LinkedIn conversation id named in `text`, or '' if none."""
+    m = _LINKEDIN_THREAD_RE.search(text or "")
+    return m.group(1) if m else ""
+
+
+def _normalized_subject(subject: str) -> str:
+    return re.sub(r"\W+", " ", (subject or "").lower()).strip()
+
+
+def _is_same_email(a: sqlite3.Row | dict, b: sqlite3.Row | dict) -> bool:
+    """Same sender, same subject, detected within `_SAME_EMAIL_WINDOW` —
+    the fallback for notifications without a LinkedIn conversation link."""
+    if (a["from_address"] or "").strip().lower() != (b["from_address"] or "").strip().lower():
+        return False
+    subject = _normalized_subject(a["subject"])
+    if not subject or subject != _normalized_subject(b["subject"]):
+        return False
+    ta, tb = _parse_iso(a["detected_at"]), _parse_iso(b["detected_at"])
+    return ta is not None and tb is not None and abs(ta - tb) <= _SAME_EMAIL_WINDOW
+
+
+def _same_conversation(a: sqlite3.Row | dict, b: sqlite3.Row | dict) -> bool:
+    ka = linkedin_thread_key(a["body_text"])
+    if ka and ka == linkedin_thread_key(b["body_text"]):
+        return True
+    return _is_same_email(a, b)
+
+
+def find_unmatched_conversation_rows(
+    conn: sqlite3.Connection, row: sqlite3.Row | dict, *, open_only: bool = True
+) -> list[sqlite3.Row]:
+    """Other unmatched_messages rows in the same conversation as `row`: the
+    same LinkedIn conversation link, or the same email ingested twice.
+    `open_only` limits to rows still in the queue (not resolved, dismissed,
+    or superseded)."""
+    clauses = ["message_id != ?"]
+    if open_only:
+        clauses += [
+            "resolved_at IS NULL",
+            "(dismissed_at IS NULL OR dismissed_at = '')",
+            "(superseded_by IS NULL OR superseded_by = '')",
+        ]
+    candidates = conn.execute(
+        f"SELECT * FROM unmatched_messages WHERE {' AND '.join(clauses)}",
+        (row["message_id"],),
+    ).fetchall()
+    return [c for c in candidates if _same_conversation(row, c)]
+
+
+def find_job_by_linkedin_thread(conn: sqlite3.Connection, thread_key: str) -> str | None:
+    """The job_key already holding this LinkedIn conversation (a logged
+    conversation or a resolved unmatched message), only when exactly one
+    live job does. A recruiter pitching two roles in one conversation is
+    left for a human."""
+    if not thread_key:
+        return None
+    pattern = f"%linkedin.com/messaging/thread/{thread_key}%"
+    keys: set[str] = set()
+    for (job_key, body) in conn.execute(
+        "SELECT job_key, body_text FROM job_conversations WHERE body_text LIKE ?", (pattern,)
+    ):
+        if job_key and linkedin_thread_key(body) == thread_key:
+            keys.add(job_key)
+    for (job_key, body) in conn.execute(
+        "SELECT resolved_job_key, body_text FROM unmatched_messages "
+        "WHERE resolved_job_key IS NOT NULL AND body_text LIKE ?",
+        (pattern,),
+    ):
+        if job_key and linkedin_thread_key(body) == thread_key:
+            keys.add(job_key)
+    live = {
+        k
+        for k in keys
+        if conn.execute(
+            "SELECT 1 FROM job_leads WHERE normalized_key = ? AND deleted_at IS NULL", (k,)
+        ).fetchone()
+    }
+    return next(iter(live)) if len(live) == 1 else None
+
+
 def record_unmatched_message(conn: sqlite3.Connection, msg: UnmatchedMessage) -> None:
     """Park a communication that couldn't be matched to any job. Idempotent
     on message_id (INSERT OR IGNORE) — a re-scan that finds the same
-    unresolved message again is a no-op rather than an error."""
-    conn.execute(
+    unresolved message again is a no-op rather than an error.
+
+    Keeps one open row per conversation: older open rows in the same
+    conversation are marked superseded by this one. A second copy of an
+    email that was already dismissed or resolved inherits that outcome
+    instead of reopening the queue."""
+    cur = conn.execute(
         """
         INSERT OR IGNORE INTO unmatched_messages (
             message_id, thread_id, direction, from_address, to_address,
@@ -1956,7 +2061,68 @@ def record_unmatched_message(conn: sqlite3.Connection, msg: UnmatchedMessage) ->
             msg.detected_at,
         ),
     )
+    if cur.rowcount:
+        row = get_unmatched_message(conn, msg.message_id)
+        closed_copy = next(
+            (
+                r
+                for r in find_unmatched_conversation_rows(conn, row, open_only=False)
+                if _is_same_email(row, r) and (r["resolved_at"] or r["dismissed_at"])
+            ),
+            None,
+        )
+        if closed_copy is not None:
+            conn.execute(
+                """
+                UPDATE unmatched_messages
+                   SET resolved_job_key = ?, resolved_at = ?, dismissed_at = ?
+                 WHERE message_id = ?
+                """,
+                (
+                    closed_copy["resolved_job_key"],
+                    closed_copy["resolved_at"],
+                    closed_copy["dismissed_at"],
+                    msg.message_id,
+                ),
+            )
+        else:
+            supersede_unmatched_rows(
+                conn,
+                [r["message_id"] for r in find_unmatched_conversation_rows(conn, row)],
+                by=msg.message_id,
+                commit=False,
+            )
     conn.commit()
+
+
+def supersede_unmatched_rows(
+    conn: sqlite3.Connection, message_ids: list[str], *, by: str, commit: bool = True
+) -> None:
+    """Mark `message_ids` superseded by `by`, re-pointing anything that was
+    already superseded by one of them so every chain ends at an open row."""
+    ids = [m for m in message_ids if m and m != by]
+    if not ids:
+        return
+    placeholders = ",".join("?" for _ in ids)
+    conn.execute(
+        f"UPDATE unmatched_messages SET superseded_by = ? WHERE superseded_by IN ({placeholders})",
+        (by, *ids),
+    )
+    conn.execute(
+        f"UPDATE unmatched_messages SET superseded_by = ? WHERE message_id IN ({placeholders})",
+        (by, *ids),
+    )
+    if commit:
+        conn.commit()
+
+
+def _superseded_ids(conn: sqlite3.Connection, message_id: str) -> list[str]:
+    return [
+        r[0]
+        for r in conn.execute(
+            "SELECT message_id FROM unmatched_messages WHERE superseded_by = ?", (message_id,)
+        )
+    ]
 
 
 def get_unmatched_message(conn: sqlite3.Connection, message_id: str) -> sqlite3.Row | None:
@@ -1970,6 +2136,7 @@ def list_unmatched_messages(
     *,
     include_resolved: bool = False,
     include_dismissed: bool = False,
+    include_superseded: bool = False,
 ) -> list[sqlite3.Row]:
     clauses: list[str] = []
     if not include_resolved:
@@ -1978,6 +2145,8 @@ def list_unmatched_messages(
         # Pre-migration DBs may lack the column briefly; _apply_migrations
         # runs on connect(), so this is safe for callers using connect().
         clauses.append("(dismissed_at IS NULL OR dismissed_at = '')")
+    if not include_superseded:
+        clauses.append("(superseded_by IS NULL OR superseded_by = '')")
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     return list(
         conn.execute(f"SELECT * FROM unmatched_messages {where} ORDER BY detected_at DESC")
@@ -1987,15 +2156,18 @@ def list_unmatched_messages(
 def dismiss_unmatched_message(
     conn: sqlite3.Connection, message_id: str, *, when: str | None = None
 ) -> None:
-    """Park an unmatched InMail as dismissed (LinkedIn reply card). Idempotent."""
-    conn.execute(
-        """
-        UPDATE unmatched_messages
-           SET dismissed_at = COALESCE(dismissed_at, ?)
-         WHERE message_id = ?
-        """,
-        (when or utc_now_iso(), message_id),
-    )
+    """Park an unmatched InMail as dismissed (LinkedIn reply card), along
+    with the rows it superseded. Idempotent."""
+    stamp = when or utc_now_iso()
+    for mid in [message_id, *_superseded_ids(conn, message_id)]:
+        conn.execute(
+            """
+            UPDATE unmatched_messages
+               SET dismissed_at = COALESCE(dismissed_at, ?)
+             WHERE message_id = ?
+            """,
+            (stamp, mid),
+        )
     conn.commit()
 
 
@@ -2202,10 +2374,17 @@ def resolve_unmatched_message(
         ),
     )
 
+    stamp = when or utc_now_iso()
     conn.execute(
         "UPDATE unmatched_messages SET resolved_job_key = ?, resolved_at = ? WHERE message_id = ?",
-        (job_key, when or utc_now_iso(), message_id),
+        (job_key, stamp, message_id),
     )
+    for mid in _superseded_ids(conn, message_id):
+        conn.execute(
+            "UPDATE unmatched_messages SET resolved_job_key = ?, resolved_at = ? "
+            "WHERE message_id = ? AND resolved_at IS NULL",
+            (job_key, stamp, mid),
+        )
     conn.commit()
     return conversation_id
 

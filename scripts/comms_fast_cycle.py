@@ -256,6 +256,9 @@ def collect_alerts(db: Path, before: Snapshot) -> list[dict]:
             """
             SELECT message_id, from_address, subject
             FROM unmatched_messages
+            WHERE resolved_at IS NULL
+              AND (dismissed_at IS NULL OR dismissed_at = '')
+              AND (superseded_by IS NULL OR superseded_by = '')
             ORDER BY rowid DESC
             LIMIT 200
             """
@@ -263,6 +266,15 @@ def collect_alerts(db: Path, before: Snapshot) -> list[dict]:
         for r in unmatched:
             mid = str(r["message_id"])
             if mid in before.unmatched_ids:
+                continue
+            # Second copy of an email we already alerted on (Gmail + IMAP).
+            if conn.execute(
+                """
+                SELECT 1 FROM unmatched_messages
+                WHERE superseded_by = ? AND from_address = ? AND subject = ?
+                """,
+                (mid, r["from_address"], r["subject"]),
+            ).fetchone():
                 continue
             subj = (r["subject"] or "").strip() or "(no subject)"
             frm = (r["from_address"] or "").strip() or "unknown"

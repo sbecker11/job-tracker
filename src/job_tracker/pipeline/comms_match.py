@@ -11,6 +11,10 @@ incident. Tiers, cheapest/most-certain first:
    the candidate's own workflow change: always reply within the existing
    Gmail/LinkedIn thread, and always name the company + title in outgoing
    cold-outreach bodies (see CLAUDE.md-adjacent chat history, 2026-07-17).
+1b. LinkedIn conversation link (`linkedin.com/messaging/thread/<id>`) already
+   on exactly one job (2026-10-14). Every LinkedIn notification is its own
+   email thread and comes from a shared relay, so Tiers 1-2 can never link
+   a follow-up InMail; the conversation link can.
 2. Sender/recipient address already on file as a job_contacts.email — free.
 3. (opt-in, costs money) LLM-extracted company/title from the body,
    fuzzy-matched against job_leads via the same machinery
@@ -41,7 +45,7 @@ from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_EXTRAC
 from job_tracker.pipeline.llm_extract import extract_roles_llm_cached
 from job_tracker.pipeline.qualifying_reply import extract_role_heuristic
 
-MatchTier = str  # "thread_id" | "contact_email" | "named_end_client" | "llm_company_title" | "llm_company_only" | "llm_new_lead" | "heuristic_company_title" | "heuristic_new_lead" | "unmatched"
+MatchTier = str  # "thread_id" | "linkedin_thread" | "contact_email" | "named_end_client" | "llm_company_title" | "llm_company_only" | "llm_new_lead" | "heuristic_company_title" | "heuristic_new_lead" | "unmatched"
 
 # Recruiter/agency umbrella leads (PCC "end-client TBD", staffing firms).
 # When a later message in that thread names a different existing company+title
@@ -204,6 +208,17 @@ def match_message_to_job(
             message,
             tier="thread_id",
             reason=f"thread_id {message.thread_id!r} already linked to this job",
+        )
+
+    li_thread = store.linkedin_thread_key(message.combined_text or "")
+    job_key = store.find_job_by_linkedin_thread(conn, li_thread)
+    if job_key:
+        return _prefer_named_end_client(
+            conn,
+            job_key,
+            message,
+            tier="linkedin_thread",
+            reason=f"LinkedIn conversation {li_thread[:24]}… already linked to this job",
         )
 
     other_address = message.from_address if direction == "inbound" else message.to_address
