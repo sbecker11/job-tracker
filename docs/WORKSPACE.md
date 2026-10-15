@@ -31,9 +31,8 @@ mail arrives
 
 ## New-machine install
 
-Paths below use `$WORKSPACE` — on mini2 that’s usually  
-`~/workspace-recruiting-automation`; on mini1 via SMB it may be  
-`/Volumes/sbecker11/workspace-recruiting-automation`.  
+Paths below use `$WORKSPACE` — normally  
+`~/workspace-recruiting-automation` on mini1, the machine that runs the pipeline.  
 You can also export:
 
 ```bash
@@ -68,7 +67,7 @@ for r in comms-migration job-tracker recruiting-automation; do
 done
 ```
 
-**Fix all three siblings** (run on mini1, mini2, or any machine with clones):
+**Fix all three siblings** (run on any machine with clones):
 
 ```bash
 git -C "$WORKSPACE/job-tracker" remote set-url origin git@github.com:sbecker11/job-tracker.git

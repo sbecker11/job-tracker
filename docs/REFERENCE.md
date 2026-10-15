@@ -105,9 +105,8 @@ but a fresh clone anywhere else needs one manual step — see below.
 
 ### Decrypting `.env` on a new machine
 
-On a brand-new clone of this repo (a different Mac, referred to elsewhere in
-these notes as "mini2"; a CI runner; anywhere the key hasn't been registered
-yet), `.env` in the working tree is opaque ciphertext until unlocked:
+On a brand-new clone of this repo (a different Mac, a CI runner, anywhere
+the key hasn't been registered yet), `.env` in the working tree is opaque ciphertext until unlocked:
 
 1. **Install `git-crypt`** on that machine (not needed on this one, where
    it's already installed and registered):
