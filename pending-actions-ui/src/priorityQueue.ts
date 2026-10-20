@@ -103,6 +103,7 @@ export interface ContactPriorityItem {
   todayRank?: number
   staleActive?: boolean
   declineGreeting?: string
+  followupDraft?: string
   postDecline?: boolean
   declineReasonLabel?: string
   termsChanged?: boolean
@@ -276,12 +277,16 @@ function fromClarify(c: ClarifyItem): ContactPriorityItem {
 
 function todayFields(
   src: TodayFields,
-): Pick<ContactPriorityItem, 'todayTier' | 'todayLabel' | 'todayRank' | 'declineGreeting'> {
+): Pick<
+  ContactPriorityItem,
+  'todayTier' | 'todayLabel' | 'todayRank' | 'declineGreeting' | 'followupDraft'
+> {
   return {
     todayTier: src.todayTier,
     todayLabel: src.todayLabel,
     todayRank: src.todayRank,
     declineGreeting: src.declineGreeting,
+    followupDraft: src.followupDraft,
   }
 }
 

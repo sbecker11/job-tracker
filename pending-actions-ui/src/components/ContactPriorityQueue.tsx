@@ -2,8 +2,8 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { ChannelBadge } from './ChannelBadge'
 import { DuplicateBadge } from './DuplicateBadge'
-import { DeclineLead, type DeclineReasonOption } from './DeclineLead'
-import { LEAD_STATUS_OPTIONS, ManageLeadStatus } from './ManageLeadStatus'
+import { DeclineLeadForm, type DeclineReasonOption } from './DeclineLead'
+import { LEAD_STATUS_OPTIONS, ManageLeadForm, type FollowupTarget } from './ManageLeadStatus'
 import {
   formatDecidedAt,
   gmailComposeUrl,
@@ -73,6 +73,20 @@ function mailtoUrl(item: ContactPriorityItem): string | null {
   if (!item.recruiterEmail) return null
   const subject = [item.company, item.title].filter(Boolean).join(' ')
   return gmailComposeUrl(item.recruiterEmail, `RE: ${subject}`, item.draftReply || '')
+}
+
+function followupTarget(item: ContactPriorityItem): FollowupTarget | undefined {
+  if (!item.followupDraft) return undefined
+  const subject = [item.company, item.title].filter(Boolean).join(' ')
+  const realEmail = item.recruiterEmail && !item.emailIsLinkedInRelay ? item.recruiterEmail : undefined
+  return {
+    draft: item.followupDraft,
+    channel:
+      item.channel === 'linkedin' || item.emailIsLinkedInRelay ? 'linkedin' : realEmail ? 'email' : 'other',
+    threadUrl: item.threadUrl,
+    composeTo: realEmail,
+    subject: `RE: ${subject}`,
+  }
 }
 
 function mailtoLabel(item: ContactPriorityItem): string {
@@ -149,6 +163,9 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
   onLeadActioned,
 }: Props) {
   const [expandedId, setExpandedId] = useState('')
+  const [leadPanel, setLeadPanel] = useState<{ id: string; kind: 'decline' | 'manage' } | null>(null)
+  const toggleLeadPanel = (id: string, kind: 'decline' | 'manage') =>
+    setLeadPanel((cur) => (cur?.id === id && cur.kind === kind ? null : { id, kind }))
   const [copiedId, setCopiedId] = useState('')
   const [query, setQuery] = useState('')
 
@@ -292,6 +309,10 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
             item.stage === 'send_resume' ||
             (item.stage === 'wait_schedule' && item.followUpDue))
         const highlighted = Boolean(item.normalizedKey) && item.normalizedKey === highlightKey
+        const canDecline =
+          !item.postDecline &&
+          Boolean(item.normalizedKey && item.declineGreeting && declineReasons.length)
+        const panelKind = leadPanel?.id === item.id ? leadPanel.kind : null
         const tierHeading =
           showTierHeadings &&
           item.todayLabel &&
@@ -455,32 +476,32 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     </button>
                   )}
                 </div>
-                <p className="next-action">{nextAction}</p>
-                <div className="priority-meta">
-                  {item.recruiterName && <span>{item.recruiterName}</span>}
-                  {item.recruiterPhone &&
-                    (phoneHref ? (
-                      <a className="phone-link" href={phoneHref} title="Call">
-                        {item.recruiterPhone}
-                      </a>
-                    ) : (
-                      <span>{item.recruiterPhone}</span>
-                    ))}
-                  {item.recruiterEmail && (
-                    <span title={item.recruiterEmail}>
-                      {mailtoLabel(item)}
-                      {item.emailIsLinkedInRelay ? '' : ` · ${item.recruiterEmail}`}
-                    </span>
-                  )}
-                  <span>
-                    {item.contactAttempts
-                      ? `${item.contactAttempts}× human contact · ${item.ageDays}d`
-                      : `${item.ageDays}d`}
-                    {item.waitingDays != null ? ` · waiting ${item.waitingDays}d` : ''}
-                    {item.decidedAt ? ` · decided ${formatDecidedAt(item.decidedAt)}` : ''}
-                    {item.commCount != null ? ` · ${item.commCount} messages` : ''}
+              </div>
+              <p className="next-action priority-wide">{nextAction}</p>
+              <div className="priority-meta priority-wide">
+                {item.recruiterName && <span>{item.recruiterName}</span>}
+                {item.recruiterPhone &&
+                  (phoneHref ? (
+                    <a className="phone-link" href={phoneHref} title="Call">
+                      {item.recruiterPhone}
+                    </a>
+                  ) : (
+                    <span>{item.recruiterPhone}</span>
+                  ))}
+                {item.recruiterEmail && (
+                  <span title={item.recruiterEmail}>
+                    {mailtoLabel(item)}
+                    {item.emailIsLinkedInRelay ? '' : ` · ${item.recruiterEmail}`}
                   </span>
-                </div>
+                )}
+                <span>
+                  {item.contactAttempts
+                    ? `${item.contactAttempts}× human contact · ${item.ageDays}d`
+                    : `${item.ageDays}d`}
+                  {item.waitingDays != null ? ` · waiting ${item.waitingDays}d` : ''}
+                  {item.decidedAt ? ` · decided ${formatDecidedAt(item.decidedAt)}` : ''}
+                  {item.commCount != null ? ` · ${item.commCount} messages` : ''}
+                </span>
               </div>
               <div className="priority-actions">
                 {item.company && item.title ? (
@@ -540,21 +561,47 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     Reopen
                   </a>
                 )}
-                {!item.postDecline && (
-                  <DeclineLead
+                {canDecline && (
+                  <button
+                    type="button"
+                    className="btn link muted"
+                    onClick={() => toggleLeadPanel(item.id, 'decline')}
+                  >
+                    {panelKind === 'decline' ? 'Decline ▲' : 'Decline ▾'}
+                  </button>
+                )}
+                {item.normalizedKey && (
+                  <button
+                    type="button"
+                    className="btn link muted"
+                    onClick={() => toggleLeadPanel(item.id, 'manage')}
+                  >
+                    {panelKind === 'manage' ? 'Manage lead ▲' : 'Manage lead ▾'}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {panelKind && item.normalizedKey && (
+              <div className="lead-panel">
+                {panelKind === 'decline' ? (
+                  <DeclineLeadForm
                     item={item}
                     reasons={declineReasons}
                     closing={declineClosing}
                     onClosed={() => onLeadActioned?.(item.id, true)}
                   />
+                ) : (
+                  <ManageLeadForm
+                    normalizedKey={item.normalizedKey}
+                    currentStatus={item.status}
+                    onApplied={() => onLeadActioned?.(item.id, false)}
+                    onCancel={() => setLeadPanel(null)}
+                    followup={followupTarget(item)}
+                  />
                 )}
-                <ManageLeadStatus
-                  normalizedKey={item.normalizedKey}
-                  currentStatus={item.status}
-                  onApplied={() => onLeadActioned?.(item.id, false)}
-                />
               </div>
-            </div>
+            )}
 
             {showDetail && item.stage === 'clarify' && (
               <div className="priority-detail">

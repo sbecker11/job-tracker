@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ContactFilterBar, statusFilterOptions } from './components/ContactFilterBar'
 import { ContactPriorityQueue } from './components/ContactPriorityQueue'
+import { DeclineReasonsContext } from './lib/declineReasons'
 import { FindMailSearch } from './components/FindMailSearch'
 import { ScheduleHealthBanner } from './components/ScheduleHealthBanner'
 import { scrollToLeadRow } from './lib/links'
@@ -21,7 +22,7 @@ import {
   type LeadSort,
   type StatusFilter,
 } from './priorityQueue'
-import type { WorkflowPayload } from './types'
+import type { DeclineReason, WorkflowPayload } from './types'
 import './App.css'
 
 const DATA_URL = '/pending-actions.json'
@@ -46,6 +47,7 @@ const REGEN_POLL_MS = 1500
  * could realistically have new data" is fine and keeps a left-open tab
  * from ever drifting more than ~1 minute stale. */
 const BACKGROUND_REFRESH_MS = 60_000
+const NO_DECLINE_REASONS: DeclineReason[] = []
 /** Delay before the auto-Regenerate after a Decline/Dismiss/Manage-lead click,
  * so the helper app's database write lands before the page is rebuilt. */
 const ACTION_REGEN_DELAY_MS = 3_000
@@ -533,6 +535,7 @@ export default function App() {
     : ''
 
   return (
+    <DeclineReasonsContext.Provider value={data?.declineReasons ?? NO_DECLINE_REASONS}>
     <div className="app">
       <header className="top">
         <div>
@@ -688,5 +691,6 @@ export default function App() {
         ↑ Back to top
       </button>
     </div>
+    </DeclineReasonsContext.Provider>
   )
 }

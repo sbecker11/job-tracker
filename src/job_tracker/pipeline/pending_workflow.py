@@ -346,15 +346,24 @@ def draft_wait_followup_message(
     title: str = "",
     waiting_days: int = 0,
 ) -> str:
-    """Short status-check-in when Wait has exceeded the follow-up threshold."""
-    who = (recruiter_name or "").strip() or "there"
-    role_bits = " — ".join(p for p in (title.strip(), company.strip()) if p)
-    role_clause = f" on the {role_bits} role" if role_bits else ""
-    days_bit = f" ({waiting_days} days)" if waiting_days > 0 else ""
+    """Short status check-in (Wait past the follow-up threshold, or Manage Lead → Following up)."""
+    from job_tracker.pipeline.decline import clean_role_fields, first_name
+
+    who = first_name(recruiter_name)
+    company, title = clean_role_fields(company, title)
+    if title and company:
+        role_clause = f" on the {title} role at {company}"
+    elif title:
+        role_clause = f" on the {title} role"
+    elif company:
+        role_clause = f" on the role at {company}"
+    else:
+        role_clause = ""
+    days_bit = f"It's been {waiting_days} days since I last reached out, so I " if waiting_days > 0 else "I "
     return (
         f"Hi {who},\n\n"
-        f"Just bumping this{role_clause} — checking whether there's any update"
-        f"{days_bit}, or if you need anything else from me.\n\n"
+        f"Just checking in{role_clause}. {days_bit}wanted to see whether there's any update, "
+        f"or if you need anything else from me.\n\n"
         f"Best,\nShawn"
     )
 
@@ -1752,6 +1761,12 @@ def build_workflow_payload(
                 recruiter_name=item.get("recruiterName") or "",
                 company=item.get("company") or "",
                 title=item.get("title") or "",
+            )
+            item["followupDraft"] = draft_wait_followup_message(
+                recruiter_name=item.get("recruiterName") or "",
+                company=item.get("company") or "",
+                title=item.get("title") or "",
+                waiting_days=int(item.get("waitingDays") or 0),
             )
     annotate_today_order(
         clarify=clarify,

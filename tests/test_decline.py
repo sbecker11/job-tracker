@@ -68,6 +68,15 @@ def test_company_ending_in_a_period_is_not_doubled():
     assert "role at Next Level, Inc. After reviewing" in letter
 
 
+def test_placeholder_title_and_client_are_left_out():
+    letter = draft_decline_letter(
+        "location", recruiter_name="Karth", company="North Grand Technology (end-client TBD)", title="Role TBD"
+    )
+    assert "Thank you for reaching out about the role at North Grand Technology. I'm only" in letter
+    letter = draft_decline_letter("location", company="Anna (end-client TBD)", title="Role TBD")
+    assert "Thank you for reaching out about the role at Anna." in letter
+
+
 def test_other_reason_uses_the_note_and_requires_one():
     letter = draft_decline_letter("other", recruiter_name="", note="I've just accepted another offer.")
     assert letter.startswith("Hi there,\n\nThank you for reaching out.")

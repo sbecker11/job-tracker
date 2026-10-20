@@ -723,9 +723,16 @@ th.num {
 
 .priority-main {
   display: grid;
-  grid-template-columns: 36px 1fr auto;
-  gap: 10px;
+  grid-template-columns: 36px 1fr;
+  column-gap: 10px;
+  row-gap: 4px;
   align-items: start;
+}
+
+/* "YOUR ACTION", the contact line, and the buttons each get the card's full width. */
+.priority-main > .priority-wide,
+.priority-main > .priority-actions {
+  grid-column: 1 / -1;
 }
 
 .priority-rank {
@@ -927,8 +934,10 @@ th.num {
 .priority-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
-  justify-content: flex-end;
+  justify-content: flex-start;
+  margin-top: 6px;
 }
 
 .priority-detail {
@@ -1428,9 +1437,9 @@ th.num {
 
 .manage-lead-form {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1457,12 +1466,40 @@ th.num {
   flex: 1 1 auto;
 }
 
-.decline-lead-form {
-  max-width: 34rem;
+.lead-panel {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.lead-panel .manage-lead-form {
+  max-width: 48rem;
+}
+
+.lead-panel-title {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.lead-panel-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.manage-lead-reason-field {
+  flex: 1 1 16rem;
+}
+
+.manage-lead-reason-field .manage-lead-reason {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .decline-lead-form .decline-preview {
-  flex: 1 1 100%;
   margin: 0;
   white-space: pre-wrap;
   font-size: 0.8rem;
@@ -1484,4 +1521,25 @@ th.num {
   color: #c8f0d0;
   border-color: #3a8a50;
   background: #102a18;
+}
+
+.followup-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.followup-edit {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  font: inherit;
+  font-size: 0.8rem;
+  resize: vertical;
+}
+
+.followup-preview .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }

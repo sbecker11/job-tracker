@@ -36,12 +36,11 @@ interface Props {
   onClosed?: () => void
 }
 
-/** "Decline" — draft a "no thank you" letter for one of the canned reasons,
- * send it yourself (copy / thread / Gmail compose), then close the lead as
- * skipped with that reason via `declinelead://` (tools/decline-lead/ →
+/** "Decline Lead" form — draft a "no thank you" letter for one of the canned
+ * reasons, send it yourself (copy / thread / Gmail compose), then close the
+ * lead as skipped with that reason via `declinelead://` (tools/decline-lead/ →
  * `decline-lead`). Leads with no recruiter get "Skip without letter". */
-export function DeclineLead({ item, reasons, closing, onClosed }: Props) {
-  const [open, setOpen] = useState(false)
+export function DeclineLeadForm({ item, reasons, closing, onClosed }: Props) {
   const [code, setCode] = useState(reasons[0]?.code || 'not_qualified')
   const [note, setNote] = useState('')
   const [copied, setCopied] = useState(false)
@@ -68,12 +67,9 @@ export function DeclineLead({ item, reasons, closing, onClosed }: Props) {
       : null
 
   return (
-    <div className="manage-lead decline-lead">
-      <button type="button" className="btn link muted" onClick={() => setOpen((o) => !o)}>
-        {open ? 'Decline ▲' : 'Decline ▾'}
-      </button>
-      {open && (
-        <div className="manage-lead-form decline-lead-form">
+    <div className="manage-lead-form decline-lead-form">
+      <h4 className="lead-panel-title">Decline Lead</h4>
+      <div className="lead-panel-fields">
           <label className="manage-lead-field">
             <span>Reason</span>
             <select
@@ -90,20 +86,24 @@ export function DeclineLead({ item, reasons, closing, onClosed }: Props) {
               ))}
             </select>
           </label>
-          <input
-            className="manage-lead-reason"
-            type="text"
-            placeholder={
-              reason.code === 'other'
-                ? 'Reason sentence for the letter (required)'
-                : 'Note for the lead record (optional)'
-            }
-            value={note}
-            onChange={(e) => {
-              setNote(e.target.value)
-              setClosed('')
-            }}
-          />
+          <label className="manage-lead-field manage-lead-reason-field">
+            <span>{reason.code === 'other' ? 'Reason sentence' : 'Note'}</span>
+            <input
+              className="manage-lead-reason"
+              type="text"
+              placeholder={
+                reason.code === 'other'
+                  ? 'Goes into the letter (required)'
+                  : 'Optional — saved on the lead, not in the letter'
+              }
+              value={note}
+              onChange={(e) => {
+                setNote(e.target.value)
+                setClosed('')
+              }}
+            />
+          </label>
+      </div>
           {hasRecruiter && !needsNote && <pre className="draft decline-preview">{letter}</pre>}
           <div className="actions">
             {hasRecruiter && (
@@ -159,8 +159,6 @@ export function DeclineLead({ item, reasons, closing, onClosed }: Props) {
               </a>
             )}
           </div>
-        </div>
-      )}
     </div>
   )
 }

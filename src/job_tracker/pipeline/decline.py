@@ -89,16 +89,40 @@ def decline_reason(code: str) -> DeclineReason:
         raise ValueError(f"unknown decline reason {code!r} (expected one of {sorted(_BY_CODE)})") from exc
 
 
-def decline_greeting(*, recruiter_name: str = "", company: str = "", title: str = "") -> str:
-    who = (recruiter_name or "").strip().split()[0] if (recruiter_name or "").strip() else "there"
-    if "@" in who:
-        who = "there"
+# Lead fields the pipeline fills in before a recruiter names the role/client,
+# e.g. "Role TBD" or "North Grand Technology (end-client TBD)".
+_PLACEHOLDER_RE = re.compile(r"(?i)\b(tbd|unknown|n/a)\b")
+_PLACEHOLDER_PAREN_RE = re.compile(r"\s*\([^)]*\b(?:tbd|unknown)\b[^)]*\)", re.IGNORECASE)
+
+
+def first_name(recruiter_name: str) -> str:
+    """Greeting name: "Kimber Gabryszak" -> "Kimber"; blank or an email -> "there"."""
+    parts = (recruiter_name or "").strip().split()
+    if not parts or "@" in parts[0]:
+        return "there"
+    return parts[0]
+
+
+def clean_role_fields(company: str = "", title: str = "") -> tuple[str, str]:
+    """Drop pipeline placeholders ("Role TBD", "(end-client TBD)") before they reach a message."""
     title = (title or "").strip()
-    company = (company or "").strip()
+    if _PLACEHOLDER_RE.search(title):
+        title = ""
+    company = _PLACEHOLDER_PAREN_RE.sub("", company or "").strip()
+    if _PLACEHOLDER_RE.search(company):
+        company = ""
+    return company, title
+
+
+def decline_greeting(*, recruiter_name: str = "", company: str = "", title: str = "") -> str:
+    who = first_name(recruiter_name)
+    company, title = clean_role_fields(company, title)
     if title and company:
         about = f" about the {title} role at {company}"
-    elif title or company:
-        about = f" about the {title or company} role"
+    elif title:
+        about = f" about the {title} role"
+    elif company:
+        about = f" about the role at {company}"
     else:
         about = ""
     end = "" if about.endswith(".") else "."
@@ -131,9 +155,8 @@ def terms_changed(code: str, reply_text: str) -> bool:
 
 
 def draft_post_decline_reply(*, recruiter_name: str = "", company: str = "", title: str = "") -> str:
-    who = (recruiter_name or "").strip().split()[0] if (recruiter_name or "").strip() else "there"
-    if "@" in who:
-        who = "there"
+    who = first_name(recruiter_name)
+    _, title = clean_role_fields("", title)
     role = f" on the {title} role" if title else ""
     return (
         f"Hi {who},\n\nThanks for getting back to me. My answer{role} is the same for now, "

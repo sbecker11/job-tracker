@@ -79,6 +79,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             args.append("--reason")
             args.append(reason)
         }
+        if let channel = value("sent_channel"), !channel.isEmpty,
+           let message = value("sent_message"), !message.isEmpty {
+            args += ["--sent-channel", channel, "--sent-message", message]
+        }
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: config.binPath)

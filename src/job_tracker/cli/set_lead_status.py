@@ -14,8 +14,15 @@ import argparse
 import sys
 from pathlib import Path
 
-from job_tracker.pipeline.models import LEAD_STAGES
-from job_tracker.pipeline.store import DEFAULT_DB_PATH, advance_status, append_lead_note, connect
+from job_tracker.pipeline.models import LEAD_STAGES, JobConversation
+from job_tracker.pipeline.store import (
+    DEFAULT_DB_PATH,
+    add_job_conversation,
+    advance_status,
+    append_lead_note,
+    connect,
+    utc_now_iso,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -29,6 +36,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional free-text reason, appended to job_leads.notes as a timestamped line",
     )
     ap.add_argument("--on", help="ISO date/timestamp for the stage column (default: now)")
+    ap.add_argument(
+        "--sent-channel",
+        choices=("linkedin", "email", "other"),
+        help="Also log --sent-message as an outbound message on this channel (restarts the wait clock)",
+    )
+    ap.add_argument("--sent-message", default="", help="Text Shawn sent (with --sent-channel)")
     args = ap.parse_args(argv)
 
     if not Path(args.db).exists():
@@ -44,7 +57,26 @@ def main(argv: list[str] | None = None) -> int:
         conn.close()
         return 1
 
+    if args.sent_channel and not args.sent_message.strip():
+        print("--sent-channel needs --sent-message.", file=sys.stderr)
+        conn.close()
+        return 1
+
     prior_status = row["status"]
+    if args.sent_channel:
+        when = args.on or utc_now_iso()
+        add_job_conversation(
+            conn,
+            JobConversation(
+                job_key=args.key,
+                message_id=f"status-sent:{args.key}:{when}",
+                channel=args.sent_channel,
+                direction="outbound",
+                summary=f"Sent with status {args.status} (pending-actions)",
+                occurred_at=when,
+                body_text=args.sent_message.strip(),
+            ),
+        )
     # force=True: this is always a deliberate human action (CLI or the UI's
     # Manage-lead control), same reasoning as list_leads.py --set-status —
     # unlike pipeline callers, it may legitimately revive an off-ramp lead
@@ -53,6 +85,8 @@ def main(argv: list[str] | None = None) -> int:
     note = f"Status changed {prior_status} -> {args.status}"
     if args.reason.strip():
         note += f": {args.reason.strip()}"
+    if args.sent_channel:
+        note += f" (message sent via {args.sent_channel})"
     append_lead_note(conn, args.key, note)
     conn.close()
 

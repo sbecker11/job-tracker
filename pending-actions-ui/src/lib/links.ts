@@ -55,8 +55,19 @@ export function helperQuery(params: Record<string, string | undefined>): string 
 }
 
 /** Lead status change via tools/set-lead-status/ (`set-lead-status`). */
-export function leadStatusUrl(key: string, status: string, reason: string): string {
-  return `leadstatus://set?${helperQuery({ key, status, reason: reason.trim() })}`
+export function leadStatusUrl(
+  key: string,
+  status: string,
+  reason: string,
+  sent?: { channel: string; message: string },
+): string {
+  return `leadstatus://set?${helperQuery({
+    key,
+    status,
+    reason: reason.trim(),
+    sent_channel: sent?.channel,
+    sent_message: sent?.message.trim(),
+  })}`
 }
 
 export function formatDecidedAt(iso?: string): string {

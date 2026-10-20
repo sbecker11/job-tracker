@@ -92,3 +92,73 @@ def test_set_lead_status_missing_db_returns_error(tmp_path: Path, capsys):
     )
     assert rc == 1
     assert "No leads DB found" in capsys.readouterr().err
+
+
+def test_set_lead_status_with_sent_message_logs_outbound_and_starts_wait(tmp_path: Path):
+    db = tmp_path / "leads.db"
+    conn = connect(db)
+    lead = _make_lead(conn, status="applied")
+    conn.close()
+
+    rc = set_lead_status_main(
+        [
+            "--db", str(db),
+            "--key", lead.normalized_key,
+            "--status", "following_up",
+            "--sent-channel", "linkedin",
+            "--sent-message", "Hi Kimber,\n\nJust bumping this.\n\nBest,\nShawn",
+            "--on", "2026-10-20T19:30:00+00:00",
+        ]
+    )
+    assert rc == 0
+    conn = connect(db)
+    row = conn.execute(
+        "SELECT status, awaiting_response_since, notes FROM job_leads WHERE normalized_key = ?",
+        (lead.normalized_key,),
+    ).fetchone()
+    assert row["status"] == "following_up"
+    assert row["awaiting_response_since"] == "2026-10-20T19:30:00+00:00"
+    assert "applied -> following_up (message sent via linkedin)" in row["notes"]
+    conv = conn.execute(
+        "SELECT direction, channel, body_text FROM job_conversations WHERE job_key = ?",
+        (lead.normalized_key,),
+    ).fetchone()
+    assert (conv["direction"], conv["channel"]) == ("outbound", "linkedin")
+    assert conv["body_text"].startswith("Hi Kimber,")
+    conn.close()
+
+
+def test_set_lead_status_sent_channel_requires_message(tmp_path: Path, capsys):
+    db = tmp_path / "leads.db"
+    conn = connect(db)
+    lead = _make_lead(conn, status="applied")
+    conn.close()
+    rc = set_lead_status_main(
+        ["--db", str(db), "--key", lead.normalized_key, "--status", "following_up", "--sent-channel", "email"]
+    )
+    assert rc == 1
+    conn = connect(db)
+    assert conn.execute(
+        "SELECT status FROM job_leads WHERE normalized_key = ?", (lead.normalized_key,)
+    ).fetchone()["status"] == "applied"
+    conn.close()
+
+
+def test_followup_draft_uses_first_name_and_drops_placeholders():
+    from job_tracker.pipeline.pending_workflow import draft_wait_followup_message
+
+    msg = draft_wait_followup_message(
+        recruiter_name="Kimber Gabryszak",
+        company="North Grand Technology (end-client TBD)",
+        title="Role TBD",
+        waiting_days=9,
+    )
+    assert msg.startswith(
+        "Hi Kimber,\n\nJust checking in on the role at North Grand Technology. "
+        "It's been 9 days since I last reached out, so I wanted to see"
+    )
+    assert "TBD" not in msg
+    assert draft_wait_followup_message(title="Data Engineer", company="Acme").startswith(
+        "Hi there,\n\nJust checking in on the Data Engineer role at Acme. I wanted to see"
+    )
+    assert msg.endswith("Best,\nShawn")

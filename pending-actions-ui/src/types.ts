@@ -30,6 +30,8 @@ export interface TodayFields {
   /** "Hi Ed,\n\nThank you for reaching out about the … role at …." — the
    * Decline form appends the chosen reason sentence + closing. */
   declineGreeting?: string
+  /** Check-in draft shown when Manage Lead's status is set to Following up. */
+  followupDraft?: string
 }
 
 /** One "no thank you" reason (job_tracker.pipeline.decline.DECLINE_REASONS). */
