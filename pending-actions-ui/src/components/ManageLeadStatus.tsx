@@ -44,6 +44,9 @@ function statusLabel(value: string): string {
   return LEAD_STATUS_OPTIONS.find((o) => o.value === value)?.label || value
 }
 
+/** Pseudo-status: log a reply without changing the lead's status. */
+const REPLY_STATUS = '__reply__'
+
 /** Pseudo-status: not a lead stage — routes to the decline letter flow (→ skipped). */
 const DECLINE_STATUS = '__decline__'
 
@@ -73,6 +76,17 @@ export interface MessageTarget {
   subject: string
   /** False when there's no recruiter at all — Decline can only skip. */
   hasRecruiter: boolean
+}
+
+/** Lets Manage Lead offer "Reply — with message" on a card where the
+ * recruiter is waiting on Shawn (Clarify). */
+export interface ReplyTarget {
+  draft: string
+  /** The recruiter's message being answered, shown under the draft. */
+  original?: string
+  from?: string
+  /** Called after Message sent is clicked (the helper app does the write). */
+  onSent?: () => void
 }
 
 /** Lets Manage Lead offer "Decline — with message" (job_tracker.pipeline.decline). */
@@ -129,22 +143,26 @@ export function ManageLeadForm({
   onCancel,
   message,
   followupDraft,
+  reply,
   decline,
   initialStatus,
 }: Props & {
   normalizedKey: string
   message?: MessageTarget
   followupDraft?: string
+  reply?: ReplyTarget
   decline?: DeclineTarget
   /** Preselected status (e.g. Follow up on a card whose follow-up is due). */
   initialStatus?: string
 }) {
   const reasons = useContext(DeclineReasonsContext)
-  const startStatus = initialStatus || ''
+  const canReply = Boolean(reply?.draft && message)
+  const startStatus = initialStatus || (canReply ? REPLY_STATUS : '')
   const [status, setStatus] = useState(startStatus)
   const [reasonCode, setReasonCode] = useState(reasons[0]?.code || 'other')
   const [customReason, setCustomReason] = useState('')
   const [followupText, setFollowupText] = useState(followupDraft || '')
+  const [replyText, setReplyText] = useState(reply?.draft || '')
   const [letterEdit, setLetterEdit] = useState<string | null>(null)
   const [sent, setSent] = useState('')
   const [copied, setCopied] = useState(false)
@@ -153,6 +171,7 @@ export function ManageLeadForm({
   const declining = canDecline && status === DECLINE_STATUS
   const canFollowUp = Boolean(followupDraft && message)
   const followingUp = canFollowUp && status === 'following_up'
+  const replying = canReply && status === REPLY_STATUS
 
   const reason = reasons.find((r) => r.code === reasonCode) || reasons[0]
   const isOther = reason?.code === 'other'
@@ -161,15 +180,17 @@ export function ManageLeadForm({
     ? `${decline.greeting} ${isOther ? customReason.trim() : reason?.sentence || ''} ${decline.closing}`
     : ''
   const letterText = letterEdit ?? generatedLetter
-  const text = declining ? letterText : followupText
-  const setText = declining ? setLetterEdit : setFollowupText
-  const composing = (declining && message?.hasRecruiter) || followingUp
+  const text = declining ? letterText : replying ? replyText : followupText
+  const setText = declining ? setLetterEdit : replying ? setReplyText : setFollowupText
+  const composing = (declining && message?.hasRecruiter) || followingUp || replying
+  const messageMode = declining || followingUp || replying
 
   const reset = () => {
     setStatus(startStatus)
     setReasonCode(reasons[0]?.code || 'other')
     setCustomReason('')
     setFollowupText(followupDraft || '')
+    setReplyText(reply?.draft || '')
     setLetterEdit(null)
     setSent('')
   }
@@ -204,8 +225,9 @@ export function ManageLeadForm({
                 <option value="reopened">Reopen</option>
               </optgroup>
             )}
-            {(canFollowUp || canDecline) && (
+            {(canReply || canFollowUp || canDecline) && (
               <optgroup label="Send a message">
+                {canReply && <option value={REPLY_STATUS}>Reply — with message</option>}
                 {canFollowUp && <option value="following_up">Follow up — with message</option>}
                 {canDecline && <option value={DECLINE_STATUS}>Decline — with message</option>}
               </optgroup>
@@ -256,12 +278,12 @@ export function ManageLeadForm({
             />
           </label>
         )}
-        {!declining && !followingUp && !status && (
+        {!messageMode && !status && (
           <span className="btn disabled" title="Choose a status first">
             Apply
           </span>
         )}
-        {!declining && !followingUp && status && (
+        {!messageMode && status && (
           <a
             className={`btn${sent ? ' muted' : ''}`}
             href={leadStatusUrl(normalizedKey, status, '')}
@@ -270,7 +292,7 @@ export function ManageLeadForm({
             {sent ? (onApplied ? 'Applied ✓' : 'Applied ✓ — Regenerate to see it') : 'Apply'}
           </a>
         )}
-        {!declining && !followingUp && (
+        {!messageMode && (
           <button
             type="button"
             className="btn link muted"
@@ -298,6 +320,12 @@ export function ManageLeadForm({
               }}
             />
           </label>
+          {replying && reply?.original?.trim() && (
+            <details className="original-message">
+              <summary>Original message from {reply.from || 'recruiter'}</summary>
+              <pre className="draft original-message-body">{reply.original}</pre>
+            </details>
+          )}
           <div className="actions">
             <button
               type="button"
@@ -328,6 +356,19 @@ export function ManageLeadForm({
                 title="After you send it: log the message and close the lead as skipped with this reason"
               >
                 {sent === 'decline' ? 'Message sent ✓' : 'Message sent'}
+              </a>
+            )}
+            {text.trim() && replying && (
+              <a
+                className={`btn${sent === 'reply' ? ' muted' : ''}`}
+                href={leadStatusUrl(normalizedKey, currentStatus || 'new', '', {
+                  channel: message.channel,
+                  message: text,
+                })}
+                onClick={markSent('reply', reply?.onSent)}
+                title="After you send it: log your reply (status stays the same) and start waiting on the recruiter"
+              >
+                {sent === 'reply' ? 'Message sent ✓' : 'Message sent'}
               </a>
             )}
             {text.trim() && followingUp && (

@@ -295,10 +295,16 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
         const companyText = item.company || ''
         const titleText = item.title || ''
         const fallbackName = item.recruiterName || '(unnamed lead)'
-        const nextAction =
-          item.nextAction ||
-          item.actionHint ||
-          'YOUR ACTION: See stage chip and use the buttons on the right.'
+        // Clarify rows with a lead record reply from Manage lead; keyless
+        // ones (unmatched InMails) keep Copy reply / Show steps / Reply sent.
+        const replyInPanel = item.stage === 'clarify' && Boolean(item.normalizedKey && item.draftReply)
+        const nextAction = replyInPanel
+          ? `YOUR ACTION: ${item.recruiterName || 'The recruiter'} is waiting on you${
+              item.unansweredDays != null ? ` (${item.unansweredDays}d)` : ''
+            } — Manage lead opens on Reply: edit the message, paste it into the thread and send, then click Message sent`
+          : item.nextAction ||
+            item.actionHint ||
+            'YOUR ACTION: See stage chip and use the buttons on the right.'
         const ackKey = replyAckKey(item)
         const replyAcknowledged = Boolean(replySentDone[ackKey])
         const replyScanning = replyScanningId === item.id
@@ -447,7 +453,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                       {item.duplicateOfCompany ? ` @ ${item.duplicateOfCompany}` : ''}
                     </a>
                   )}
-                  {item.replyDue && onReplySent && (
+                  {item.replyDue && onReplySent && !replyInPanel && (
                     <button
                       type="button"
                       className="btn link regen-btn reply-sent-btn"
@@ -502,7 +508,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                 {item.company && item.title ? (
                   <HistoryLink company={item.company} title={item.title} />
                 ) : null}
-                {item.stage === 'clarify' && item.draftReply && (
+                {item.stage === 'clarify' && item.draftReply && !replyInPanel && (
                   <button
                     type="button"
                     className="btn"
@@ -515,7 +521,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     {copiedId === item.id ? 'Copied' : 'Copy reply'}
                   </button>
                 )}
-                {(item.stage === 'clarify' || item.stage === 'send_resume') && (
+                {((item.stage === 'clarify' && !replyInPanel) || item.stage === 'send_resume') && (
                   <button
                     type="button"
                     className="btn"
@@ -564,6 +570,16 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     onCancel={() => setLeadPanel(null)}
                     message={messageTarget(item)}
                     followupDraft={item.followupDraft}
+                    reply={
+                      replyInPanel
+                        ? {
+                            draft: item.draftReply || '',
+                            original: item.messageBody,
+                            from: item.recruiterName,
+                            onSent: () => onLeadActioned?.(item.id, true),
+                          }
+                        : undefined
+                    }
                     decline={
                       canDecline && item.declineGreeting
                         ? {

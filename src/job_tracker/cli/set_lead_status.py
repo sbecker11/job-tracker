@@ -97,11 +97,14 @@ def main(argv: list[str] | None = None) -> int:
             (args.on or utc_now_iso(), args.key),
         )
     conn.commit()
-    note = f"Status changed {prior_status} -> {target}"
+    if args.sent_channel and prior_status == target:
+        note = f"Message sent via {args.sent_channel} (status unchanged: {target})"
+    else:
+        note = f"Status changed {prior_status} -> {target}"
+        if args.sent_channel:
+            note += f" (message sent via {args.sent_channel})"
     if args.reason.strip():
         note += f": {args.reason.strip()}"
-    if args.sent_channel:
-        note += f" (message sent via {args.sent_channel})"
     append_lead_note(conn, args.key, note)
     conn.close()
 
