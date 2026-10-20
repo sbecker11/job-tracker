@@ -22,6 +22,7 @@ HANDLERS=(
   dismiss-linkedin-reply
   mark-package-sent
   set-lead-status
+  decline-lead
 )
 
 CONSOLE_SCRIPTS=(
@@ -30,6 +31,7 @@ CONSOLE_SCRIPTS=(
   dismiss-linkedin-reply
   mark-package-sent
   set-lead-status
+  decline-lead
 )
 
 if ! command -v swiftc >/dev/null 2>&1; then

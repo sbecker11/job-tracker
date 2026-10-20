@@ -102,6 +102,10 @@ export interface ContactPriorityItem {
   todayLabel?: string
   todayRank?: number
   staleActive?: boolean
+  declineGreeting?: string
+  postDecline?: boolean
+  declineReasonLabel?: string
+  termsChanged?: boolean
 }
 
 const STAGE_RANK: Record<string, number> = {
@@ -263,12 +267,22 @@ function fromClarify(c: ClarifyItem): ContactPriorityItem {
     duplicateCount: c.duplicateCount,
     duplicateKeys: c.duplicateKeys,
     status: c.status,
+    postDecline: c.postDecline,
+    declineReasonLabel: c.declineReasonLabel,
+    termsChanged: c.termsChanged,
     ...todayFields(c),
   }
 }
 
-function todayFields(src: TodayFields): Pick<ContactPriorityItem, 'todayTier' | 'todayLabel' | 'todayRank'> {
-  return { todayTier: src.todayTier, todayLabel: src.todayLabel, todayRank: src.todayRank }
+function todayFields(
+  src: TodayFields,
+): Pick<ContactPriorityItem, 'todayTier' | 'todayLabel' | 'todayRank' | 'declineGreeting'> {
+  return {
+    todayTier: src.todayTier,
+    todayLabel: src.todayLabel,
+    todayRank: src.todayRank,
+    declineGreeting: src.declineGreeting,
+  }
 }
 
 function fromSendResume(s: SendResumeItem): ContactPriorityItem {

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { ClarifyItem } from '../types'
+import { helperQuery } from '../lib/links'
 import { ChannelBadge } from './ChannelBadge'
 
 async function copyText(text: string) {
@@ -8,11 +9,7 @@ async function copyText(text: string) {
 
 function dismissUrl(item: ClarifyItem): string | null {
   const kind = item.normalizedKey ? 'lead' : item.kind === 'unmatched' ? 'unmatched' : 'lead'
-  const params = new URLSearchParams()
-  params.set('kind', kind)
-  if (item.normalizedKey) params.set('key', item.normalizedKey)
-  if (item.messageId) params.set('message_id', item.messageId)
-  return `dlr://dismiss?${params.toString()}`
+  return `dlr://dismiss?${helperQuery({ kind, key: item.normalizedKey, message_id: item.messageId })}`
 }
 
 export function ClarifyQueue({ items }: { items: ClarifyItem[] }) {

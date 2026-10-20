@@ -27,9 +27,25 @@ export interface TodayFields {
   todayTier?: number
   todayLabel?: string
   todayRank?: number
+  /** "Hi Ed,\n\nThank you for reaching out about the … role at …." — the
+   * Decline form appends the chosen reason sentence + closing. */
+  declineGreeting?: string
+}
+
+/** One "no thank you" reason (job_tracker.pipeline.decline.DECLINE_REASONS). */
+export interface DeclineReason {
+  code: string
+  label: string
+  sentence: string
 }
 
 export interface ClarifyItem extends TodayFields {
+  /** Recruiter replied after Shawn declined this (now skipped) lead. */
+  postDecline?: boolean
+  declineReason?: string
+  declineReasonLabel?: string
+  /** Reply mentions the thing Shawn declined on (rate, length, remote, …). */
+  termsChanged?: boolean
   kind: string
   stage: string
   channel: Channel
@@ -200,6 +216,8 @@ export interface WorkflowPayload {
   generatedAt: string
   folderRoot?: string
   waitFollowupDays?: number
+  declineReasons?: DeclineReason[]
+  declineClosing?: string
   pipeline: PipelineStage[]
   stages: {
     clarify: ClarifyItem[]

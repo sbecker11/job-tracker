@@ -1456,3 +1456,32 @@ th.num {
   min-width: 14rem;
   flex: 1 1 auto;
 }
+
+.decline-lead-form {
+  max-width: 34rem;
+}
+
+.decline-lead-form .decline-preview {
+  flex: 1 1 100%;
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 0.8rem;
+}
+
+.decline-lead-form .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pkg-chip.declined {
+  color: #d8d8e0;
+  border-color: #5a5a70;
+  background: #1c1c26;
+}
+
+.pkg-chip.terms-changed {
+  color: #c8f0d0;
+  border-color: #3a8a50;
+  background: #102a18;
+}

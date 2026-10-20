@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { leadStatusUrl } from '../lib/links'
 
 /** Mirrors job_tracker.pipeline.models.LEAD_STAGES — kept as a plain literal
  * list here (not fetched from the backend) since the set of valid statuses
@@ -20,20 +21,14 @@ export const LEAD_STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: 'hired', label: 'Hired' },
 ]
 
-function leadStatusUrl(key: string, status: string, reason: string): string {
-  const params = new URLSearchParams()
-  params.set('key', key)
-  params.set('status', status)
-  if (reason.trim()) params.set('reason', reason.trim())
-  return `leadstatus://set?${params.toString()}`
-}
-
 interface Props {
   normalizedKey?: string
   /** Preselects the dropdown when the caller already knows the lead's
    * current status (e.g. Archived/Duplicates-skipped rows) — purely a UX
    * nicety, not required for the action itself. */
   currentStatus?: string
+  /** Called when Apply is clicked (the helper app does the actual write). */
+  onApplied?: () => void
 }
 
 /** "Manage lead" — a self-service status-change control, added 2026-08-26
@@ -46,7 +41,7 @@ interface Props {
  * résumé, Wait/schedule, Decide/apply, Duplicates skipped, Archived)
  * instead of a separate full lead-editing panel, which is a much larger
  * scope that was discussed before but never actually shipped. */
-export function ManageLeadStatus({ normalizedKey, currentStatus }: Props) {
+export function ManageLeadStatus({ normalizedKey, currentStatus, onApplied }: Props) {
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState(currentStatus || 'applied')
   const [reason, setReason] = useState('')
@@ -94,7 +89,10 @@ export function ManageLeadStatus({ normalizedKey, currentStatus }: Props) {
           <a
             className={`btn${sent ? ' muted' : ''}`}
             href={leadStatusUrl(normalizedKey, status, reason)}
-            onClick={() => setSent(true)}
+            onClick={() => {
+              setSent(true)
+              onApplied?.()
+            }}
           >
             {sent ? 'Applied ✓ — Regenerate to see it' : 'Apply'}
           </a>

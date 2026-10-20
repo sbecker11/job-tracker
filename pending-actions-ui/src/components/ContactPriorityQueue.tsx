@@ -2,8 +2,16 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { ChannelBadge } from './ChannelBadge'
 import { DuplicateBadge } from './DuplicateBadge'
+import { DeclineLead, type DeclineReasonOption } from './DeclineLead'
 import { LEAD_STATUS_OPTIONS, ManageLeadStatus } from './ManageLeadStatus'
-import { formatDecidedAt, leadAnchorHref, leadAnchorId } from '../lib/links'
+import {
+  formatDecidedAt,
+  gmailComposeUrl,
+  helperQuery,
+  leadAnchorHref,
+  leadAnchorId,
+  leadStatusUrl,
+} from '../lib/links'
 import { HistoryLink } from './HistoryLink'
 import {
   replyAckKey,
@@ -52,11 +60,7 @@ async function copyText(text: string) {
 function dismissUrl(item: ContactPriorityItem): string | null {
   if (item.stage !== 'clarify') return null
   const kind = item.normalizedKey ? 'lead' : item.kind === 'unmatched' ? 'unmatched' : 'lead'
-  const params = new URLSearchParams()
-  params.set('kind', kind)
-  if (item.normalizedKey) params.set('key', item.normalizedKey)
-  if (item.messageId) params.set('message_id', item.messageId)
-  return `dlr://dismiss?${params.toString()}`
+  return `dlr://dismiss?${helperQuery({ kind, key: item.normalizedKey, message_id: item.messageId })}`
 }
 
 function revealFolderUrl(folderPath: string | undefined): string | null {
@@ -64,35 +68,11 @@ function revealFolderUrl(folderPath: string | undefined): string | null {
   return `revealfolder://reveal?path=${encodeURIComponent(folderPath)}`
 }
 
-/**
- * shawn.becker@spexture.com's Gmail account-switcher slot (the "u/1" in
- * https://mail.google.com/mail/u/1/...) — matches how Shawn already signs into
- * this account in Chrome, so compose opens from the right sender.
- */
-const RECRUITER_REPLY_ACCOUNT_SLOT = 1
-
-/**
- * The recruiting-automation's tracked inbox (RECRUITING_GMAIL_USER in
- * reply_continuity.py). BCC'd on every recruiter-email send so the Sent-folder
- * scanner (comms_fast_cycle.py) can see this reply even though it's sent from
- * the Spexture account, not this inbox itself.
- */
-const RECRUITER_REPLY_BCC = 'shawnbecker.recruiting@gmail.com'
-
 /** Opens Gmail compose in the browser (Chrome), pre-filled from this lead, instead of mailto:. */
 function mailtoUrl(item: ContactPriorityItem): string | null {
   if (!item.recruiterEmail) return null
   const subject = [item.company, item.title].filter(Boolean).join(' ')
-  const params = new URLSearchParams({
-    view: 'cm',
-    fs: '1',
-    tf: '1',
-    to: item.recruiterEmail,
-    bcc: RECRUITER_REPLY_BCC,
-    su: `RE: ${subject}`,
-    body: item.draftReply || '',
-  })
-  return `https://mail.google.com/mail/u/${RECRUITER_REPLY_ACCOUNT_SLOT}/?${params.toString()}`
+  return gmailComposeUrl(item.recruiterEmail, `RE: ${subject}`, item.draftReply || '')
 }
 
 function mailtoLabel(item: ContactPriorityItem): string {
@@ -109,10 +89,8 @@ function telHref(phone: string | undefined): string | null {
 function markSentHref(item: ContactPriorityItem): string | null {
   if (item.markSentUrl) return item.markSentUrl
   if (!item.normalizedKey) return null
-  const params = new URLSearchParams()
-  params.set('key', item.normalizedKey)
-  params.set('channel', item.channel === 'linkedin' ? 'linkedin' : 'email')
-  return `mps://mark?${params.toString()}`
+  const channel = item.channel === 'linkedin' ? 'linkedin' : 'email'
+  return `mps://mark?${helperQuery({ key: item.normalizedKey, channel })}`
 }
 
 interface Props {
@@ -134,6 +112,19 @@ interface Props {
   onJumpToResult?: (result: GlobalSearchResult) => void
   /** Group rows under "Reply to recruiter" / "Apply" / … headings (priority sort only). */
   showTierHeadings?: boolean
+  /** Canned "no thank you" reasons + closing for the Decline form. */
+  declineReasons?: DeclineReasonOption[]
+  declineClosing?: string
+  /** A Decline / Dismiss / Manage-lead link was clicked on this row; `hide`
+   * drops the row until newer page data arrives. */
+  onLeadActioned?: (itemId: string, hide: boolean) => void
+}
+
+const NO_DECLINE_REASONS: DeclineReasonOption[] = []
+
+function reopenUrl(item: ContactPriorityItem): string | null {
+  if (!item.postDecline || !item.normalizedKey) return null
+  return leadStatusUrl(item.normalizedKey, 'pursued', 'Reopened after recruiter replied to decline')
 }
 
 // Memoized: this list can run to hundreds of rows, and App re-renders every
@@ -153,6 +144,9 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
   searchIndex = [],
   onJumpToResult,
   showTierHeadings = false,
+  declineReasons = NO_DECLINE_REASONS,
+  declineClosing = '',
+  onLeadActioned,
 }: Props) {
   const [expandedId, setExpandedId] = useState('')
   const [copiedId, setCopiedId] = useState('')
@@ -413,6 +407,14 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                       {item.unansweredDays != null ? ` · ${item.unansweredDays}d` : ''}
                     </span>
                   )}
+                  {item.postDecline && (
+                    <span className="pkg-chip declined">
+                      Declined: {item.declineReasonLabel || 'skipped'}
+                    </span>
+                  )}
+                  {item.postDecline && item.termsChanged && (
+                    <span className="pkg-chip terms-changed">Terms may have changed</span>
+                  )}
                   {item.resumeRequested && item.stage === 'decide_apply' && (
                     <span className="pkg-chip missing">Recruiter asked for résumé</span>
                   )}
@@ -529,7 +531,28 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     Apply
                   </a>
                 )}
-                <ManageLeadStatus normalizedKey={item.normalizedKey} currentStatus={item.status} />
+                {reopenUrl(item) && (
+                  <a
+                    className="btn"
+                    href={reopenUrl(item)!}
+                    title="Move this lead back to Pursued so it re-enters the normal flow"
+                  >
+                    Reopen
+                  </a>
+                )}
+                {!item.postDecline && (
+                  <DeclineLead
+                    item={item}
+                    reasons={declineReasons}
+                    closing={declineClosing}
+                    onClosed={() => onLeadActioned?.(item.id, true)}
+                  />
+                )}
+                <ManageLeadStatus
+                  normalizedKey={item.normalizedKey}
+                  currentStatus={item.status}
+                  onApplied={() => onLeadActioned?.(item.id, false)}
+                />
               </div>
             </div>
 
@@ -560,7 +583,11 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     <span className="btn disabled">Reply in Gmail</span>
                   ) : null}
                   {dismissUrl(item) && (
-                    <a className="btn link muted" href={dismissUrl(item)!}>
+                    <a
+                      className="btn link muted"
+                      href={dismissUrl(item)!}
+                      onClick={() => onLeadActioned?.(item.id, true)}
+                    >
                       Dismiss / marked replied
                     </a>
                   )}

@@ -517,6 +517,8 @@ def build_clarify_queue(
             gmail_url=item.get("gmailUrl") or "",
             screen_first=screen_first,
         )
+        if item.get("postDecline") and item.get("nextAction"):
+            next_action = item["nextAction"]
         item["nextAction"] = next_action
         item["actionHint"] = next_action
         queue.append(item)
@@ -768,6 +770,89 @@ def build_clarify_queue(
                 "contactAttempts": len(_human_inbound_conversations(convs)),
                 "replyDue": True,
                 "unansweredDays": unanswered_days,
+                "actionHint": next_action,
+                "nextAction": next_action,
+            }
+        )
+
+    # Recruiter wrote back after Shawn declined — skipped leads are excluded
+    # above, so without this the reply (often a better offer) is invisible.
+    from job_tracker.pipeline.decline import (
+        decline_reason,
+        draft_post_decline_reply,
+        terms_changed,
+    )
+
+    for r in conn.execute(
+        """
+        SELECT normalized_key, company, title, source_label, first_seen,
+               decline_reason, decline_note, declined_at
+        FROM job_leads
+        WHERE deleted_at IS NULL AND status = 'skipped' AND declined_at IS NOT NULL
+        """
+    ):
+        key = r["normalized_key"]
+        if key in seen_keys:
+            continue
+        convs = list(list_job_conversations(conn, key))
+        unanswered = _unanswered_inbound(convs)
+        if unanswered is None or (unanswered["occurred_at"] or "") <= (r["declined_at"] or ""):
+            continue
+        unanswered_days = age_days_fn(unanswered["occurred_at"], now)
+        if unanswered_days > _REPLY_DUE_MAX_AGE_DAYS:
+            continue
+        code = r["decline_reason"] or "other"
+        try:
+            label = decline_reason(code).label
+        except ValueError:
+            label = code
+        if code == "other" and (r["decline_note"] or "").strip():
+            label = f"Other: {r['decline_note'].strip()}"
+        body = unanswered["body_text"] or ""
+        changed = terms_changed(code, f"{unanswered['summary'] or ''}\n{body}")
+        recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
+        channel = _channel_from_addresses(
+            thread_url=_thread_url_for_lead(convs), source_label=r["source_label"] or ""
+        )
+        if email and not _is_system_email(email) and not email_is_li_relay:
+            channel = "email"
+        who = recruiter or "the recruiter"
+        lead_in = (
+            "may have changed the terms you declined on — read it, then Reopen if it's now a fit"
+            if changed
+            else "read it; Reopen if it changes things, otherwise Copy reply or Dismiss"
+        )
+        next_action = (
+            f"YOUR ACTION: {who} replied after you declined ({label}) {unanswered_days}d ago — {lead_in}."
+        )
+        _add(
+            {
+                "kind": "lead",
+                "stage": "clarify",
+                "channel": channel,
+                "recruiterName": recruiter,
+                "recruiterEmail": email,
+                "recruiterPhone": phone,
+                "emailIsLinkedInRelay": email_is_li_relay,
+                "subject": unanswered["summary"] or r["title"] or "",
+                "company": r["company"] or "",
+                "title": r["title"] or "",
+                "threadUrl": _thread_url_for_lead(convs),
+                "draftReply": draft_post_decline_reply(
+                    recruiter_name=recruiter, company=r["company"] or "", title=r["title"] or ""
+                ),
+                "messageBody": clean_message_body_for_display(body),
+                "ageDays": age_days_fn(r["first_seen"], now),
+                "messageId": unanswered["message_id"] or "",
+                "normalizedKey": key,
+                "replyId": f"post-decline:{key}",
+                "contactAttempts": len(_human_inbound_conversations(convs)),
+                "replyDue": True,
+                "unansweredDays": unanswered_days,
+                "postDecline": True,
+                "declineReason": code,
+                "declineReasonLabel": label,
+                "termsChanged": changed,
                 "actionHint": next_action,
                 "nextAction": next_action,
             }
@@ -1659,6 +1744,15 @@ def build_workflow_payload(
     for bucket in decide_apply.values():
         status_items.extend(bucket)
     _attach_lead_statuses(status_items, conn)
+    from job_tracker.pipeline.decline import DECLINE_CLOSING, DECLINE_REASONS, decline_greeting
+
+    for item in status_items:
+        if item.get("normalizedKey") and not item.get("postDecline"):
+            item["declineGreeting"] = decline_greeting(
+                recruiter_name=item.get("recruiterName") or "",
+                company=item.get("company") or "",
+                title=item.get("title") or "",
+            )
     annotate_today_order(
         clarify=clarify,
         send_resume=send_resume,
@@ -1689,6 +1783,10 @@ def build_workflow_payload(
             __import__("job_tracker.pipeline.llm_apply", fromlist=["DEFAULT_OUTPUT_ROOT"]).DEFAULT_OUTPUT_ROOT
         ),
         "waitFollowupDays": _wait_followup_days(),
+        "declineReasons": [
+            {"code": r.code, "label": r.label, "sentence": r.sentence} for r in DECLINE_REASONS
+        ],
+        "declineClosing": DECLINE_CLOSING,
         "pipeline": pipeline,
         "stages": {
             "clarify": clarify,

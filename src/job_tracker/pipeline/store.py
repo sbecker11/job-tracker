@@ -298,6 +298,11 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # answerable after the fact — a plain `status='skipped'` alone doesn't
     # say why.
     ("job_leads", "duplicate_of_key", "ALTER TABLE job_leads ADD COLUMN duplicate_of_key TEXT"),
+    # Structured "why I said no" (pipeline/decline.py) so a recruiter's
+    # later reply can be checked against the term that was declined on.
+    ("job_leads", "decline_reason", "ALTER TABLE job_leads ADD COLUMN decline_reason TEXT"),
+    ("job_leads", "decline_note", "ALTER TABLE job_leads ADD COLUMN decline_note TEXT"),
+    ("job_leads", "declined_at", "ALTER TABLE job_leads ADD COLUMN declined_at TEXT"),
 ]
 
 # models.LEAD_STAGES -> the timestamp column stamped when a lead enters that

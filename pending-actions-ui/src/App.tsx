@@ -46,6 +46,9 @@ const REGEN_POLL_MS = 1500
  * could realistically have new data" is fine and keeps a left-open tab
  * from ever drifting more than ~1 minute stale. */
 const BACKGROUND_REFRESH_MS = 60_000
+/** Delay before the auto-Regenerate after a Decline/Dismiss/Manage-lead click,
+ * so the helper app's database write lands before the page is rebuilt. */
+const ACTION_REGEN_DELAY_MS = 3_000
 /** Inbound message ids whose Reply sent already completed (survives refresh). */
 const REPLY_SENT_ACK_STORAGE_KEY = 'pending-actions.replySentAck'
 
@@ -300,6 +303,27 @@ export default function App() {
   }, [highlightKey])
 
   const busy = regenerating || Boolean(replyScanningId) || triagingImap
+  const busyRef = useRef(busy)
+  busyRef.current = busy
+
+  /** Row id → click time. A row stays hidden only while the page data predates
+   * the click, so it comes back if the helper app never ran. */
+  const [hiddenAt, setHiddenAt] = useState<Record<string, number>>({})
+  const actionRegenRef = useRef<number | null>(null)
+  useEffect(() => () => {
+    if (actionRegenRef.current) window.clearTimeout(actionRegenRef.current)
+  }, [])
+  const onLeadActioned = useCallback((itemId: string, hide: boolean) => {
+    if (hide) setHiddenAt((prev) => ({ ...prev, [itemId]: Date.now() }))
+    if (actionRegenRef.current) window.clearTimeout(actionRegenRef.current)
+    actionRegenRef.current = window.setTimeout(() => {
+      actionRegenRef.current = null
+      if (busyRef.current) return
+      setError('')
+      setRegenerating(true)
+      fireCustomUrl(REGEN_HREF)
+    }, ACTION_REGEN_DELAY_MS)
+  }, [])
 
   // Background auto-refresh (2026-08-18): pending-actions.json is otherwise
   // only fetched once on mount, then again whenever a button-triggered
@@ -437,14 +461,13 @@ export default function App() {
   )
   const counts = useMemo(() => contactQueueCounts(priorityAll), [priorityAll])
   const byStatus = useMemo(() => statusCounts(priorityAll), [priorityAll])
-  const filtered = useMemo(
-    () =>
-      sortPriorityQueue(
-        filterPriorityQueue(priorityAll, filter, statusFilter, duplicatesFocusKey),
-        leadSort,
-      ),
-    [priorityAll, filter, statusFilter, duplicatesFocusKey, leadSort],
-  )
+  const filtered = useMemo(() => {
+    const generatedMs = data?.generatedAt ? new Date(data.generatedAt).getTime() : 0
+    return sortPriorityQueue(
+      filterPriorityQueue(priorityAll, filter, statusFilter, duplicatesFocusKey),
+      leadSort,
+    ).filter((item) => !(hiddenAt[item.id] && generatedMs < hiddenAt[item.id]))
+  }, [priorityAll, filter, statusFilter, duplicatesFocusKey, leadSort, hiddenAt, data?.generatedAt])
   const statusOptions = useMemo(
     () => statusFilterOptions(byStatus, counts.all, priorityAll.length),
     [byStatus, counts.all, priorityAll.length],
@@ -620,6 +643,9 @@ export default function App() {
           )}
 
           <ContactPriorityQueue
+            declineReasons={data.declineReasons}
+            declineClosing={data.declineClosing}
+            onLeadActioned={onLeadActioned}
             items={filtered}
             filterLabel={filterLabel}
             onReplySent={onReplySent}

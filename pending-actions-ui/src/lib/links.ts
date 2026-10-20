@@ -15,6 +15,50 @@ export function viewCommunicationsUrl(company?: string, title?: string): string 
   return `/api/view-comms?company=${encodeURIComponent(company)}&title=${encodeURIComponent(title)}`
 }
 
+/**
+ * shawn.becker@spexture.com's Gmail account-switcher slot (the "u/1" in
+ * https://mail.google.com/mail/u/1/...) — matches how Shawn already signs into
+ * this account in Chrome, so compose opens from the right sender.
+ */
+const RECRUITER_REPLY_ACCOUNT_SLOT = 1
+
+/**
+ * The recruiting-automation's tracked inbox (RECRUITING_GMAIL_USER in
+ * reply_continuity.py). BCC'd on every recruiter-email send so the Sent-folder
+ * scanner (comms_fast_cycle.py) can see this reply even though it's sent from
+ * the Spexture account, not this inbox itself.
+ */
+const RECRUITER_REPLY_BCC = 'shawnbecker.recruiting@gmail.com'
+
+/** Gmail compose in the browser (Chrome) from the Spexture account, BCC'ing the tracked inbox. */
+export function gmailComposeUrl(to: string, subject: string, body: string): string {
+  const params = new URLSearchParams({
+    view: 'cm',
+    fs: '1',
+    tf: '1',
+    to,
+    bcc: RECRUITER_REPLY_BCC,
+    su: subject,
+    body,
+  })
+  return `https://mail.google.com/mail/u/${RECRUITER_REPLY_ACCOUNT_SLOT}/?${params.toString()}`
+}
+
+/** Query string for the tools/<name>/ URL-scheme helpers. Not URLSearchParams:
+ * its "+" for spaces survives Swift's URLComponents.queryItems as a literal
+ * "+", so a normalized key like "acme::data engineer" would never match. */
+export function helperQuery(params: Record<string, string | undefined>): string {
+  return Object.entries(params)
+    .filter(([, v]) => v != null && v !== '')
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v!)}`)
+    .join('&')
+}
+
+/** Lead status change via tools/set-lead-status/ (`set-lead-status`). */
+export function leadStatusUrl(key: string, status: string, reason: string): string {
+  return `leadstatus://set?${helperQuery({ key, status, reason: reason.trim() })}`
+}
+
 export function formatDecidedAt(iso?: string): string {
   if (!iso) return '—'
   const d = new Date(iso)
