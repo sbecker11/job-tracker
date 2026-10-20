@@ -86,7 +86,7 @@ class MatchOutcome:
         )
 
 
-def _outcome_from_role(conn: sqlite3.Connection, role: ExtractedRole, *, source: str) -> MatchOutcome | None:
+def outcome_from_role(conn: sqlite3.Connection, role: ExtractedRole, *, source: str) -> MatchOutcome | None:
     """Map a full/partial ExtractedRole onto match tiers. Returns None if the
     role has neither company nor title worth acting on."""
     if role.company and role.title:
@@ -235,9 +235,9 @@ def match_message_to_job(
 
     # Free heuristic before paid LLM (2026-08-04): structured InMails with
     # Position: + agency Inc line become stub leads without API spend.
-    heuristic = extract_role_heuristic(message.combined_text or "")
+    heuristic = extract_role_heuristic(message.combined_text or "", subject=message.subject or "")
     if heuristic is not None:
-        outcome = _outcome_from_role(conn, heuristic, source="heuristic")
+        outcome = outcome_from_role(conn, heuristic, source="heuristic")
         if outcome is not None:
             return outcome
 
@@ -249,7 +249,7 @@ def match_message_to_job(
         return MatchOutcome(None, "unmatched", "no thread/contact match; LLM found no company/title in body")
 
     role = max(roles, key=lambda r: r.confidence)
-    outcome = _outcome_from_role(conn, role, source="llm")
+    outcome = outcome_from_role(conn, role, source="llm")
     if outcome is not None:
         return outcome
 

@@ -64,6 +64,44 @@ def test_extract_role_heuristic_madhvendra():
 
 def test_extract_role_heuristic_evan_thin_pitch_returns_none():
     assert extract_role_heuristic(EVAN) is None
+    assert extract_role_heuristic(EVAN, subject="AI Engineer Job Opportunity") is None
+
+
+GRANT = """
+Sr. Analytics Engineer - Remote - FTE
+
+        Grant Naudet
+        Reply
+        https://www.linkedin.com/messaging/thread/2-ZWU4OWZlYTQtYzA3Yi00ODVjLWE0ZjUtMWZiY2M1ZDliNTBhXzEwMA==/
+
+I'm partnering with a higher education client to fill two full-time Analytics Engineer opportunities.
+
+Analytics Engineer III — Requirements
+* Advanced SQL and Python skills, with dbt or similar transformation tools.
+
+Grant Naudet
+Sourcing Recruiter
+GNaudet@remycorp.com
+Remy Corporation
+www.remycorp.com
+
+----------------------------------------
+
+This email was intended for Shawn Becker (Open to Senior Software, Full Stack, & Data Engineer · AI/ML Engineer)
+"""
+
+
+def test_extract_role_heuristic_subject_title_and_corporation_line():
+    role = extract_role_heuristic(GRANT, subject="Sr. Analytics Engineer - Remote - FTE")
+    assert role is not None
+    assert role.title == "Sr. Analytics Engineer"
+    assert role.company == "Remy Corporation"
+    assert "This email was intended" not in role.snippet
+
+
+def test_extract_role_heuristic_subject_without_role_noun_returns_none():
+    assert extract_role_heuristic(GRANT, subject="Exploring new opportunities together") is None
+    assert extract_role_heuristic(GRANT, subject="Building high-volume data products with Python and AWS") is None
 
 
 def test_draft_evan_is_screen_first_not_jd_gate():

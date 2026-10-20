@@ -41,8 +41,9 @@ _SENDER_NAME_RE = re.compile(
 _POSITION_RE = re.compile(
     r"(?im)^(?:Position|Role|Title)\s*[:\-]\s*(.+?)\s*$"
 )
+_COMPANY_SUFFIX = r"(?:Inc\.?|LLC|Corp\.?|Corporation|Incorporated|Ltd\.?|INC)"
 _COMPANY_LINE_RE = re.compile(
-    r"(?m)^([A-Z0-9][\w.&,'/\- ]{1,60}(?:Inc\.?|LLC|Corp\.?|Ltd\.?|INC))\s*$"
+    rf"(?m)^([A-Z0-9][\w.&,'/\- ]{{1,60}}{_COMPANY_SUFFIX})\s*$"
 )
 _RECRUITER_AT_RE = re.compile(
     r"(?im)^(?:Sr\.?\s+|Senior\s+)?(?:Technical\s+)?Recruiter\s+at\s+(.+?)\s*$"
@@ -51,8 +52,20 @@ _VIA_AGENCY_RE = re.compile(
     r"(?im)^(?:Best regards|Thanks|Thank you|Regards),?\s*\n"
     r"[A-Z][\w.'\-]+(?: [A-Z][\w.'\-]+){0,3}\s*\n"
     r".*\n"
-    r"([A-Z0-9][\w.&'/\- ]{1,60}(?:Inc\.?|LLC|Corp\.?|Ltd\.?|INC))\s*$",
+    rf"([A-Z0-9][\w.&'/\- ]{{1,60}}{_COMPANY_SUFFIX})\s*$",
 )
+# Subject-line title fallback: recruiters often put the title in the subject
+# ("Sr. Analytics Engineer - Remote - FTE"). Only the part before the first
+# " - " / " | " separator, and only when it names a role noun, so subjects
+# like "Exploring new opportunities together" never become titles.
+_SUBJECT_SPLIT_RE = re.compile(r"\s+[-–—|]\s+|\s*\|\s*")
+_SUBJECT_ROLE_NOUN_RE = re.compile(
+    r"\b(?:Engineer|Developer|Architect|Scientist|Analyst|Programmer|Administrator|DBA|SRE)s?\b"
+)
+_SUBJECT_TRAILING_NOISE_RE = re.compile(
+    r"(?i)\s+(?:job\s+)?(?:opportunity|opening|position|role)\s*$"
+)
+_LINKEDIN_FOOTER_MARKERS = ("This email was intended", "Learn why we included", "Unsubscribe:")
 
 # Signals that engagement type / location / client are already answered.
 _ENGAGEMENT_KNOWN_RE = re.compile(
@@ -144,11 +157,30 @@ def extract_linkedin_sender_name(text: str) -> str:
     return m.group(1).strip() if m else ""
 
 
-def extract_role_heuristic(text: str) -> ExtractedRole | None:
+def _strip_linkedin_footer(text: str) -> str:
+    for marker in _LINKEDIN_FOOTER_MARKERS:
+        idx = text.find(marker)
+        if idx > 80:
+            return text[:idx].strip()
+    return text.strip()
+
+
+def _title_from_subject(subject: str) -> str:
+    cleaned = re.sub(r"(?i)^\s*(?:re|fwd?)\s*:\s*", "", subject or "").strip()
+    head = _SUBJECT_SPLIT_RE.split(cleaned, maxsplit=1)[0].strip(" -–—|,")
+    head = _SUBJECT_TRAILING_NOISE_RE.sub("", head).strip()
+    if not _SUBJECT_ROLE_NOUN_RE.search(head) or len(head) > 80:
+        return ""
+    return head
+
+
+def extract_role_heuristic(text: str, *, subject: str = "") -> ExtractedRole | None:
     """Free Position:/agency extraction for structured InMail pitches.
 
-    Returns None unless BOTH a title and a company/agency can be recovered —
-    same bar as llm_new_lead so we don't create junk stubs.
+    Title comes from a `Position:`/`Role:`/`Title:` line, else from the
+    subject line (see `_title_from_subject`). Returns None unless BOTH a
+    title and a company/agency can be recovered — same bar as llm_new_lead
+    so we don't create junk stubs.
     """
     if not text:
         return None
@@ -158,6 +190,8 @@ def extract_role_heuristic(text: str) -> ExtractedRole | None:
     m = _POSITION_RE.search(normalized)
     if m:
         title = re.sub(r"\s+", " ", m.group(1)).strip(" -–—|")
+    if not title:
+        title = _title_from_subject(subject)
     if not title or len(title) < 4 or len(title) > 120:
         return None
 
@@ -194,12 +228,7 @@ def extract_role_heuristic(text: str) -> ExtractedRole | None:
     pos = _POSITION_RE.search(normalized)
     if pos:
         snippet = normalized[pos.start() :].strip()
-        # Cut LinkedIn footer chrome
-        for marker in ("This email was intended", "Learn why we included", "Unsubscribe:"):
-            idx = snippet.find(marker)
-            if idx > 80:
-                snippet = snippet[:idx].strip()
-                break
+    snippet = _strip_linkedin_footer(snippet)
 
     return ExtractedRole(
         company=company,
@@ -254,7 +283,7 @@ def draft_qualifying_reply(text: str, *, subject: str = "", known_recruiter_name
     if first.endswith("."):
         first = first[:-1]
     gaps = detect_pitch_gaps(text, subject=subject)
-    role = extract_role_heuristic(text)
+    role = extract_role_heuristic(text, subject=subject)
 
     greeting = f"Hi {first}," if first else "Hi,"
     interest = "Thanks for reaching out"
@@ -346,43 +375,68 @@ def promote_heuristic_unmatched(conn: sqlite3.Connection) -> list[str]:
     """
     promoted: list[str] = []
     for row in store.list_unmatched_messages(conn):
-        body = row["body_text"] or ""
-        role = extract_role_heuristic(body)
+        role = extract_role_heuristic(row["body_text"] or "", subject=row["subject"] or "")
         if role is None:
             continue
-        existing = store.find_matching_job(conn, role.company, role.title)
-        if existing:
-            job_key = existing.normalized_key
-        else:
-            jd_text = (role.snippet or body).strip()
-            score = score_jd(jd_text) if jd_text else None
-            lead = JobLead(
-                company=role.company,
-                title=role.title,
-                source_message_id=row["message_id"],
-                source_label="linkedin_message",
-                extraction_confidence=role.confidence,
-                jd_resolved=bool(jd_text),
-                jd_source="email_body" if jd_text else "",
-                jd_text=jd_text,
-                match_pct=score.match_pct if score else 0.0,
-                matched_skills=list(score.matched_skills) if score else [],
-                verdict=score.verdict if score else "review",
-                rationale=list(score.rationale) if score else [
-                    "Promoted from unmatched LinkedIn pitch (heuristic Position/company)"
-                ],
-            )
-            store.upsert_lead(conn, lead)
-            job_key = lead.normalized_key
-
-        sig = parse_signature(body)
-        store.resolve_unmatched_message(
-            conn,
-            row["message_id"],
-            job_key,
-            contact_name=sig.name or extract_linkedin_sender_name(body),
-            contact_email=sig.email or "",
-            contact_phone=sig.phone or "",
-        )
-        promoted.append(job_key)
+        promoted.append(promote_unmatched_row(conn, row, role))
     return promoted
+
+
+def promote_unmatched_row(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    role: ExtractedRole,
+    *,
+    job_key: str | None = None,
+) -> str:
+    """Attach one parked unmatched message to a lead and resolve it.
+
+    Uses `job_key` when given, else an existing lead matching the role's
+    company + title, else a new stub lead scored by the free rule-based
+    pass. Returns the job_key the message was resolved to.
+
+    A heuristic role's snippet is already the JD slice of the body; an LLM
+    role's excerpt is too short to score, so the whole InMail is used. The
+    lead is dated by when the message was parked, not now, so the 21-day
+    stale rule sees the real age of the pitch.
+    """
+    body = row["body_text"] or ""
+    if job_key is None:
+        existing = store.find_matching_job(conn, role.company, role.title)
+        job_key = existing.normalized_key if existing else None
+    if job_key is None:
+        heuristic_slice = role.snippet if role.source == "linkedin_heuristic" else ""
+        jd_text = (heuristic_slice or _strip_linkedin_footer(body)).strip()
+        score = score_jd(jd_text) if jd_text else None
+        seen = row["detected_at"] or store.utc_now_iso()
+        lead = JobLead(
+            company=role.company,
+            title=role.title,
+            source_message_id=row["message_id"],
+            source_label="linkedin_message",
+            extraction_confidence=role.confidence,
+            jd_resolved=bool(jd_text),
+            jd_source="email_body" if jd_text else "",
+            jd_text=jd_text,
+            match_pct=score.match_pct if score else 0.0,
+            matched_skills=list(score.matched_skills) if score else [],
+            verdict=score.verdict if score else "review",
+            rationale=list(score.rationale) if score else [
+                f"Promoted from unmatched LinkedIn pitch ({role.source})"
+            ],
+            first_seen=seen,
+            last_seen=seen,
+        )
+        store.upsert_lead(conn, lead)
+        job_key = lead.normalized_key
+
+    sig = parse_signature(body)
+    store.resolve_unmatched_message(
+        conn,
+        row["message_id"],
+        job_key,
+        contact_name=sig.name or extract_linkedin_sender_name(body),
+        contact_email=sig.email or "",
+        contact_phone=sig.phone or "",
+    )
+    return job_key

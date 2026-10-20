@@ -2369,6 +2369,7 @@ def resolve_unmatched_message(
             channel="email",
             direction=row["direction"],
             summary=row["subject"] or "(resolved communication)",
+            occurred_at=row["detected_at"] or utc_now_iso(),
             thread_id=row["thread_id"] or "",
             body_text=row["body_text"] or "",
         ),
