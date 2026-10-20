@@ -2,8 +2,8 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { ChannelBadge } from './ChannelBadge'
 import { DuplicateBadge } from './DuplicateBadge'
-import { DeclineLeadForm, type DeclineReasonOption } from './DeclineLead'
-import { LEAD_STATUS_OPTIONS, ManageLeadForm, type FollowupTarget } from './ManageLeadStatus'
+import type { DeclineReason } from '../types'
+import { LEAD_STATUS_OPTIONS, ManageLeadForm, type MessageTarget } from './ManageLeadStatus'
 import {
   formatDecidedAt,
   gmailComposeUrl,
@@ -75,17 +75,18 @@ function mailtoUrl(item: ContactPriorityItem): string | null {
   return gmailComposeUrl(item.recruiterEmail, `RE: ${subject}`, item.draftReply || '')
 }
 
-function followupTarget(item: ContactPriorityItem): FollowupTarget | undefined {
-  if (!item.followupDraft) return undefined
+function messageTarget(item: ContactPriorityItem): MessageTarget {
   const subject = [item.company, item.title].filter(Boolean).join(' ')
   const realEmail = item.recruiterEmail && !item.emailIsLinkedInRelay ? item.recruiterEmail : undefined
   return {
-    draft: item.followupDraft,
     channel:
       item.channel === 'linkedin' || item.emailIsLinkedInRelay ? 'linkedin' : realEmail ? 'email' : 'other',
     threadUrl: item.threadUrl,
     composeTo: realEmail,
+    gmailUrl: item.gmailUrl,
+    searchQuery: item.recruiterEmail || item.recruiterName || item.company || undefined,
     subject: `RE: ${subject}`,
+    hasRecruiter: Boolean(item.recruiterName || item.recruiterEmail || item.threadUrl),
   }
 }
 
@@ -127,14 +128,14 @@ interface Props {
   /** Group rows under "Reply to recruiter" / "Apply" / … headings (priority sort only). */
   showTierHeadings?: boolean
   /** Canned "no thank you" reasons + closing for the Decline form. */
-  declineReasons?: DeclineReasonOption[]
+  declineReasons?: DeclineReason[]
   declineClosing?: string
   /** A Decline / Dismiss / Manage-lead link was clicked on this row; `hide`
    * drops the row until newer page data arrives. */
   onLeadActioned?: (itemId: string, hide: boolean) => void
 }
 
-const NO_DECLINE_REASONS: DeclineReasonOption[] = []
+const NO_DECLINE_REASONS: DeclineReason[] = []
 
 function reopenUrl(item: ContactPriorityItem): string | null {
   if (!item.postDecline || !item.normalizedKey) return null
@@ -163,8 +164,8 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
   onLeadActioned,
 }: Props) {
   const [expandedId, setExpandedId] = useState('')
-  const [leadPanel, setLeadPanel] = useState<{ id: string; kind: 'decline' | 'manage' } | null>(null)
-  const toggleLeadPanel = (id: string, kind: 'decline' | 'manage') =>
+  const [leadPanel, setLeadPanel] = useState<{ id: string; kind: 'manage' } | null>(null)
+  const toggleLeadPanel = (id: string, kind: 'manage') =>
     setLeadPanel((cur) => (cur?.id === id && cur.kind === kind ? null : { id, kind }))
   const [copiedId, setCopiedId] = useState('')
   const [query, setQuery] = useState('')
@@ -303,11 +304,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
         const ackKey = replyAckKey(item)
         const replyAcknowledged = Boolean(replySentDone[ackKey])
         const replyScanning = replyScanningId === item.id
-        const showDetail =
-          open &&
-          (item.stage === 'clarify' ||
-            item.stage === 'send_resume' ||
-            (item.stage === 'wait_schedule' && item.followUpDue))
+        const showDetail = open && (item.stage === 'clarify' || item.stage === 'send_resume')
         const highlighted = Boolean(item.normalizedKey) && item.normalizedKey === highlightKey
         const canDecline =
           !item.postDecline &&
@@ -520,9 +517,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     {copiedId === item.id ? 'Copied' : 'Copy reply'}
                   </button>
                 )}
-                {(item.stage === 'clarify' ||
-                  item.stage === 'send_resume' ||
-                  (item.stage === 'wait_schedule' && item.followUpDue)) && (
+                {(item.stage === 'clarify' || item.stage === 'send_resume') && (
                   <button
                     type="button"
                     className="btn"
@@ -533,19 +528,6 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                 )}
                 {item.stage === 'wait_schedule' && !item.followUpDue && (
                   <span className="btn disabled">No send — waiting</span>
-                )}
-                {item.stage === 'wait_schedule' && item.followUpDue && item.draftReply && (
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={async () => {
-                      await copyText(item.draftReply || '')
-                      setCopiedId(item.id)
-                      setTimeout(() => setCopiedId(''), 1500)
-                    }}
-                  >
-                    {copiedId === item.id ? 'Copied' : 'Copy follow-up'}
-                  </button>
                 )}
                 {item.applyUrl && (
                   <a className="btn" href={item.applyUrl} target="_blank" rel="noreferrer">
@@ -561,15 +543,6 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     Reopen
                   </a>
                 )}
-                {canDecline && (
-                  <button
-                    type="button"
-                    className="btn link muted"
-                    onClick={() => toggleLeadPanel(item.id, 'decline')}
-                  >
-                    {panelKind === 'decline' ? 'Decline ▲' : 'Decline ▾'}
-                  </button>
-                )}
                 {item.normalizedKey && (
                   <button
                     type="button"
@@ -584,20 +557,24 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
 
             {panelKind && item.normalizedKey && (
               <div className="lead-panel">
-                {panelKind === 'decline' ? (
-                  <DeclineLeadForm
-                    item={item}
-                    reasons={declineReasons}
-                    closing={declineClosing}
-                    onClosed={() => onLeadActioned?.(item.id, true)}
-                  />
-                ) : (
+                {panelKind === 'manage' && (
                   <ManageLeadForm
                     normalizedKey={item.normalizedKey}
                     currentStatus={item.status}
+                    initialStatus={item.stage === 'wait_schedule' && item.followUpDue ? 'following_up' : undefined}
                     onApplied={() => onLeadActioned?.(item.id, false)}
                     onCancel={() => setLeadPanel(null)}
-                    followup={followupTarget(item)}
+                    message={messageTarget(item)}
+                    followupDraft={item.followupDraft}
+                    decline={
+                      canDecline && item.declineGreeting
+                        ? {
+                            greeting: item.declineGreeting,
+                            closing: declineClosing,
+                            onClosed: () => onLeadActioned?.(item.id, true),
+                          }
+                        : undefined
+                    }
                   />
                 )}
               </div>
@@ -735,68 +712,6 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
               </div>
             )}
 
-            {showDetail && item.stage === 'wait_schedule' && item.followUpDue && (
-              <div className="priority-detail send-steps">
-                <ol className="step-list">
-                  <li>
-                    <strong>Copy follow-up</strong> and re-initiate with{' '}
-                    {item.recruiterName || 'the recruiter'}
-                    {item.recruiterEmail ? ` (${item.recruiterEmail})` : ''}.
-                    <div className="actions">
-                      {item.draftReply && (
-                        <button
-                          type="button"
-                          className="btn"
-                          onClick={async () => {
-                            await copyText(item.draftReply || '')
-                            setCopiedId(item.id)
-                            setTimeout(() => setCopiedId(''), 1500)
-                          }}
-                        >
-                          {copiedId === item.id ? 'Copied' : 'Copy follow-up'}
-                        </button>
-                      )}
-                      {mailtoUrl(item) && (
-                        <a
-                          className="btn link"
-                          href={mailtoUrl(item)!}
-                          target="_blank"
-                          rel="noreferrer"
-                          title={item.recruiterEmail}
-                        >
-                          {mailtoLabel(item)}
-                        </a>
-                      )}
-                      {item.threadUrl && (
-                        <a
-                          className="btn link"
-                          href={item.threadUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Open LinkedIn thread
-                        </a>
-                      )}
-                    </div>
-                    {item.draftReply && <pre className="draft">{item.draftReply}</pre>}
-                  </li>
-                  <li>
-                    <strong>Mark sent</strong> to reset the Wait clock
-                    <div className="actions">
-                      {markSentHref(item) && (
-                        <a className="btn link" href={markSentHref(item)!}>
-                          Mark sent
-                        </a>
-                      )}
-                    </div>
-                    <p className="hint-line">
-                      Threshold is {item.followUpThresholdDays ?? 7} days (
-                      <code>wait_followup_days</code> in framework.yaml). Then Regenerate.
-                    </p>
-                  </li>
-                </ol>
-              </div>
-            )}
           </div>
           </li>
         )

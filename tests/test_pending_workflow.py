@@ -415,7 +415,7 @@ def test_wait_followup_due_after_threshold(tmp_path: Path):
     assert hit["followUpDue"] is True
     assert hit["waitingDays"] >= 7
     assert hit["draftReply"]
-    assert "Re-initiate" in hit["nextAction"] or "follow-up" in hit["nextAction"].lower()
+    assert "Manage lead opens on Follow up" in hit["nextAction"]
     assert workflow["waitFollowupDays"] == 7
 
 

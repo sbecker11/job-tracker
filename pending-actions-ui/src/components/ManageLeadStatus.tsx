@@ -1,6 +1,6 @@
 import { useContext, useState } from 'react'
 import { DeclineReasonsContext } from '../lib/declineReasons'
-import { gmailComposeUrl, leadStatusUrl } from '../lib/links'
+import { declineUrl, gmailComposeUrl, gmailSearchUrl, leadStatusUrl } from '../lib/links'
 
 /** Mirrors job_tracker.pipeline.models.LEAD_STAGES — kept as a plain literal
  * list here (not fetched from the backend) since the set of valid statuses
@@ -22,6 +22,9 @@ export const LEAD_STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: 'hired', label: 'Hired' },
 ]
 
+/** Pseudo-status: not a lead stage — routes to the decline letter flow (→ skipped). */
+const DECLINE_STATUS = '__decline__'
+
 interface Props {
   normalizedKey?: string
   /** Preselects the dropdown when the caller already knows the lead's
@@ -34,14 +37,28 @@ interface Props {
   onCancel?: () => void
 }
 
-/** Where a "Following up" check-in goes; only Contact priority rows have one. */
-export interface FollowupTarget {
-  draft: string
+/** How to reach the recruiter for a message sent from Manage Lead; only
+ * Contact priority rows have one. */
+export interface MessageTarget {
   channel: 'linkedin' | 'email' | 'other'
   threadUrl?: string
   /** Real recruiter inbox (not a LinkedIn relay) for Gmail compose. */
   composeTo?: string
+  /** Recruiter's last email, opened in Gmail (reply from there). */
+  gmailUrl?: string
+  /** Gmail search terms when there's no thread, address, or message link. */
+  searchQuery?: string
   subject: string
+  /** False when there's no recruiter at all — Decline can only skip. */
+  hasRecruiter: boolean
+}
+
+/** Lets Manage Lead offer "Decline — with message" (job_tracker.pipeline.decline). */
+export interface DeclineTarget {
+  greeting: string
+  closing: string
+  /** Called after Sent / Skip is clicked (the helper app does the write). */
+  onClosed?: () => void
 }
 
 /** "Manage lead" — a self-service status-change control, added 2026-08-26
@@ -81,36 +98,63 @@ export function ManageLeadStatus({ normalizedKey, currentStatus, onApplied }: Pr
 }
 
 /** The status form on its own, for callers that lay it out themselves
- * (Contact priority renders it full-width under the row). */
+ * (Contact priority renders it full-width under the row, with a message
+ * target so "Follow up" and "Decline" can draft, edit, and log a message). */
 export function ManageLeadForm({
   normalizedKey,
   currentStatus,
   onApplied,
   onCancel,
-  followup,
-}: Props & { normalizedKey: string; followup?: FollowupTarget }) {
+  message,
+  followupDraft,
+  decline,
+  initialStatus,
+}: Props & {
+  normalizedKey: string
+  message?: MessageTarget
+  followupDraft?: string
+  decline?: DeclineTarget
+  /** Preselected status (e.g. Follow up on a card whose follow-up is due). */
+  initialStatus?: string
+}) {
   const reasons = useContext(DeclineReasonsContext)
-  const [status, setStatus] = useState(currentStatus || 'applied')
-  const [reason, setReason] = useState('')
+  const startStatus = initialStatus || currentStatus || 'applied'
+  const [status, setStatus] = useState(startStatus)
   const [reasonCode, setReasonCode] = useState(reasons[0]?.code || 'other')
-  const [sent, setSent] = useState(false)
-  const [message, setMessage] = useState(followup?.draft || '')
+  const [customReason, setCustomReason] = useState('')
+  const [followupText, setFollowupText] = useState(followupDraft || '')
+  const [letterEdit, setLetterEdit] = useState<string | null>(null)
+  const [sent, setSent] = useState('')
   const [copied, setCopied] = useState(false)
 
-  const showFollowup = status === 'following_up' && Boolean(followup?.draft)
-  const pickReason = status === 'rejected' && reasons.length > 0
-  const picked = reasons.find((r) => r.code === reasonCode) || reasons[0]
-  const customReason = !pickReason || picked?.code === 'other'
-  const effectiveReason = customReason ? reason : picked?.label || ''
-  const missingCustom = pickReason && customReason && !reason.trim()
+  const canDecline = Boolean(decline && message && reasons.length)
+  const declining = canDecline && status === DECLINE_STATUS
+  const canFollowUp = Boolean(followupDraft && message)
+  const followingUp = canFollowUp && status === 'following_up'
 
-  const cancel = () => {
-    setStatus(currentStatus || 'applied')
-    setReason('')
+  const reason = reasons.find((r) => r.code === reasonCode) || reasons[0]
+  const isOther = reason?.code === 'other'
+  const needsCustom = declining && isOther && !customReason.trim()
+  const generatedLetter = decline
+    ? `${decline.greeting} ${isOther ? customReason.trim() : reason?.sentence || ''} ${decline.closing}`
+    : ''
+  const letterText = letterEdit ?? generatedLetter
+  const text = declining ? letterText : followupText
+  const setText = declining ? setLetterEdit : setFollowupText
+  const composing = (declining && message?.hasRecruiter) || followingUp
+
+  const reset = () => {
+    setStatus(startStatus)
     setReasonCode(reasons[0]?.code || 'other')
-    setSent(false)
-    setMessage(followup?.draft || '')
-    onCancel?.()
+    setCustomReason('')
+    setFollowupText(followupDraft || '')
+    setLetterEdit(null)
+    setSent('')
+  }
+
+  const markSent = (which: string, after?: () => void) => () => {
+    setSent(which)
+    after?.()
   }
 
   return (
@@ -123,24 +167,26 @@ export function ManageLeadForm({
             value={status}
             onChange={(e) => {
               setStatus(e.target.value)
-              setSent(false)
+              setSent('')
             }}
           >
             {LEAD_STATUS_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
-                {opt.label}
+                {opt.value === 'following_up' && canFollowUp ? 'Follow up — with message' : opt.label}
               </option>
             ))}
+            {canDecline && <option value={DECLINE_STATUS}>Decline — with message</option>}
           </select>
         </label>
-        {pickReason && (
+        {declining && (
           <label className="manage-lead-field">
             <span>Reason</span>
             <select
-              value={picked?.code}
+              value={reason?.code}
               onChange={(e) => {
                 setReasonCode(e.target.value)
-                setSent(false)
+                setLetterEdit(null)
+                setSent('')
               }}
             >
               {reasons.map((r) => (
@@ -151,52 +197,56 @@ export function ManageLeadForm({
             </select>
           </label>
         )}
-        {customReason && (
+        {declining && isOther && (
           <label className="manage-lead-field manage-lead-reason-field">
-            <span>{pickReason ? 'Custom reason' : 'Reason'}</span>
+            <span>Custom reason</span>
             <input
               className="manage-lead-reason"
               type="text"
-              placeholder={pickReason ? 'Required — logged as a note' : 'Optional — logged as a note'}
-              value={reason}
+              placeholder="Required — becomes the reason sentence in the message"
+              value={customReason}
               onChange={(e) => {
-                setReason(e.target.value)
-                setSent(false)
+                setCustomReason(e.target.value)
+                setLetterEdit(null)
+                setSent('')
               }}
             />
           </label>
         )}
-        {missingCustom ? (
-          <span className="btn disabled" title="Type a custom reason first">
-            Apply
-          </span>
-        ) : (
+        {!declining && !followingUp && (
           <a
             className={`btn${sent ? ' muted' : ''}`}
-            href={leadStatusUrl(normalizedKey, status, effectiveReason)}
-            onClick={() => {
-              setSent(true)
-              onApplied?.()
-            }}
+            href={leadStatusUrl(normalizedKey, status, '')}
+            onClick={markSent('apply', onApplied)}
           >
             {sent ? (onApplied ? 'Applied ✓' : 'Applied ✓ — Regenerate to see it') : 'Apply'}
           </a>
         )}
-        <button type="button" className="btn link muted" onClick={cancel}>
-          Cancel
-        </button>
+        {!declining && !followingUp && (
+          <button
+            type="button"
+            className="btn link muted"
+            onClick={() => {
+              reset()
+              onCancel?.()
+            }}
+          >
+            Cancel
+          </button>
+        )}
       </div>
-      {showFollowup && followup && (
+
+      {composing && message && !needsCustom && (
         <div className="followup-preview">
           <label className="manage-lead-field">
-            <span>Follow-up message — edit before sending if you like</span>
+            <span>Message — edit before sending if you like</span>
             <textarea
               className="draft followup-edit"
-              rows={7}
-              value={message}
+              rows={8}
+              value={text}
               onChange={(e) => {
-                setMessage(e.target.value)
-                setSent(false)
+                setText(e.target.value)
+                setSent('')
               }}
             />
           </label>
@@ -204,10 +254,10 @@ export function ManageLeadForm({
             <button
               type="button"
               className="btn"
-              disabled={!message.trim()}
+              disabled={!text.trim()}
               onClick={async () => {
                 try {
-                  await navigator.clipboard.writeText(message)
+                  await navigator.clipboard.writeText(text)
                 } catch {
                   /* clipboard can be blocked in the embedded browser; the text is selectable */
                 }
@@ -217,40 +267,90 @@ export function ManageLeadForm({
             >
               {copied ? 'Copied' : 'Copy message'}
             </button>
-            {followup.threadUrl && (
-              <a className="btn link" href={followup.threadUrl} target="_blank" rel="noreferrer">
-                Open thread
-              </a>
-            )}
-            {followup.composeTo && message.trim() && (
+            <ContactLinks target={message} text={text} />
+            {text.trim() && declining && reason && (
               <a
-                className="btn link"
-                href={gmailComposeUrl(followup.composeTo, followup.subject, message)}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Recruiter email
-              </a>
-            )}
-            {message.trim() && (
-              <a
-                className={`btn${sent ? ' muted' : ''}`}
-                href={leadStatusUrl(normalizedKey, 'following_up', effectiveReason, {
-                  channel: followup.channel,
-                  message,
+                className={`btn${sent === 'decline' ? ' muted' : ''}`}
+                href={declineUrl(normalizedKey, reason.code, isOther ? customReason : '', {
+                  channel: message.channel,
+                  letter: true,
+                  letterText: text,
                 })}
-                onClick={() => {
-                  setSent(true)
-                  onApplied?.()
-                }}
+                onClick={markSent('decline', decline?.onClosed)}
+                title="After you send it: log the message and close the lead as skipped with this reason"
+              >
+                {sent === 'decline' ? 'Message sent ✓' : 'Message sent'}
+              </a>
+            )}
+            {text.trim() && followingUp && (
+              <a
+                className={`btn${sent === 'followup' ? ' muted' : ''}`}
+                href={leadStatusUrl(normalizedKey, 'following_up', '', {
+                  channel: message.channel,
+                  message: text,
+                })}
+                onClick={markSent('followup', onApplied)}
                 title="After you send it: log the message, set Following up, and restart the wait clock"
               >
-                {sent ? 'Marked ✓' : 'Sent — mark following up'}
+                {sent === 'followup' ? 'Message sent ✓' : 'Message sent'}
               </a>
             )}
           </div>
         </div>
       )}
+
+      {declining && reason && !needsCustom && (
+        <div className="actions">
+          <a
+            className={`btn link muted${sent === 'skip' ? ' done' : ''}`}
+            href={declineUrl(normalizedKey, reason.code, isOther ? customReason : '', { letter: false })}
+            onClick={markSent('skip', decline?.onClosed)}
+            title="Close the lead as skipped with this reason, without logging a message"
+          >
+            {sent === 'skip' ? 'Skipped ✓' : 'Skip without message'}
+          </a>
+        </div>
+      )}
     </div>
+  )
+}
+
+/** Thread / email / search links for reaching the recruiter, most direct first. */
+function ContactLinks({ target, text }: { target: MessageTarget; text: string }) {
+  return (
+    <>
+      {target.threadUrl && (
+        <a className="btn link" href={target.threadUrl} target="_blank" rel="noreferrer">
+          {/linkedin\.com/i.test(target.threadUrl) ? 'Open LinkedIn thread' : 'Open thread'}
+        </a>
+      )}
+      {target.gmailUrl && (
+        <a
+          className="btn link"
+          href={target.gmailUrl}
+          target="_blank"
+          rel="noreferrer"
+          title="The recruiter's last email — reply to it there"
+        >
+          Open email thread
+        </a>
+      )}
+      {target.composeTo && text.trim() && (
+        <a
+          className="btn link"
+          href={gmailComposeUrl(target.composeTo, target.subject, text)}
+          target="_blank"
+          rel="noreferrer"
+          title={`New Gmail draft to ${target.composeTo} with this message`}
+        >
+          New email to recruiter
+        </a>
+      )}
+      {!target.threadUrl && !target.gmailUrl && !target.composeTo && target.searchQuery && (
+        <a className="btn link" href={gmailSearchUrl(target.searchQuery)} target="_blank" rel="noreferrer">
+          Search Gmail for the thread
+        </a>
+      )}
+    </>
   )
 }

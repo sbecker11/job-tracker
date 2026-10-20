@@ -70,6 +70,28 @@ export function leadStatusUrl(
   })}`
 }
 
+/** Decline a lead via tools/decline-lead/ (`decline-lead`): skipped + reason, optional sent letter. */
+export function declineUrl(
+  key: string,
+  reason: string,
+  note: string,
+  opts: { channel?: string; letter: boolean; letterText?: string },
+): string {
+  return `declinelead://decline?${helperQuery({
+    key,
+    reason,
+    note: note.trim(),
+    channel: opts.letter ? opts.channel : undefined,
+    letter: opts.letter ? undefined : '0',
+    letter_text: opts.letter ? opts.letterText?.trim() : undefined,
+  })}`
+}
+
+/** Gmail search in the Spexture account — last resort when a lead has no thread or message link. */
+export function gmailSearchUrl(query: string): string {
+  return `https://mail.google.com/mail/u/${RECRUITER_REPLY_ACCOUNT_SLOT}/#search/${encodeURIComponent(query)}`
+}
+
 export function formatDecidedAt(iso?: string): string {
   if (!iso) return '—'
   const d = new Date(iso)

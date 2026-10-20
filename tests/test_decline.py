@@ -202,3 +202,21 @@ def test_declined_lead_without_a_reply_stays_off_the_list(tmp_path: Path):
     for items in workflow["stages"].values():
         if isinstance(items, list):
             assert all(i.get("normalizedKey") != key for i in items if isinstance(i, dict))
+
+
+def test_cli_logs_the_edited_letter_text(tmp_path: Path):
+    db = tmp_path / "leads.db"
+    conn = connect(db)
+    key = _lead(conn)
+    conn.close()
+    edited = "Hi Ed,\n\nThanks, but I'll pass on this one.\n\nBest,\nShawn"
+    rc = decline_lead.main(
+        ["--db", str(db), "--key", key, "--reason", "rate_too_low", "--channel", "email", "--letter-text", edited]
+    )
+    assert rc == 0
+    conn = connect(db)
+    body = conn.execute(
+        "SELECT body_text FROM job_conversations WHERE message_id LIKE 'decline:%'"
+    ).fetchone()["body_text"]
+    assert body == edited
+    conn.close()

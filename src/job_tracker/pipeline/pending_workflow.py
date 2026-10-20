@@ -373,7 +373,8 @@ def _next_action_wait(*, waiting_days: int = 0, threshold: int = 7, recruiter_na
         who = recruiter_name.strip() or "the recruiter"
         return (
             f"YOUR ACTION: Wait exceeded {threshold}d ({waiting_days}d silent) — "
-            f"(1) Copy follow-up (2) Re-initiate with {who} (3) Mark sent → reset Wait clock"
+            f"follow up with {who}: Manage lead opens on Follow up — edit the message, "
+            f"paste it into the thread and send, then click Message sent"
         )
     remaining = threshold - waiting_days
     return (
@@ -1380,7 +1381,7 @@ def build_stale_active_queue(
         who = recruiter or "the recruiter"
         next_action = (
             f"YOUR ACTION: Still marked {status_text}, but nothing in {silent_days}d — "
-            f"(1) Copy check-in and ping {who}, or (2) close it via Status → Unavailable / Rejected"
+            f"Manage lead → Follow up to check in with {who}, or close it as Unavailable / Rejected"
         )
         item = {
             "kind": "lead",

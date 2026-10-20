@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 
 /// URL-scheme helper:
-/// `declinelead://decline?key=<normalized_key>&reason=<code>&note=<text>&channel=<ch>&letter=0|1`
+/// `declinelead://decline?key=<normalized_key>&reason=<code>&note=<text>&channel=<ch>&letter=0|1&letter_text=<sent letter>`
 /// Shells out to `decline-lead` so the Pending Actions UI's "Decline" form
 /// can log the sent letter and skip the lead with its reason. Same shape as
 /// tools/set-lead-status.
@@ -80,6 +80,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let channel = value("channel"), !channel.isEmpty {
             args.append(contentsOf: ["--channel", channel])
+        }
+        if let text = value("letter_text"), !text.isEmpty {
+            args.append(contentsOf: ["--letter-text", text])
         }
         if value("letter") == "0" {
             args.append("--no-letter")

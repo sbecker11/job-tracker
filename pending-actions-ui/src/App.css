@@ -1499,13 +1499,7 @@ th.num {
   box-sizing: border-box;
 }
 
-.decline-lead-form .decline-preview {
-  margin: 0;
-  white-space: pre-wrap;
-  font-size: 0.8rem;
-}
-
-.decline-lead-form .actions {
+.manage-lead-form > .actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
