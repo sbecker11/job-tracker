@@ -20,7 +20,29 @@ export const LEAD_STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: 'deleted', label: 'Deleted' },
   { value: 'unavailable', label: 'Unavailable' },
   { value: 'hired', label: 'Hired' },
+  { value: 'reopened', label: 'Reopened' },
 ]
+
+const RECORD_STATUSES = [
+  'applied',
+  'following_up',
+  'interviewing',
+  'offered',
+  'accepted',
+  'started',
+  'rejected',
+  'unavailable',
+  'hired',
+  'skipped',
+  'deleted',
+]
+/** Off-ramps that Reopen can undo; New / Pursued / Package generated are
+ * pipeline-owned and not offered in the menu. */
+const CLOSED_STATUSES = ['skipped', 'rejected', 'deleted', 'unavailable', 'hired']
+
+function statusLabel(value: string): string {
+  return LEAD_STATUS_OPTIONS.find((o) => o.value === value)?.label || value
+}
 
 /** Pseudo-status: not a lead stage — routes to the decline letter flow (→ skipped). */
 const DECLINE_STATUS = '__decline__'
@@ -118,7 +140,7 @@ export function ManageLeadForm({
   initialStatus?: string
 }) {
   const reasons = useContext(DeclineReasonsContext)
-  const startStatus = initialStatus || currentStatus || 'applied'
+  const startStatus = initialStatus || ''
   const [status, setStatus] = useState(startStatus)
   const [reasonCode, setReasonCode] = useState(reasons[0]?.code || 'other')
   const [customReason, setCustomReason] = useState('')
@@ -161,8 +183,14 @@ export function ManageLeadForm({
     <div className="manage-lead-form">
       <h4 className="lead-panel-title">Manage Lead</h4>
       <div className="lead-panel-fields">
+        {currentStatus && (
+          <div className="manage-lead-field">
+            <span>Current status</span>
+            <strong className="manage-lead-current">{statusLabel(currentStatus)}</strong>
+          </div>
+        )}
         <label className="manage-lead-field">
-          <span>Status</span>
+          <span>Change to</span>
           <select
             value={status}
             onChange={(e) => {
@@ -170,12 +198,27 @@ export function ManageLeadForm({
               setSent('')
             }}
           >
-            {LEAD_STATUS_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.value === 'following_up' && canFollowUp ? 'Follow up — with message' : opt.label}
-              </option>
-            ))}
-            {canDecline && <option value={DECLINE_STATUS}>Decline — with message</option>}
+            <option value="">Choose…</option>
+            {currentStatus && CLOSED_STATUSES.includes(currentStatus) && (
+              <optgroup label="Undo">
+                <option value="reopened">Reopen</option>
+              </optgroup>
+            )}
+            {(canFollowUp || canDecline) && (
+              <optgroup label="Send a message">
+                {canFollowUp && <option value="following_up">Follow up — with message</option>}
+                {canDecline && <option value={DECLINE_STATUS}>Decline — with message</option>}
+              </optgroup>
+            )}
+            <optgroup label="Record what happened">
+              {RECORD_STATUSES.filter(
+                (v) => v !== currentStatus && !(v === 'following_up' && canFollowUp),
+              ).map((v) => (
+                <option key={v} value={v}>
+                  {statusLabel(v)}
+                </option>
+              ))}
+            </optgroup>
           </select>
         </label>
         {declining && (
@@ -213,7 +256,12 @@ export function ManageLeadForm({
             />
           </label>
         )}
-        {!declining && !followingUp && (
+        {!declining && !followingUp && !status && (
+          <span className="btn disabled" title="Choose a status first">
+            Apply
+          </span>
+        )}
+        {!declining && !followingUp && status && (
           <a
             className={`btn${sent ? ' muted' : ''}`}
             href={leadStatusUrl(normalizedKey, status, '')}

@@ -1329,7 +1329,18 @@ def build_wait_schedule_queue(
     return queue
 
 
-STALE_ACTIVE_STATUSES = ("following_up", "interviewing", "offered")
+# Every status that isn't closed (skipped/rejected/deleted/unavailable/hired)
+# or already won (accepted/started).
+STALE_ACTIVE_STATUSES = (
+    "new",
+    "pursued",
+    "package_generated",
+    "applied",
+    "following_up",
+    "interviewing",
+    "offered",
+    "reopened",
+)
 STALE_ACTIVE_DAYS = 30
 PROBABLY_DEAD_DAYS = 45
 
@@ -1342,18 +1353,24 @@ def build_stale_active_queue(
     now: datetime,
     stale_days: int = STALE_ACTIVE_DAYS,
 ) -> list[dict]:
-    """Leads still marked following-up/interviewing/offered with no contact in
+    """Leads still in an open status (STALE_ACTIVE_STATUSES) with no contact in
     `stale_days` and no wait clock running — otherwise they sit on no list at
-    all. Rendered as Wait rows so the card can send a check-in or close it."""
+    all. Rendered as Wait rows so the card can send a check-in or close it.
+    Reopened leads with no wait clock are listed right away (no silence
+    threshold) so Shawn picks their next step."""
     placeholders = ",".join("?" for _ in STALE_ACTIVE_STATUSES)
     rows = conn.execute(
         f"""
         SELECT l.normalized_key, l.company, l.title, l.source_label, l.first_seen, l.status,
                MAX(
                  COALESCE(l.last_seen, l.first_seen, ''),
+                 COALESCE(l.pursued_at, ''),
+                 COALESCE(l.package_generated_at, ''),
+                 COALESCE(l.applied_at, ''),
                  COALESCE(l.following_up_at, ''),
                  COALESCE(l.interviewing_at, ''),
                  COALESCE(l.offered_at, ''),
+                 COALESCE(l.reopened_at, ''),
                  COALESCE((SELECT MAX(c.occurred_at) FROM job_conversations c
                            WHERE c.job_key = l.normalized_key), '')
                ) AS last_comm
@@ -1370,7 +1387,8 @@ def build_stale_active_queue(
         if key in exclude_keys:
             continue
         silent_days = age_days_fn(r["last_comm"] or None, now)
-        if silent_days < stale_days:
+        reopened = r["status"] == "reopened"
+        if silent_days < stale_days and not reopened:
             continue
         convs = list(list_job_conversations(conn, key))
         recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
@@ -1379,10 +1397,16 @@ def build_stale_active_queue(
             channel = "email"
         status_text = (r["status"] or "").replace("_", " ")
         who = recruiter or "the recruiter"
-        next_action = (
-            f"YOUR ACTION: Still marked {status_text}, but nothing in {silent_days}d — "
-            f"Manage lead → Follow up to check in with {who}, or close it as Unavailable / Rejected"
-        )
+        if reopened:
+            next_action = (
+                f"YOUR ACTION: Reopened ({silent_days}d since last contact) — Manage lead → "
+                f"Follow up with {who}, record what happened (Applied, Interviewing…), or Decline"
+            )
+        else:
+            next_action = (
+                f"YOUR ACTION: Still marked {status_text}, but nothing in {silent_days}d — "
+                f"Manage lead → Follow up to check in with {who}, or close it as Unavailable / Rejected"
+            )
         item = {
             "kind": "lead",
             "stage": "wait_schedule",
@@ -1401,7 +1425,8 @@ def build_stale_active_queue(
             "contactAttempts": max(1, len(_human_inbound_conversations(convs))),
             "followUpDue": True,
             "followUpThresholdDays": stale_days,
-            "staleActive": True,
+            "staleActive": not reopened,
+            "reopened": reopened,
             "draftReply": draft_wait_followup_message(
                 recruiter_name=recruiter,
                 company=r["company"] or "",
@@ -1431,7 +1456,7 @@ TODAY_TIERS = {
     9: "Probably dead — check in or close",
 }
 
-_LIVE_STATUS_WEIGHT = {"offered": 0, "interviewing": 0, "following_up": 1}
+_LIVE_STATUS_WEIGHT = {"offered": 0, "interviewing": 0, "following_up": 1, "reopened": 1}
 
 
 def _pct(item: dict) -> float:
@@ -1472,7 +1497,9 @@ def annotate_today_order(
             _add(item, 2, (-_pct(item), int(item.get("ageDays") or 0)))
     for item in wait_schedule:
         waiting = int(item.get("waitingDays") or 0)
-        if item.get("staleActive") or (item.get("followUpDue") and waiting >= dead_days):
+        if item.get("reopened"):
+            _add(item, 3, (_LIVE_STATUS_WEIGHT["reopened"], waiting))
+        elif item.get("staleActive") or (item.get("followUpDue") and waiting >= dead_days):
             _add(item, 9, (waiting,))
         elif item.get("followUpDue"):
             _add(item, 3, (_LIVE_STATUS_WEIGHT.get(item.get("status") or "", 2), waiting))
@@ -1716,7 +1743,20 @@ def build_workflow_payload(
     wait_schedule.extend(
         build_stale_active_queue(
             conn=conn,
-            exclude_keys=clarify_keys | send_keys | {i["normalizedKey"] for i in wait_schedule},
+            exclude_keys=clarify_keys
+            | send_keys
+            | {i["normalizedKey"] for i in wait_schedule}
+            | {
+                i.get("normalizedKey")
+                for bucket in (
+                    "ready_to_apply",
+                    "needs_decision",
+                    "needs_decision_forced",
+                    "awaiting_llm_review",
+                    "jd_unresolved",
+                )
+                for i in data.get(bucket) or []
+            },
             age_days_fn=age_days_fn,
             now=now,
         )

@@ -51,6 +51,11 @@ LEAD_STAGES: tuple[str, ...] = (
     # hired someone else. Distinct from `accepted`/`started` (those mean *this*
     # lead's offer). Hide from default lists; delete_lead.py --already-hired.
     "hired",
+    # Reopened (2026-10-20): Shawn undid a close (skipped/rejected/deleted/
+    # unavailable/hired) from Manage lead. Not an off-ramp and not on the
+    # forward path, so the pipeline can still move it along (applied, …);
+    # not auto-skipped as stale (auto_skip_leads only covers new/pursued).
+    "reopened",
 )
 
 

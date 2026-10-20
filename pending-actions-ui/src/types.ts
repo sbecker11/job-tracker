@@ -142,7 +142,7 @@ export interface WaitItem extends TodayFields {
   contactAttempts: number
   followUpDue?: boolean
   followUpThresholdDays?: number
-  /** Still marked following-up/interviewing/offered but silent 30+ days. */
+  /** Still in an open status (new through offered, or reopened) but silent 30+ days. */
   staleActive?: boolean
   draftReply?: string
   threadUrl?: string

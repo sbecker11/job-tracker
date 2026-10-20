@@ -29,7 +29,12 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Set one lead's status by normalized_key.")
     ap.add_argument("--db", type=Path, default=DEFAULT_DB_PATH, help=f"Leads DB path (default: {DEFAULT_DB_PATH})")
     ap.add_argument("--key", required=True, help="Exact job_leads.normalized_key")
-    ap.add_argument("--status", required=True, choices=LEAD_STAGES, help="Target lifecycle stage")
+    ap.add_argument(
+        "--status",
+        required=True,
+        choices=LEAD_STAGES,
+        help="Target lifecycle stage ('reopened' undoes a close)",
+    )
     ap.add_argument(
         "--reason",
         default="",
@@ -81,8 +86,18 @@ def main(argv: list[str] | None = None) -> int:
     # Manage-lead control), same reasoning as list_leads.py --set-status —
     # unlike pipeline callers, it may legitimately revive an off-ramp lead
     # (skipped -> applied, etc.) or otherwise move backwards.
-    advance_status(conn, args.key, args.status, when=args.on, force=True)
-    note = f"Status changed {prior_status} -> {args.status}"
+    target = args.status
+    advance_status(conn, args.key, target, when=args.on, force=True)
+    if target != "deleted":
+        conn.execute("UPDATE job_leads SET deleted_at = NULL WHERE normalized_key = ?", (args.key,))
+    if target == "reopened":
+        # Latest reopen, not the first — a lead can be closed and reopened more than once.
+        conn.execute(
+            "UPDATE job_leads SET reopened_at = ? WHERE normalized_key = ?",
+            (args.on or utc_now_iso(), args.key),
+        )
+    conn.commit()
+    note = f"Status changed {prior_status} -> {target}"
     if args.reason.strip():
         note += f": {args.reason.strip()}"
     if args.sent_channel:
@@ -90,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     append_lead_note(conn, args.key, note)
     conn.close()
 
-    print(f"{row['title']!r} @ {row['company']!r}: {prior_status} -> {args.status}")
+    print(f"{row['title']!r} @ {row['company']!r}: {prior_status} -> {target}")
     return 0
 
 

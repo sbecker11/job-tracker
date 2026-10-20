@@ -767,6 +767,47 @@ def test_silent_interviewing_lead_surfaces_as_probably_dead(tmp_path: Path):
     assert hit["draftReply"]
 
 
+def test_still_active_covers_applied_and_reopened_but_not_accepted(tmp_path: Path):
+    from job_tracker.pipeline.store import advance_status
+
+    conn = connect(tmp_path / "leads.db")
+    long_ago = (NOW - timedelta(days=60)).isoformat()
+    keys = {}
+    for status in ("applied", "reopened", "accepted"):
+        lead = JobLead(
+            company=f"Co {status}",
+            title="Data Engineer",
+            source_message_id=f"m-{status}",
+            source_label="manual",
+            jd_text="python aws",
+            match_pct=0.0,
+            verdict="review",
+        )
+        upsert_lead(conn, lead)
+        advance_status(conn, lead.normalized_key, status, when=long_ago, force=True)
+        conn.execute(
+            "UPDATE job_leads SET first_seen = ?, last_seen = ?, awaiting_response_since = NULL "
+            "WHERE normalized_key = ?",
+            (long_ago, long_ago, lead.normalized_key),
+        )
+        keys[status] = lead.normalized_key
+    conn.commit()
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    workflow = build_workflow_payload(
+        data, conn=conn, age_days_fn=render_pending_actions._age_days, now=NOW, output_root=tmp_path
+    )
+    conn.close()
+
+    rows = {i["normalizedKey"]: i for i in workflow["stages"]["waitSchedule"]}
+    assert rows[keys["applied"]]["staleActive"] is True
+    assert "Still marked applied" in rows[keys["applied"]]["nextAction"]
+    reopened = rows[keys["reopened"]]
+    assert reopened["reopened"] is True and reopened["staleActive"] is False
+    assert reopened["todayTier"] == 3
+    assert "Reopened" in reopened["nextAction"]
+    assert keys["accepted"] not in rows
+
+
 def test_today_order_ranks_across_stages():
     from job_tracker.pipeline.pending_workflow import annotate_today_order
 

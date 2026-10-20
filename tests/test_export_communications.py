@@ -432,3 +432,21 @@ def test_all_on_disk_reexports_every_odt(tmp_path: Path, capsys):
     assert "hs=224" not in content
     assert "Non-human mailer tracking was moved" in content
     assert "midToken=ABC" in beta_log.read_text(encoding="utf-8")
+
+
+def test_status_timeline_lists_stages_oldest_first_and_folds_decline():
+    from job_tracker.cli.export_communications import status_timeline
+
+    job = {
+        "first_seen": "2026-07-01T10:00:00+00:00",
+        "pursued_at": "2026-07-02T10:00:00+00:00",
+        "applied_at": "2026-07-03T10:00:00Z",
+        "skipped_at": "2026-07-05T10:00:00+00:00",
+        "declined_at": "2026-07-05T10:00:00+00:00",
+        "decline_reason": "rate_too_low",
+        "rejected_at": None,
+    }
+    labels = [label for _when, label in status_timeline(job)]
+    assert labels[:3] == ["Found", "Pursued", "Applied"]
+    assert labels[3].startswith("Declined — ")
+    assert "Closed - skipped" not in labels

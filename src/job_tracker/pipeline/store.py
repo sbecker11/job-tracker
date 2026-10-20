@@ -303,6 +303,7 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     ("job_leads", "decline_reason", "ALTER TABLE job_leads ADD COLUMN decline_reason TEXT"),
     ("job_leads", "decline_note", "ALTER TABLE job_leads ADD COLUMN decline_note TEXT"),
     ("job_leads", "declined_at", "ALTER TABLE job_leads ADD COLUMN declined_at TEXT"),
+    ("job_leads", "reopened_at", "ALTER TABLE job_leads ADD COLUMN reopened_at TEXT"),
 ]
 
 # models.LEAD_STAGES -> the timestamp column stamped when a lead enters that
@@ -321,6 +322,7 @@ _STAGE_DATE_COLUMNS: dict[str, str] = {
     "deleted": "deleted_at",
     "unavailable": "unavailable_at",
     "hired": "hired_at",
+    "reopened": "reopened_at",
 }
 
 # Magic-path stages in forward order (excludes off-ramps). Used by

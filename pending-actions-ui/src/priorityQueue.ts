@@ -677,22 +677,30 @@ export function buildGlobalSearchIndex(data: WorkflowPayload): GlobalSearchResul
   return out
 }
 
+/** Every word in `query` must appear in some field ("signify full stack"
+ * matches company + title). Words with 3+ digits also match phone numbers
+ * digits-only, so "857-891" finds "(857) 891-0896". */
+export function matchesSearch(fields: (string | undefined)[], query: string): boolean {
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  if (!words.length) return true
+  const text = fields.map((f) => (f || '').toLowerCase()).join(' \u0000 ')
+  const digits = fields.map((f) => (f || '').replace(/\D/g, '')).join(' ')
+  return words.every((w) => {
+    if (text.includes(w)) return true
+    const d = w.replace(/\D/g, '')
+    return d.length >= 3 && digits.includes(d)
+  })
+}
+
 export function searchGlobalIndex(
   index: GlobalSearchResult[],
   query: string,
   limit = 20,
 ): GlobalSearchResult[] {
-  const q = query.trim().toLowerCase()
-  if (!q) return []
+  if (!query.trim()) return []
   const out: GlobalSearchResult[] = []
   for (const r of index) {
-    const hit =
-      r.company.toLowerCase().includes(q) ||
-      r.title.toLowerCase().includes(q) ||
-      (r.recruiterName || '').toLowerCase().includes(q) ||
-      (r.recruiterEmail || '').toLowerCase().includes(q) ||
-      (r.recruiterPhone || '').toLowerCase().includes(q)
-    if (hit) {
+    if (matchesSearch([r.company, r.title, r.recruiterName, r.recruiterEmail, r.recruiterPhone], query)) {
       out.push(r)
       if (out.length >= limit) break
     }

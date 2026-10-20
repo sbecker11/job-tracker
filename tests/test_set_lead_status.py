@@ -162,3 +162,30 @@ def test_followup_draft_uses_first_name_and_drops_placeholders():
         "Hi there,\n\nJust checking in on the Data Engineer role at Acme. I wanted to see"
     )
     assert msg.endswith("Best,\nShawn")
+
+
+def test_reopened_status_clears_deleted_and_stamps_latest_reopen(tmp_path: Path):
+    from job_tracker.pipeline.store import advance_status
+
+    db = tmp_path / "leads.db"
+    conn = connect(db)
+    lead = _make_lead(conn)
+    advance_status(conn, lead.normalized_key, "applied", when="2026-07-03T10:00:00+00:00")
+    advance_status(conn, lead.normalized_key, "reopened", when="2026-07-05T10:00:00+00:00")
+    advance_status(conn, lead.normalized_key, "deleted", when="2026-07-09T10:00:00+00:00")
+    conn.close()
+
+    rc = set_lead_status_main(
+        ["--db", str(db), "--key", lead.normalized_key, "--status", "reopened", "--on", "2026-07-12T10:00:00+00:00"]
+    )
+    assert rc == 0
+    conn = connect(db)
+    row = conn.execute(
+        "SELECT status, deleted_at, reopened_at, notes FROM job_leads WHERE normalized_key = ?",
+        (lead.normalized_key,),
+    ).fetchone()
+    assert row["status"] == "reopened"
+    assert row["deleted_at"] is None
+    assert row["reopened_at"] == "2026-07-12T10:00:00+00:00"
+    assert "Status changed deleted -> reopened" in row["notes"]
+    conn.close()

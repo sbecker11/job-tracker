@@ -15,6 +15,7 @@ import {
 import { HistoryLink } from './HistoryLink'
 import {
   replyAckKey,
+  matchesSearch,
   searchGlobalIndex,
   type ContactPriorityItem,
   type GlobalSearchResult,
@@ -180,15 +181,12 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
   }, [highlightKey, items])
 
   const visibleItems = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return items
-    return items.filter(
-      (item) =>
-        (item.company || '').toLowerCase().includes(q) ||
-        (item.title || '').toLowerCase().includes(q) ||
-        (item.recruiterName || '').toLowerCase().includes(q) ||
-        (item.recruiterEmail || '').toLowerCase().includes(q) ||
-        (item.recruiterPhone || '').toLowerCase().includes(q),
+    if (!query.trim()) return items
+    return items.filter((item) =>
+      matchesSearch(
+        [item.company, item.title, item.recruiterName, item.recruiterEmail, item.recruiterPhone],
+        query,
+      ),
     )
   }, [items, query])
 

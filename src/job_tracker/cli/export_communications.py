@@ -29,7 +29,7 @@ import html
 import re
 import sys
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -495,6 +495,57 @@ def _p(text: str, *, style: str | None = None) -> str:
     return f"<text:p{style_attr}>{_xml_text(text)}</text:p>"
 
 
+_STAGE_LABELS: dict[str, str] = {
+    "pursued": "Pursued",
+    "package_generated": "Package generated",
+    "applied": "Applied",
+    "following_up": "Following up",
+    "interviewing": "Interviewing",
+    "offered": "Offered",
+    "accepted": "Accepted",
+    "started": "Started",
+    "skipped": "Closed - skipped",
+    "rejected": "Rejected",
+    "deleted": "Deleted",
+    "unavailable": "Unavailable",
+    "hired": "Hired",
+    "reopened": "Reopened",
+}
+
+
+def status_timeline(job) -> list[tuple[str, str]]:
+    """(when, label) for each stage this lead has reached, oldest first.
+
+    Each `<stage>_at` column records the *first* time the lead reached that
+    stage, so a lead reopened and re-closed shows its original dates.
+    """
+    from job_tracker.pipeline.store import _STAGE_DATE_COLUMNS
+
+    keys = set(job.keys())
+    events: list[tuple[str, str]] = []
+    if "first_seen" in keys and job["first_seen"]:
+        events.append((job["first_seen"], "Found"))
+    declined = "declined_at" in keys and bool(job["declined_at"])
+    for stage, column in _STAGE_DATE_COLUMNS.items():
+        if stage == "skipped" and declined:
+            continue
+        if column in keys and job[column]:
+            events.append((job[column], _STAGE_LABELS.get(stage, stage)))
+    if declined:
+        from job_tracker.pipeline.decline import DECLINE_REASONS
+
+        code = job["decline_reason"] if "decline_reason" in keys else ""
+        label = next((r.label for r in DECLINE_REASONS if r.code == code), code)
+        events.append((job["declined_at"], f"Declined — {label}" if label else "Declined"))
+    def _key(event: tuple[str, str]) -> datetime:
+        when = _parse_when(event[0])
+        if when is None:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+
+    return sorted(events, key=_key)
+
+
 def _render_odt(
     job_key: str,
     company: str,
@@ -503,6 +554,9 @@ def _render_odt(
     contacts_by_id: dict,
     documents,
     out_path: Path,
+    *,
+    status: str = "",
+    timeline: list[tuple[str, str]] | None = None,
 ) -> None:
     """Write a minimal ODF Text document (no odfpy — stdlib zip + XML)."""
     log_name = f"Communications_{_safe_filename(title)}.log"
@@ -518,6 +572,15 @@ def _render_odt(
         ),
         _p(""),
     ]
+
+    if timeline:
+        current = _STAGE_LABELS.get(status, status.replace("_", " ").capitalize()) if status else ""
+        parts.append(
+            _p(f"Status timeline — current status: {current}" if current else "Status timeline", style="Heading")
+        )
+        for when, label in timeline:
+            parts.append(_p(f"{when[:10]}  {label}", style="Summary"))
+        parts.append(_p(""))
 
     docs = [d for d in documents if d["doc_type"] not in _DOC_TYPES_HIDDEN]
     if docs:
@@ -695,7 +758,17 @@ def export_job_history(
         multi_lead = len(get_sibling_titles(conn, company, exclude_title=title)) > 0
         job_dir = _job_folder(output_root, company=company, title=title, multi_lead=multi_lead)
         out_path = job_dir / "communications" / f"Communications_{_safe_filename(title)}.odt"
-        _render_odt(job_key, company, title, conversations, contacts_by_id, documents, out_path)
+        _render_odt(
+            job_key,
+            company,
+            title,
+            conversations,
+            contacts_by_id,
+            documents,
+            out_path,
+            status=job["status"] or "",
+            timeline=status_timeline(job),
+        )
         add_job_document(
             conn,
             JobDocument(job_key=job_key, doc_type="communications_export", path_or_url=str(out_path)),

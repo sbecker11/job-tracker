@@ -1537,3 +1537,9 @@ th.num {
   flex-wrap: wrap;
   gap: 6px;
 }
+
+.manage-lead-current {
+  display: block;
+  padding: 4px 0;
+  font-size: 0.85rem;
+}
