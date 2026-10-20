@@ -6,6 +6,7 @@ import type {
   DecideLead,
   PipelineStageId,
   SendResumeItem,
+  TodayFields,
   WaitItem,
   WorkflowPayload,
 } from './types'
@@ -97,6 +98,10 @@ export interface ContactPriorityItem {
   draftFitOk?: boolean
   draftFitNote?: string
   missedMeetingNote?: string
+  todayTier?: number
+  todayLabel?: string
+  todayRank?: number
+  staleActive?: boolean
 }
 
 const STAGE_RANK: Record<string, number> = {
@@ -133,8 +138,12 @@ function recencyScore(item: ContactPriorityItem): number {
   return item.ageDays
 }
 
-function sortKey(item: ContactPriorityItem): [number, number, number, number, string] {
+/** Rows without a server-side todayRank (closed/duplicates) sort after every ranked row. */
+const UNRANKED = Number.MAX_SAFE_INTEGER
+
+function sortKey(item: ContactPriorityItem): [number, number, number, number, number, string] {
   return [
+    item.todayRank ?? UNRANKED,
     urgency(item),
     -item.contactAttempts,
     -recencyScore(item),
@@ -254,7 +263,12 @@ function fromClarify(c: ClarifyItem): ContactPriorityItem {
     duplicateCount: c.duplicateCount,
     duplicateKeys: c.duplicateKeys,
     status: c.status,
+    ...todayFields(c),
   }
+}
+
+function todayFields(src: TodayFields): Pick<ContactPriorityItem, 'todayTier' | 'todayLabel' | 'todayRank'> {
+  return { todayTier: src.todayTier, todayLabel: src.todayLabel, todayRank: src.todayRank }
 }
 
 function fromSendResume(s: SendResumeItem): ContactPriorityItem {
@@ -286,6 +300,8 @@ function fromSendResume(s: SendResumeItem): ContactPriorityItem {
     duplicateCount: s.duplicateCount,
     duplicateKeys: s.duplicateKeys,
     status: s.status,
+    matchPct: s.matchPct,
+    ...todayFields(s),
   }
 }
 
@@ -318,6 +334,8 @@ function fromWait(w: WaitItem): ContactPriorityItem {
     duplicateCount: w.duplicateCount,
     duplicateKeys: w.duplicateKeys,
     status: w.status,
+    staleActive: w.staleActive,
+    ...todayFields(w),
   }
 }
 
@@ -346,6 +364,7 @@ function fromDecide(lead: DecideLead, bucket: DecideBucket): ContactPriorityItem
     verdict: lead.verdict,
     matchPct: lead.matchPct,
     decideBucket: bucket,
+    ...todayFields(lead),
   }
 }
 

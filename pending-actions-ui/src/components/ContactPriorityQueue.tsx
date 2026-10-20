@@ -99,6 +99,13 @@ function mailtoLabel(item: ContactPriorityItem): string {
   return item.emailIsLinkedInRelay ? 'LinkedIn reply' : 'Recruiter email'
 }
 
+/** First dialable number in a free-text phone field ("551-325-2207 (mobile) / …"). */
+function telHref(phone: string | undefined): string | null {
+  const first = (phone || '').match(/\+?\d[\d\s().-]{6,}\d/)
+  if (!first) return null
+  return `tel:${first[0].replace(/[^\d+]/g, '')}`
+}
+
 function markSentHref(item: ContactPriorityItem): string | null {
   if (item.markSentUrl) return item.markSentUrl
   if (!item.normalizedKey) return null
@@ -125,6 +132,8 @@ interface Props {
   /** Cross-tab search — see AllTabsToggle. */
   searchIndex?: GlobalSearchResult[]
   onJumpToResult?: (result: GlobalSearchResult) => void
+  /** Group rows under "Reply to recruiter" / "Apply" / … headings (priority sort only). */
+  showTierHeadings?: boolean
 }
 
 // Memoized: this list can run to hundreds of rows, and App re-renders every
@@ -143,6 +152,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
   highlightKey,
   searchIndex = [],
   onJumpToResult,
+  showTierHeadings = false,
 }: Props) {
   const [expandedId, setExpandedId] = useState('')
   const [copiedId, setCopiedId] = useState('')
@@ -288,6 +298,13 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
             item.stage === 'send_resume' ||
             (item.stage === 'wait_schedule' && item.followUpDue))
         const highlighted = Boolean(item.normalizedKey) && item.normalizedKey === highlightKey
+        const tierHeading =
+          showTierHeadings &&
+          item.todayLabel &&
+          (index === 0 || visibleItems[index - 1].todayTier !== item.todayTier)
+            ? item.todayLabel
+            : ''
+        const phoneHref = telHref(item.recruiterPhone)
         return (
           <li
             key={item.id}
@@ -305,8 +322,11 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
               paddingBottom: ROW_GAP,
             }}
           >
+          {tierHeading && (
+            <h3 className={`today-tier-heading today-tier-${item.todayTier}`}>{tierHeading}</h3>
+          )}
           <div
-            className={`priority-row${open ? ' open' : ''}${item.followUpDue ? ' follow-up-due' : ''}${item.replyDue ? ' reply-due' : ''}${highlighted ? ' lead-highlight' : ''}`}
+            className={`priority-row${open ? ' open' : ''}${item.followUpDue && item.todayTier !== 9 ? ' follow-up-due' : ''}${item.replyDue ? ' reply-due' : ''}${item.todayTier === 9 ? ' probably-dead' : ''}${highlighted ? ' lead-highlight' : ''}`}
           >
             <div className="priority-main">
               <span className="priority-rank" aria-label={`Priority ${index + 1}`}>
@@ -436,6 +456,14 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                 <p className="next-action">{nextAction}</p>
                 <div className="priority-meta">
                   {item.recruiterName && <span>{item.recruiterName}</span>}
+                  {item.recruiterPhone &&
+                    (phoneHref ? (
+                      <a className="phone-link" href={phoneHref} title="Call">
+                        {item.recruiterPhone}
+                      </a>
+                    ) : (
+                      <span>{item.recruiterPhone}</span>
+                    ))}
                   {item.recruiterEmail && (
                     <span title={item.recruiterEmail}>
                       {mailtoLabel(item)}

@@ -634,3 +634,168 @@ def test_recruiting_gmail_message_url_pins_authuser():
     assert "#all/19fafc5dddc2baa5" in url or "%23all%2F19fafc5dddc2baa5" in url
     assert recruiting_gmail_message_url("imap:<foo@bar>") == ""
     assert recruiting_gmail_message_url("") == ""
+
+
+def _ready_lead_with_package(conn, tmp_path: Path, *, company: str, title: str, pct: float = 78.0):
+    lead = JobLead(
+        company=company,
+        title=title,
+        source_message_id=f"m-{company}",
+        source_label="linkedin_message",
+        jd_text="python aws",
+        match_pct=pct,
+        verdict="pursue",
+    )
+    upsert_lead(conn, lead)
+    seen = (NOW - timedelta(days=20)).isoformat()
+    conn.execute(
+        "UPDATE job_leads SET first_seen = ?, last_seen = ? WHERE normalized_key = ?",
+        (seen, seen, lead.normalized_key),
+    )
+    conn.commit()
+    pkg = tmp_path / company / title.replace(" ", "_")
+    pkg.mkdir(parents=True)
+    (pkg / f"Shawn_Becker_Resume_{company}.docx").write_bytes(b"x")
+    (pkg / f"Shawn_Becker_Cover_Letter_{company}.docx").write_bytes(b"x")
+    entry = {
+        "normalizedKey": lead.normalized_key,
+        "company": company,
+        "title": title,
+        "ageDays": 20,
+        "matchPct": pct,
+        "applyUrl": "",
+        "folderPath": str(pkg),
+        "directRecruiter": None,
+    }
+    return lead, entry
+
+
+def test_recruiter_pitch_with_ready_package_goes_to_send_resume(tmp_path: Path):
+    """An InMail pitch plus a built package is a send-it task, even without a résumé ask
+    and after the pitch has aged out of Clarify's 14-day reply window."""
+    conn = connect(tmp_path / "leads.db")
+    lead, entry = _ready_lead_with_package(conn, tmp_path, company="Mastech", title="Software Engineer")
+    add_job_contact(conn, JobContact(job_key=lead.normalized_key, name="Yatharth Singh", role="recruiter"))
+    add_job_conversation(
+        conn,
+        JobConversation(
+            job_key=lead.normalized_key,
+            direction="inbound",
+            summary="Software Engineering Opportunity | Contract-to-hire",
+            occurred_at=(NOW - timedelta(days=20)).isoformat(),
+            body_text="Hi Shawn, I have a contract-to-hire Software Engineer role you'd be a fit for.",
+        ),
+    )
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    data["ready_to_apply"] = [entry]
+    workflow = build_workflow_payload(
+        data, conn=conn, age_days_fn=render_pending_actions._age_days, now=NOW, output_root=tmp_path
+    )
+    conn.close()
+
+    hit = next(i for i in workflow["stages"]["sendResume"] if i["normalizedKey"] == lead.normalized_key)
+    assert hit["resumeRequested"] is False
+    assert hit["todayTier"] == 2
+    assert hit["todayLabel"] == "Send package to recruiter"
+    assert "Yatharth Singh" in hit["nextAction"]
+
+
+def test_named_contact_without_a_message_stays_in_apply(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    lead, entry = _ready_lead_with_package(conn, tmp_path, company="Weave", title="Platform Engineer")
+    add_job_contact(conn, JobContact(job_key=lead.normalized_key, name="Hiring Team", role="recruiter"))
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    data["ready_to_apply"] = [entry]
+    workflow = build_workflow_payload(
+        data, conn=conn, age_days_fn=render_pending_actions._age_days, now=NOW, output_root=tmp_path
+    )
+    conn.close()
+
+    assert not workflow["stages"]["sendResume"]
+    hit = next(
+        i for i in workflow["stages"]["decideApply"]["readyToApply"] if i["normalizedKey"] == lead.normalized_key
+    )
+    assert hit["todayTier"] == 4
+
+
+def test_silent_interviewing_lead_surfaces_as_probably_dead(tmp_path: Path):
+    """Marked interviewing, no wait clock, nothing for 100 days — was on no list at all."""
+    from job_tracker.pipeline.store import advance_status
+
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(
+        company="Quantum World",
+        title="NodeJS Lead",
+        source_message_id="m-qw",
+        source_label="manual",
+        jd_text="node aws",
+        match_pct=0.0,
+        verdict="review",
+    )
+    upsert_lead(conn, lead)
+    long_ago = (NOW - timedelta(days=100)).isoformat()
+    advance_status(conn, lead.normalized_key, "interviewing", when=long_ago, force=True)
+    conn.execute(
+        "UPDATE job_leads SET first_seen = ?, last_seen = ?, awaiting_response_since = NULL WHERE normalized_key = ?",
+        (long_ago, long_ago, lead.normalized_key),
+    )
+    conn.commit()
+    add_job_contact(conn, JobContact(job_key=lead.normalized_key, name="Sachin Ladhad", role="recruiter"))
+    add_job_conversation(
+        conn,
+        JobConversation(
+            job_key=lead.normalized_key,
+            direction="inbound",
+            channel="calendar",
+            summary="Meeting invite",
+            occurred_at=long_ago,
+            body_text="Interview invite",
+        ),
+        awaiting_response=False,
+    )
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    workflow = build_workflow_payload(
+        data, conn=conn, age_days_fn=render_pending_actions._age_days, now=NOW, output_root=tmp_path
+    )
+    conn.close()
+
+    hit = next(i for i in workflow["stages"]["waitSchedule"] if i["normalizedKey"] == lead.normalized_key)
+    assert hit["staleActive"] is True
+    assert hit["waitingDays"] == 100
+    assert hit["todayTier"] == 9
+    assert "Still marked interviewing" in hit["nextAction"]
+    assert hit["draftReply"]
+
+
+def test_today_order_ranks_across_stages():
+    from job_tracker.pipeline.pending_workflow import annotate_today_order
+
+    clarify = [{"normalizedKey": "c", "replyDue": True, "unansweredDays": 4}]
+    send = [
+        {"normalizedKey": "s-ask", "resumeRequested": True, "ageDays": 2},
+        {"normalizedKey": "s-pitch", "resumeRequested": False, "matchPct": 78, "ageDays": 20},
+    ]
+    wait = [
+        {"normalizedKey": "w-live", "followUpDue": True, "waitingDays": 25, "status": "following_up"},
+        {"normalizedKey": "w-applied", "followUpDue": True, "waitingDays": 12, "status": "applied"},
+        {"normalizedKey": "w-dead", "followUpDue": True, "waitingDays": 88, "status": "applied"},
+        {"normalizedKey": "w-stale", "followUpDue": True, "waitingDays": 102, "staleActive": True},
+        {"normalizedKey": "w-quiet", "followUpDue": False, "waitingDays": 0},
+    ]
+    decide = {
+        "readyToApply": [
+            {"normalizedKey": "a-73", "matchPct": 73, "ageDays": 93},
+            {"normalizedKey": "a-80", "matchPct": 80, "ageDays": 92},
+        ],
+        "needsDecision": [{"normalizedKey": "d", "matchPct": 90, "ageDays": 1}],
+    }
+    annotate_today_order(clarify=clarify, send_resume=send, wait_schedule=wait, decide_apply=decide)
+
+    every = [*clarify, *send, *wait, *decide["readyToApply"], *decide["needsDecision"]]
+    order = [i["normalizedKey"] for i in sorted(every, key=lambda i: i["todayRank"])]
+    assert order == [
+        "c", "s-ask", "s-pitch", "w-live", "w-applied", "a-80", "a-73", "d", "w-quiet", "w-dead", "w-stale",
+    ]
+    assert {i["todayLabel"] for i in wait if i["normalizedKey"] in ("w-dead", "w-stale")} == {
+        "Probably dead — check in or close"
+    }

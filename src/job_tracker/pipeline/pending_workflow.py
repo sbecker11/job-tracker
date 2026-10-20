@@ -961,11 +961,14 @@ def build_send_resume_queue(
     now: datetime,
     output_root: Path | None = None,
 ) -> list[dict]:
-    """Priority-A′: recruiter asked for a résumé *and* the package is on disk.
+    """Priority-A′: a recruiter is on the lead *and* the package is on disk.
 
-    A résumé ask alone is not enough — Shawn must still review no-LLM / full-LLM
-    reviews and choose pursue (generate package) or skip. Until résumé+cover
-    exist, the lead stays in Decide/apply.
+    Ready-to-apply leads qualify when a named recruiter wrote at least one
+    real (non-digest) message — an InMail pitch is reason enough to send the
+    package back, even without an explicit résumé ask. Forced packages still
+    need the ask or the direct-recruiter flag. A résumé ask alone is not
+    enough — Shawn must still review and choose pursue (generate package) or
+    skip. Until résumé+cover exist, the lead stays in Decide/apply.
     """
     from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT
 
@@ -1065,7 +1068,8 @@ def build_send_resume_queue(
             )
             if not has_person:
                 continue
-            if not asked and not lead.get("directRecruiter"):
+            pitched = label == "ready" and bool(human_inbound)
+            if not asked and not lead.get("directRecruiter") and not pitched:
                 continue
             row = conn.execute(
                 "SELECT awaiting_response_since, source_label FROM job_leads WHERE normalized_key = ?",
@@ -1228,6 +1232,167 @@ def build_wait_schedule_queue(
         )
     )
     return queue
+
+
+STALE_ACTIVE_STATUSES = ("following_up", "interviewing", "offered")
+STALE_ACTIVE_DAYS = 30
+PROBABLY_DEAD_DAYS = 45
+
+
+def build_stale_active_queue(
+    *,
+    conn,
+    exclude_keys: set[str],
+    age_days_fn: Callable[[str | None, datetime], int],
+    now: datetime,
+    stale_days: int = STALE_ACTIVE_DAYS,
+) -> list[dict]:
+    """Leads still marked following-up/interviewing/offered with no contact in
+    `stale_days` and no wait clock running — otherwise they sit on no list at
+    all. Rendered as Wait rows so the card can send a check-in or close it."""
+    placeholders = ",".join("?" for _ in STALE_ACTIVE_STATUSES)
+    rows = conn.execute(
+        f"""
+        SELECT l.normalized_key, l.company, l.title, l.source_label, l.first_seen, l.status,
+               MAX(
+                 COALESCE(l.last_seen, l.first_seen, ''),
+                 COALESCE(l.following_up_at, ''),
+                 COALESCE(l.interviewing_at, ''),
+                 COALESCE(l.offered_at, ''),
+                 COALESCE((SELECT MAX(c.occurred_at) FROM job_conversations c
+                           WHERE c.job_key = l.normalized_key), '')
+               ) AS last_comm
+        FROM job_leads l
+        WHERE l.deleted_at IS NULL
+          AND l.awaiting_response_since IS NULL
+          AND l.status IN ({placeholders})
+        """,
+        STALE_ACTIVE_STATUSES,
+    ).fetchall()
+    queue: list[dict] = []
+    for r in rows:
+        key = r["normalized_key"]
+        if key in exclude_keys:
+            continue
+        silent_days = age_days_fn(r["last_comm"] or None, now)
+        if silent_days < stale_days:
+            continue
+        convs = list(list_job_conversations(conn, key))
+        recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
+        channel = _channel_from_addresses(source_label=r["source_label"] or "")
+        if email and not _is_system_email(email) and not email_is_li_relay:
+            channel = "email"
+        status_text = (r["status"] or "").replace("_", " ")
+        who = recruiter or "the recruiter"
+        next_action = (
+            f"YOUR ACTION: Still marked {status_text}, but nothing in {silent_days}d — "
+            f"(1) Copy check-in and ping {who}, or (2) close it via Status → Unavailable / Rejected"
+        )
+        item = {
+            "kind": "lead",
+            "stage": "wait_schedule",
+            "channel": channel,
+            "company": r["company"] or "",
+            "title": r["title"] or "",
+            "normalizedKey": key,
+            "recruiterName": recruiter,
+            "recruiterEmail": email,
+            "recruiterPhone": phone,
+            "emailIsLinkedInRelay": email_is_li_relay,
+            "ageDays": age_days_fn(r["first_seen"], now),
+            "waitingDays": silent_days,
+            "awaitingSince": r["last_comm"] or "",
+            "status": r["status"],
+            "contactAttempts": max(1, len(_human_inbound_conversations(convs))),
+            "followUpDue": True,
+            "followUpThresholdDays": stale_days,
+            "staleActive": True,
+            "draftReply": draft_wait_followup_message(
+                recruiter_name=recruiter,
+                company=r["company"] or "",
+                title=r["title"] or "",
+                waiting_days=silent_days,
+            ),
+            "threadUrl": _thread_url_for_lead(convs),
+            "gmailUrl": recruiting_gmail_message_url(_gmail_api_id_for_conversations(convs)),
+            "markSentUrl": f"mps://mark?key={quote(key, safe='')}&channel={channel}",
+            "actionHint": next_action,
+            "nextAction": next_action,
+        }
+        if not item["gmailUrl"] or not item["threadUrl"]:
+            enrich_item_reply_links(item, conn=conn)
+        queue.append(item)
+    queue.sort(key=lambda x: -int(x.get("waitingDays") or 0))
+    return queue
+
+
+TODAY_TIERS = {
+    1: "Reply to recruiter",
+    2: "Send package to recruiter",
+    3: "Follow up",
+    4: "Apply",
+    5: "Decide",
+    6: "Waiting on them",
+    9: "Probably dead — check in or close",
+}
+
+_LIVE_STATUS_WEIGHT = {"offered": 0, "interviewing": 0, "following_up": 1}
+
+
+def _pct(item: dict) -> float:
+    try:
+        return float(item.get("matchPct") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def annotate_today_order(
+    *,
+    clarify: list[dict],
+    send_resume: list[dict],
+    wait_schedule: list[dict],
+    decide_apply: dict[str, list[dict]],
+    dead_days: int = PROBABLY_DEAD_DAYS,
+) -> None:
+    """Stamp `todayTier` / `todayLabel` / `todayRank` on every active item so
+    the UI's single list reads as "what to do next, in order" across stages.
+
+    Tiers: recruiter waiting on a reply → package ready for a recruiter →
+    follow-ups on live threads → apply (best fit first) → decide → nothing to
+    do yet → probably dead (silent `dead_days`+ or stale active status).
+    """
+    ranked: list[tuple[tuple, dict]] = []
+
+    def _add(item: dict, tier: int, sub: tuple) -> None:
+        item["todayTier"] = tier
+        item["todayLabel"] = TODAY_TIERS[tier]
+        ranked.append(((tier, *sub), item))
+
+    for item in clarify:
+        _add(item, 1, (0 if item.get("replyDue") else 1, -int(item.get("unansweredDays") or 0)))
+    for item in send_resume:
+        if item.get("resumeRequested"):
+            _add(item, 1, (0, -int(item.get("ageDays") or 0)))
+        else:
+            _add(item, 2, (-_pct(item), int(item.get("ageDays") or 0)))
+    for item in wait_schedule:
+        waiting = int(item.get("waitingDays") or 0)
+        if item.get("staleActive") or (item.get("followUpDue") and waiting >= dead_days):
+            _add(item, 9, (waiting,))
+        elif item.get("followUpDue"):
+            _add(item, 3, (_LIVE_STATUS_WEIGHT.get(item.get("status") or "", 2), waiting))
+        else:
+            _add(item, 6, (waiting,))
+    for bucket, rows in decide_apply.items():
+        for item in rows:
+            if bucket == "readyToApply":
+                _add(item, 4, (-_pct(item), int(item.get("ageDays") or 0)))
+            else:
+                _add(item, 5, (-_pct(item), int(item.get("ageDays") or 0)))
+
+    ranked.sort(key=lambda pair: pair[0])
+    for rank, (_, item) in enumerate(ranked):
+        item["todayRank"] = rank
 
 
 def build_decide_apply_stage(
@@ -1453,6 +1618,14 @@ def build_workflow_payload(
         age_days_fn=age_days_fn,
         now=now,
     )
+    wait_schedule.extend(
+        build_stale_active_queue(
+            conn=conn,
+            exclude_keys=clarify_keys | send_keys | {i["normalizedKey"] for i in wait_schedule},
+            age_days_fn=age_days_fn,
+            now=now,
+        )
+    )
 
     decide_apply = build_decide_apply_stage(
         ready_to_apply=data.get("ready_to_apply") or [],
@@ -1486,6 +1659,12 @@ def build_workflow_payload(
     for bucket in decide_apply.values():
         status_items.extend(bucket)
     _attach_lead_statuses(status_items, conn)
+    annotate_today_order(
+        clarify=clarify,
+        send_resume=send_resume,
+        wait_schedule=wait_schedule,
+        decide_apply=decide_apply,
+    )
 
     archived_leads = _list_archived_leads(conn, age_days_fn=age_days_fn, now=now)
     for item in archived_leads:

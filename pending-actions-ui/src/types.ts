@@ -21,7 +21,15 @@ export interface PipelineStage {
   count: number
 }
 
-export interface ClarifyItem {
+/** Cross-stage "what to do next" order stamped server-side
+ * (pending_workflow.annotate_today_order). Lower todayRank = do it sooner. */
+export interface TodayFields {
+  todayTier?: number
+  todayLabel?: string
+  todayRank?: number
+}
+
+export interface ClarifyItem extends TodayFields {
   kind: string
   stage: string
   channel: Channel
@@ -67,7 +75,7 @@ export interface ClarifyItem {
   duplicateKeys?: string[]
 }
 
-export interface SendResumeItem {
+export interface SendResumeItem extends TodayFields {
   kind: string
   stage: string
   channel: Channel
@@ -98,7 +106,7 @@ export interface SendResumeItem {
   duplicateKeys?: string[]
 }
 
-export interface WaitItem {
+export interface WaitItem extends TodayFields {
   kind: string
   stage: string
   channel: Channel
@@ -116,6 +124,8 @@ export interface WaitItem {
   contactAttempts: number
   followUpDue?: boolean
   followUpThresholdDays?: number
+  /** Still marked following-up/interviewing/offered but silent 30+ days. */
+  staleActive?: boolean
   draftReply?: string
   threadUrl?: string
   gmailUrl?: string
@@ -128,7 +138,7 @@ export interface WaitItem {
   duplicateKeys?: string[]
 }
 
-export interface DecideLead {
+export interface DecideLead extends TodayFields {
   company: string
   title: string
   normalizedKey: string

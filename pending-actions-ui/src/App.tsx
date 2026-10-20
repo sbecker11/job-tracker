@@ -515,10 +515,10 @@ export default function App() {
         <div>
           <h1>Pending actions</h1>
           <p className="subtitle">
-            One list, ranked by manual-task urgency (recruiter waiting on you, then overdue
-            follow-up, then résumé asks, then the rest). Each row starts with{" "}
-            <strong>YOUR ACTION</strong>. Use Status and the task chips to filter — they do not
-            switch views.
+            Your next tasks, in order: reply to recruiters, send ready packages to recruiters,
+            follow up on live threads, apply (best fit first), decide, then leads that are only
+            waiting. Applications silent 45+ days sink to <strong>Probably dead</strong>. Each row
+            starts with <strong>YOUR ACTION</strong>. Status and task chips only filter the list.
           </p>
         </div>
         <div className="top-meta">
@@ -631,6 +631,7 @@ export default function App() {
             highlightKey={highlightKey}
             searchIndex={searchIndex}
             onJumpToResult={onJumpToResult}
+            showTierHeadings={leadSort === 'priority' && !duplicatesFocusKey}
           />
         </section>
       )}
