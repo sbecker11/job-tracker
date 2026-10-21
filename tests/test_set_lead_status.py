@@ -217,3 +217,63 @@ def test_reply_with_unchanged_status_logs_message_and_starts_wait(tmp_path: Path
     ).fetchall()
     assert [r["direction"] for r in out] == ["outbound"]
     conn.close()
+
+
+def test_contact_only_save_updates_contact_and_keeps_status(tmp_path: Path, capsys):
+    from job_tracker.pipeline.pending_workflow import _send_route_fields
+
+    db = tmp_path / "leads.db"
+    conn = connect(db)
+    lead = _make_lead(conn, status="new")
+    conn.close()
+
+    rc = set_lead_status_main(
+        [
+            "--db", str(db), "--key", lead.normalized_key,
+            "--contact-name", "Priya Rao",
+            "--contact-email", "priya@agency.example",
+            "--contact-linkedin", "https://www.linkedin.com/in/priyarao/",
+        ]
+    )
+    assert rc == 0
+    rc = set_lead_status_main(
+        [
+            "--db", str(db), "--key", lead.normalized_key,
+            "--contact-email", "careers@thyme.example",
+            "--contact-role", "company",
+        ]
+    )
+    assert rc == 0
+
+    conn = connect(db)
+    row = conn.execute(
+        "SELECT status, notes FROM job_leads WHERE normalized_key = ?", (lead.normalized_key,)
+    ).fetchone()
+    assert row["status"] == "new"
+    assert "Contact saved (recruiter): Priya Rao, priya@agency.example" in row["notes"]
+    fields = _send_route_fields(conn, lead.normalized_key)
+    assert fields["recruiterLinkedinUrl"] == "https://www.linkedin.com/in/priyarao/"
+    assert fields["companyEmail"] == "careers@thyme.example"
+    conn.close()
+
+
+def test_contact_save_matches_existing_contact_by_email(tmp_path: Path):
+    from job_tracker.pipeline.store import save_lead_contact
+
+    conn = connect(tmp_path / "leads.db")
+    lead = _make_lead(conn)
+    first = save_lead_contact(conn, lead.normalized_key, name="Priya", email="Priya@Agency.example")
+    again = save_lead_contact(conn, lead.normalized_key, email="priya@agency.example", phone="801-555-0100")
+    assert first == again
+    row = conn.execute("SELECT name, phone FROM job_contacts WHERE id = ?", (first,)).fetchone()
+    assert (row["name"], row["phone"]) == ("Priya", "801-555-0100")
+    conn.close()
+
+
+def test_status_or_contact_required(tmp_path: Path):
+    db = tmp_path / "leads.db"
+    conn = connect(db)
+    lead = _make_lead(conn)
+    conn.close()
+    with pytest.raises(SystemExit):
+        set_lead_status_main(["--db", str(db), "--key", lead.normalized_key])

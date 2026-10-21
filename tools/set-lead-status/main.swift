@@ -68,13 +68,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert("leadstatus://set requires ?key=<normalized_key>")
             return
         }
-        guard let status = value("status"), !status.isEmpty else {
-            alert("leadstatus://set requires &status=<stage>")
+        let contactFlags: [(String, String)] = [
+            ("contact_name", "--contact-name"),
+            ("contact_email", "--contact-email"),
+            ("contact_phone", "--contact-phone"),
+            ("contact_linkedin", "--contact-linkedin"),
+            ("contact_role", "--contact-role"),
+        ]
+        var contactArgs: [String] = []
+        for (param, flag) in contactFlags {
+            if let v = value(param), !v.isEmpty { contactArgs += [flag, v] }
+        }
+        let status = value("status") ?? ""
+        if status.isEmpty && contactArgs.isEmpty {
+            alert("leadstatus://set requires &status=<stage> or contact_* details")
             return
         }
         let reason = value("reason") ?? ""
 
-        var args = ["--db", config.dbPath, "--key", key, "--status", status]
+        var args = ["--db", config.dbPath, "--key", key] + contactArgs
+        if !status.isEmpty {
+            args += ["--status", status]
+        }
         if !reason.isEmpty {
             args.append("--reason")
             args.append(reason)

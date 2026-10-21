@@ -136,7 +136,7 @@ class JobContact:
     # notification's Reply-To. Never used as Tier-2 identity; mailto fallback
     # when `email` is empty so Sent-folder scans can still link outbound.
     linkedin_reply_to: str = ""
-    role: str = "recruiter"  # recruiter | hiring_manager | referral | other
+    role: str = "recruiter"  # recruiter | hiring_manager | referral | company | other
     contact_ref: str = ""
     source_message_id: str = ""
     id: int | None = None

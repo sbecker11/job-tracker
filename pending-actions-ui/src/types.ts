@@ -32,6 +32,11 @@ export interface TodayFields {
   declineGreeting?: string
   /** Check-in draft shown when Manage Lead's status is set to Following up. */
   followupDraft?: string
+  /** Send-route inputs (pending_workflow._send_route_fields). */
+  hasRecruiter?: boolean
+  companyEmail?: string
+  companyContactName?: string
+  recruiterLinkedinUrl?: string
 }
 
 /** One "no thank you" reason (job_tracker.pipeline.decline.DECLINE_REASONS). */
@@ -144,6 +149,7 @@ export interface WaitItem extends TodayFields {
   followUpThresholdDays?: number
   /** Still in an open status (new through offered, or reopened) but silent 30+ days. */
   staleActive?: boolean
+  reopened?: boolean
   draftReply?: string
   threadUrl?: string
   gmailUrl?: string

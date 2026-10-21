@@ -21,6 +21,7 @@ from job_tracker.pipeline.store import (
     advance_status,
     append_lead_note,
     connect,
+    save_lead_contact,
     utc_now_iso,
 )
 
@@ -31,7 +32,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--key", required=True, help="Exact job_leads.normalized_key")
     ap.add_argument(
         "--status",
-        required=True,
         choices=LEAD_STAGES,
         help="Target lifecycle stage ('reopened' undoes a close)",
     )
@@ -47,7 +47,23 @@ def main(argv: list[str] | None = None) -> int:
         help="Also log --sent-message as an outbound message on this channel (restarts the wait clock)",
     )
     ap.add_argument("--sent-message", default="", help="Text Shawn sent (with --sent-channel)")
+    ap.add_argument("--contact-name", default="", help="Save a contact found by hand (Search for sender)")
+    ap.add_argument("--contact-email", default="")
+    ap.add_argument("--contact-phone", default="")
+    ap.add_argument("--contact-linkedin", default="", help="LinkedIn profile URL")
+    ap.add_argument(
+        "--contact-role", default="recruiter", choices=("recruiter", "company", "hiring_manager")
+    )
     args = ap.parse_args(argv)
+    contact = {
+        "name": args.contact_name,
+        "email": args.contact_email,
+        "phone": args.contact_phone,
+        "linkedin_url": args.contact_linkedin,
+    }
+    saving_contact = any(v.strip() for v in contact.values())
+    if not args.status and not saving_contact:
+        ap.error("give --status, or contact details to save")
 
     if not Path(args.db).exists():
         print(f"No leads DB found at {args.db}.", file=sys.stderr)
@@ -66,6 +82,15 @@ def main(argv: list[str] | None = None) -> int:
         print("--sent-channel needs --sent-message.", file=sys.stderr)
         conn.close()
         return 1
+
+    if saving_contact:
+        save_lead_contact(conn, args.key, role=args.contact_role, **contact)
+        found = ", ".join(v.strip() for v in contact.values() if v.strip())
+        append_lead_note(conn, args.key, f"Contact saved ({args.contact_role}): {found}")
+        print(f"{row['title']!r} @ {row['company']!r}: saved {args.contact_role} contact {found}")
+        if not args.status:
+            conn.close()
+            return 0
 
     prior_status = row["status"]
     if args.sent_channel:

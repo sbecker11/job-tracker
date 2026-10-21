@@ -304,6 +304,7 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     ("job_leads", "decline_note", "ALTER TABLE job_leads ADD COLUMN decline_note TEXT"),
     ("job_leads", "declined_at", "ALTER TABLE job_leads ADD COLUMN declined_at TEXT"),
     ("job_leads", "reopened_at", "ALTER TABLE job_leads ADD COLUMN reopened_at TEXT"),
+    ("job_contacts", "linkedin_url", "ALTER TABLE job_contacts ADD COLUMN linkedin_url TEXT"),
 ]
 
 # models.LEAD_STAGES -> the timestamp column stamped when a lead enters that
@@ -1383,6 +1384,57 @@ def add_job_contact(conn: sqlite3.Connection, contact: JobContact) -> int:
             contact.first_contacted_at,
             contact.last_contacted_at,
         ),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def save_lead_contact(
+    conn: sqlite3.Connection,
+    job_key: str,
+    *,
+    name: str = "",
+    email: str = "",
+    phone: str = "",
+    linkedin_url: str = "",
+    role: str = "recruiter",
+) -> int:
+    """Record a contact Shawn found by hand (Manage lead → Search for sender →
+    Save contact). Updates the job's contact with the same email — or, failing
+    that, the same name — filling in only the fields given; otherwise inserts."""
+    name, phone, linkedin_url = name.strip(), phone.strip(), linkedin_url.strip()
+    email = email.strip().lower()
+    existing = None
+    if email:
+        existing = conn.execute(
+            "SELECT * FROM job_contacts WHERE job_key = ? AND lower(email) = ?", (job_key, email)
+        ).fetchone()
+    if existing is None and name:
+        existing = conn.execute(
+            "SELECT * FROM job_contacts WHERE job_key = ? AND lower(name) = ? ORDER BY id LIMIT 1",
+            (job_key, name.lower()),
+        ).fetchone()
+    now = utc_now_iso()
+    if existing is not None:
+        undelete = ", deleted_at = NULL" if "deleted_at" in existing.keys() else ""
+        conn.execute(
+            "UPDATE job_contacts SET name = ?, email = ?, phone = ?, linkedin_url = ?, role = ?"
+            f"{undelete} WHERE id = ?",
+            (
+                name or existing["name"],
+                email or existing["email"],
+                phone or existing["phone"],
+                linkedin_url or existing["linkedin_url"],
+                role,
+                existing["id"],
+            ),
+        )
+        conn.commit()
+        return existing["id"]
+    cursor = conn.execute(
+        "INSERT INTO job_contacts (job_key, name, email, phone, linkedin_url, role, "
+        "first_contacted_at, last_contacted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (job_key, name, email, phone, linkedin_url, role, now, now),
     )
     conn.commit()
     return cursor.lastrowid

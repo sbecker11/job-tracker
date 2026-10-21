@@ -93,6 +93,8 @@ export function gmailSearchUrl(query: string): string {
 }
 
 export interface SenderInfo {
+  /** The recruiter's message — its signature often has email / phone / LinkedIn. */
+  messageText?: string
   name?: string
   /** Real inbox only — LinkedIn relay addresses find nothing. */
   email?: string
@@ -107,6 +109,25 @@ function cleanField(value: string | undefined): string {
     .replace(/\s*\([^)]*\b(?:tbd|unknown)\b[^)]*\)/gi, '')
     .trim()
   return /^(?:role\s+)?(?:tbd|unknown|n\/a)$/i.test(v) ? '' : v
+}
+
+const OWN_EMAIL_RE = /spexture\.com$|^shawnbecker\.recruiting@|^scbboston@/i
+const SYSTEM_EMAIL_RE = /linkedin\.com$|no-?reply|notifications?@|mailer-daemon|donotreply/i
+const OWN_PHONE_DIGITS = '8578910896'
+
+/** Email / phone / LinkedIn profile found in a recruiter's message (usually the
+ * signature), skipping Shawn's own details and system addresses. */
+export function extractSenderDetails(text: string): { email: string; phone: string; linkedin: string } {
+  const email =
+    (text.match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g) || []).find(
+      (e) => !OWN_EMAIL_RE.test(e) && !SYSTEM_EMAIL_RE.test(e),
+    ) || ''
+  const phone =
+    (text.match(/(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b/g) || []).find(
+      (p) => !p.replace(/\D/g, '').endsWith(OWN_PHONE_DIGITS),
+    ) || ''
+  const linkedin = (text.match(/https?:\/\/(?:[a-z]{2,3}\.)?linkedin\.com\/in\/[\w%-]+\/?/i) || [''])[0]
+  return { email: email.replace(/[.,;]+$/, ''), phone: phone.trim(), linkedin }
 }
 
 const quoted = (s: string) => `"${s}"`
@@ -143,6 +164,124 @@ export function senderSearchLinks(sender: SenderInfo): { label: string; href: st
     })
   }
   return links
+}
+
+/** How to reach the recruiter for a message sent from Manage Lead. */
+export interface MessageTarget {
+  channel: 'linkedin' | 'email' | 'other'
+  threadUrl?: string
+  /** Real recruiter inbox (not a LinkedIn relay) for Gmail compose. */
+  composeTo?: string
+  /** Recruiter's last email, opened in Gmail (reply from there). */
+  gmailUrl?: string
+  /** Recruiter's LinkedIn profile (Save contact). */
+  linkedinUrl?: string
+  /** Company inbox (Save contact → Company) — offered only when no recruiter owns the lead. */
+  companyEmail?: string
+  companyContactName?: string
+  /** A recruiter / agency contact owns this lead (server-side). */
+  recruiterOwned?: boolean
+  /** What's known about the sender, for "Search for sender" and route labels. */
+  sender: SenderInfo
+  subject: string
+  /** False when there's no recruiter at all — Decline can only skip. */
+  hasRecruiter: boolean
+}
+
+export interface SendRoute {
+  channel: 'email' | 'linkedin' | 'other'
+  /** "Send message to Karth <k@ngt.com> for North Grand Technology — Data Engineer" */
+  label: string
+  /** Main button text. */
+  button: string
+  /** True: the link opens with the message filled in. False: copy it first, then paste. */
+  prefilled: boolean
+  href: (text: string) => string
+}
+
+/** Every way to reach the sender, best first: recruiter email (Gmail draft with
+ * the message filled in), LinkedIn thread, LinkedIn profile, the recruiter's
+ * email thread, then the company inbox — the last only when no recruiter owns
+ * the lead, so an agency's submission is never bypassed. */
+export function sendRoutes(t: MessageTarget): SendRoute[] {
+  const found = extractSenderDetails(t.sender.messageText || '')
+  if (!t.composeTo && found.email) t = { ...t, composeTo: found.email }
+  if (!t.linkedinUrl && found.linkedin) t = { ...t, linkedinUrl: found.linkedin }
+  const name = (t.sender.name || '').trim()
+  const company = cleanField(t.sender.company)
+  const title = cleanField(t.sender.title)
+  const forPart =
+    company && title ? ` for ${company} — ${title}` : company ? ` for ${company}` : title ? ` for ${title}` : ''
+  const who = name || 'the recruiter'
+  const routes: SendRoute[] = []
+  if (t.composeTo) {
+    const to = t.composeTo
+    routes.push({
+      channel: 'email',
+      label: `Send message to ${name && name.toLowerCase() !== to.toLowerCase() ? `${name} <${to}>` : to}${forPart}`,
+      button: `Open Gmail draft to ${name || to}`,
+      prefilled: true,
+      href: (text) => gmailComposeUrl(to, t.subject, text),
+    })
+  }
+  if (t.threadUrl) {
+    const url = t.threadUrl
+    const li = /linkedin\.com/i.test(url)
+    routes.push({
+      channel: li ? 'linkedin' : t.channel,
+      label: `Send message in the ${li ? 'LinkedIn ' : ''}thread with ${who}${forPart}`,
+      button: li ? 'Copy & open LinkedIn thread' : 'Copy & open thread',
+      prefilled: false,
+      href: () => url,
+    })
+  }
+  if (t.linkedinUrl) {
+    const url = t.linkedinUrl
+    routes.push({
+      channel: 'linkedin',
+      label: `Send message to ${who} on LinkedIn${forPart}`,
+      button: `Copy & open ${name ? `${name}'s` : 'LinkedIn'} profile`,
+      prefilled: false,
+      href: () => url,
+    })
+  }
+  if (t.gmailUrl) {
+    const url = t.gmailUrl
+    routes.push({
+      channel: 'email',
+      label: `Reply in the email thread with ${who}${forPart}`,
+      button: 'Copy & open email thread',
+      prefilled: false,
+      href: () => url,
+    })
+  }
+  if (t.companyEmail && !t.recruiterOwned) {
+    const to = t.companyEmail
+    const org = (t.companyContactName || company || to).trim()
+    routes.push({
+      channel: 'email',
+      label: `Send message to ${org} <${to}> about ${title || 'the role'}`,
+      button: `Open Gmail draft to ${company || to}`,
+      prefilled: true,
+      href: (text) => gmailComposeUrl(to, t.subject, text),
+    })
+  }
+  return routes
+}
+
+/** Save a contact found via Search for sender (set-lead-status --contact-*). */
+export function saveContactUrl(
+  key: string,
+  c: { name: string; email: string; phone: string; linkedin: string; role: string },
+): string {
+  return `leadstatus://set?${helperQuery({
+    key,
+    contact_name: c.name.trim(),
+    contact_email: c.email.trim(),
+    contact_phone: c.phone.trim(),
+    contact_linkedin: c.linkedin.trim(),
+    contact_role: c.role,
+  })}`
 }
 
 export function formatDecidedAt(iso?: string): string {

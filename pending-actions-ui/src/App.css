@@ -791,6 +791,21 @@ th.num {
   line-height: 1.4;
 }
 
+.next-action p {
+  margin: 0;
+}
+
+.next-action-steps-title {
+  margin-top: 4px !important;
+  font-weight: 500;
+}
+
+.next-action-steps {
+  margin: 2px 0 0;
+  padding-left: 1.4em;
+  font-weight: 400;
+}
+
 .pkg-chip {
   font-size: 0.72rem;
   font-weight: 600;
@@ -1577,4 +1592,22 @@ th.num {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 6px;
+}
+
+.send-route {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.btn.primary {
+  border-color: var(--accent, #6aa0ff);
+  font-weight: 600;
+}
+
+.secondary-actions {
+  font-size: 0.8rem;
+}
+
+.save-contact {
+  margin-top: 8px;
 }

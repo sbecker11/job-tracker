@@ -177,7 +177,7 @@ def _has_human_recruiter_on_file(conn, job_key: str) -> bool:
     rows = conn.execute(
         """
         SELECT name, email, phone, linkedin_reply_to FROM job_contacts
-        WHERE job_key = ?
+        WHERE job_key = ? AND COALESCE(role, '') != 'company'
         """,
         (job_key,),
     ).fetchall()
@@ -872,6 +872,27 @@ def build_clarify_queue(
     return queue
 
 
+def _send_route_fields(conn, job_key: str) -> dict:
+    """What Manage lead needs to pick a send route: the recruiter's LinkedIn
+    profile, a company inbox (Save contact → Company), and whether a
+    recruiter owns the lead — company email is only offered when none does."""
+    rows = conn.execute(
+        "SELECT name, email, role, linkedin_url FROM job_contacts "
+        "WHERE job_key = ? ORDER BY id DESC",
+        (job_key,),
+    ).fetchall()
+    fields: dict = {"hasRecruiter": _has_human_recruiter_on_file(conn, job_key)}
+    for r in rows:
+        role = r["role"] or ""
+        email = (r["email"] or "").strip()
+        if role == "company" and email and "companyEmail" not in fields:
+            fields["companyEmail"] = email
+            fields["companyContactName"] = (r["name"] or "").strip()
+        elif role != "company" and (r["linkedin_url"] or "").strip() and "recruiterLinkedinUrl" not in fields:
+            fields["recruiterLinkedinUrl"] = r["linkedin_url"].strip()
+    return fields
+
+
 def _recruiter_contact(conn, job_key: str) -> tuple[str, str, str, bool]:
     """Return (display_name, mailto_email, phone, email_is_linkedin_relay).
 
@@ -886,7 +907,7 @@ def _recruiter_contact(conn, job_key: str) -> tuple[str, str, str, bool]:
     row = conn.execute(
         """
         SELECT name, email, phone, linkedin_reply_to FROM job_contacts
-        WHERE job_key = ?
+        WHERE job_key = ? AND COALESCE(role, '') != 'company'
         ORDER BY CASE WHEN role = 'recruiter' THEN 0 ELSE 1 END, first_contacted_at ASC
         """,
         (job_key,),
@@ -1803,6 +1824,7 @@ def build_workflow_payload(
                 company=item.get("company") or "",
                 title=item.get("title") or "",
             )
+            item.update(_send_route_fields(conn, item["normalizedKey"]))
             item["followupDraft"] = draft_wait_followup_message(
                 recruiter_name=item.get("recruiterName") or "",
                 company=item.get("company") or "",

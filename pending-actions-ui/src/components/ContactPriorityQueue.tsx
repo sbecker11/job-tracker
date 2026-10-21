@@ -11,6 +11,7 @@ import {
   leadAnchorHref,
   leadAnchorId,
   leadStatusUrl,
+  sendRoutes,
 } from '../lib/links'
 import { HistoryLink } from './HistoryLink'
 import {
@@ -85,7 +86,12 @@ function messageTarget(item: ContactPriorityItem): MessageTarget {
     threadUrl: item.threadUrl,
     composeTo: realEmail,
     gmailUrl: item.gmailUrl,
+    linkedinUrl: item.recruiterLinkedinUrl,
+    companyEmail: item.companyEmail,
+    companyContactName: item.companyContactName,
+    recruiterOwned: item.hasRecruiter,
     sender: {
+      messageText: item.messageBody,
       name: item.recruiterName,
       email: realEmail,
       phone: item.recruiterPhone,
@@ -304,11 +310,34 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
         // Clarify rows with a lead record reply from Manage lead; keyless
         // ones (unmatched InMails) keep Copy reply / Show steps / Reply sent.
         const replyInPanel = item.stage === 'clarify' && Boolean(item.normalizedKey && item.draftReply)
-        const nextAction = replyInPanel
-          ? `YOUR ACTION: ${item.recruiterName || 'The recruiter'} is waiting on you${
-              item.unansweredDays != null ? ` (${item.unansweredDays}d)` : ''
-            } — Manage lead opens on Reply: edit the message, paste it into the thread and send, then click Message sent`
-          : item.nextAction ||
+        const followupInPanel =
+          item.stage === 'wait_schedule' &&
+          Boolean(item.followUpDue && item.normalizedKey && item.followupDraft) &&
+          !item.staleActive &&
+          !item.reopened
+        const route = replyInPanel || followupInPanel ? sendRoutes(messageTarget(item))[0] : undefined
+        const who = item.recruiterName || 'The recruiter'
+        const noun = replyInPanel ? 'reply' : 'follow-up'
+        const panelStatus = replyInPanel
+          ? `${who} is waiting on you${item.unansweredDays != null ? ` (${item.unansweredDays}d)` : ''}`
+          : `No reply from ${who === 'The recruiter' ? 'the recruiter' : who} in ${item.waitingDays ?? '?'}d — time to follow up`
+        const panelSteps =
+          replyInPanel || followupInPanel
+            ? [
+                replyInPanel
+                  ? 'Choose the reply type, then review the generated reply and its Send to details'
+                  : 'Review the generated follow-up and its Send to details',
+                route
+                  ? route.prefilled
+                    ? `Click "${route.button}" — it opens with the ${noun} and Send to filled in; click Send`
+                    : `Click "${route.button}" — paste the ${noun} and click Send`
+                  : `No way to reach ${who === 'The recruiter' ? 'the recruiter' : who} yet — use Search for sender, then Save contact; then click the send button, paste the ${noun} and click Send`,
+                `Click "${replyInPanel ? 'Reply sent' : 'Follow-up sent'}"`,
+              ]
+            : null
+        const nextAction = panelSteps
+          ? ''
+            : item.nextAction ||
             item.actionHint ||
             'YOUR ACTION: See stage chip and use the buttons on the right.'
         const ackKey = replyAckKey(item)
@@ -484,7 +513,19 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                   )}
                 </div>
               </div>
-              <p className="next-action priority-wide">{nextAction}</p>
+              {panelSteps ? (
+                <div className="next-action priority-wide">
+                  <p className="next-action-status">Current status: {panelStatus}</p>
+                  <p className="next-action-steps-title">Manage lead ({panelSteps.length} steps):</p>
+                  <ol className="next-action-steps">
+                    {panelSteps.map((step) => (
+                      <li key={step}>{step}</li>
+                    ))}
+                  </ol>
+                </div>
+              ) : (
+                <p className="next-action priority-wide">{nextAction}</p>
+              )}
               <div className="priority-meta priority-wide">
                 {item.recruiterName && <span>{item.recruiterName}</span>}
                 {item.recruiterPhone &&

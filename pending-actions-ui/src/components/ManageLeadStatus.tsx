@@ -2,9 +2,12 @@ import { useContext, useState } from 'react'
 import { DeclineReasonsContext } from '../lib/declineReasons'
 import {
   declineUrl,
-  gmailComposeUrl,
+  extractSenderDetails,
   leadStatusUrl,
+  saveContactUrl,
   senderSearchLinks,
+  sendRoutes,
+  type MessageTarget,
   type SenderInfo,
 } from '../lib/links'
 
@@ -68,21 +71,7 @@ interface Props {
   onCancel?: () => void
 }
 
-/** How to reach the recruiter for a message sent from Manage Lead; only
- * Contact priority rows have one. */
-export interface MessageTarget {
-  channel: 'linkedin' | 'email' | 'other'
-  threadUrl?: string
-  /** Real recruiter inbox (not a LinkedIn relay) for Gmail compose. */
-  composeTo?: string
-  /** Recruiter's last email, opened in Gmail (reply from there). */
-  gmailUrl?: string
-  /** What's known about the sender, for the "Search for sender" links. */
-  sender: SenderInfo
-  subject: string
-  /** False when there's no recruiter at all — Decline can only skip. */
-  hasRecruiter: boolean
-}
+export type { MessageTarget } from '../lib/links'
 
 /** Lets Manage Lead offer "Reply — with message" on a card where the
  * recruiter is waiting on Shawn (Clarify). */
@@ -205,6 +194,44 @@ export function ManageLeadForm({
     setSent(which)
     after?.()
   }
+
+  const routes = message ? sendRoutes(message) : []
+  const route = routes[0]
+  const otherRoutes = routes.slice(1)
+  const channel = route?.channel ?? message?.channel ?? 'other'
+  const sentLink =
+    declining && reason ? (
+      <a
+        className={`btn${sent === 'decline' ? ' muted' : ''}`}
+        href={declineUrl(normalizedKey, reason.code, isOther ? customReason : '', {
+          channel,
+          letter: true,
+          letterText: text,
+        })}
+        onClick={markSent('decline', decline?.onClosed)}
+        title="After you send it: log the message and close the lead as skipped with this reason"
+      >
+        {sent === 'decline' ? 'Message sent ✓' : 'Message sent'}
+      </a>
+    ) : replying ? (
+      <a
+        className={`btn${sent === 'reply' ? ' muted' : ''}`}
+        href={leadStatusUrl(normalizedKey, currentStatus || 'new', '', { channel, message: text })}
+        onClick={markSent('reply', reply?.onSent)}
+        title="After you send it: log your reply (status stays the same) and start waiting on the recruiter"
+      >
+        {sent === 'reply' ? 'Reply sent ✓' : 'Reply sent'}
+      </a>
+    ) : followingUp ? (
+      <a
+        className={`btn${sent === 'followup' ? ' muted' : ''}`}
+        href={leadStatusUrl(normalizedKey, 'following_up', '', { channel, message: text })}
+        onClick={markSent('followup', onApplied)}
+        title="After you send it: log the message, set Following up, and restart the wait clock"
+      >
+        {sent === 'followup' ? 'Follow-up sent ✓' : 'Follow-up sent'}
+      </a>
+    ) : null
 
   return (
     <div className="manage-lead-form">
@@ -331,64 +358,64 @@ export function ManageLeadForm({
               <pre className="draft original-message-body">{reply.original}</pre>
             </details>
           )}
+          <p className="send-route">
+            {route ? (
+              <>
+                Next: <strong>{route.label}</strong>
+              </>
+            ) : (
+              'No way to reach the sender yet — open Search for sender below, then Save contact.'
+            )}
+          </p>
           <div className="actions">
+            {route && text.trim() && (
+              <a
+                className="btn primary"
+                href={route.href(text)}
+                target="_blank"
+                rel="noreferrer"
+                onClick={() => {
+                  if (!route.prefilled) void copyText(text)
+                }}
+                title={
+                  route.prefilled
+                    ? 'Opens with the message filled in'
+                    : 'Copies the message, then opens — just paste and send'
+                }
+              >
+                {route.button}
+              </a>
+            )}
+            {text.trim() && sentLink}
+          </div>
+          <div className="actions secondary-actions">
             <button
               type="button"
-              className="btn"
+              className="btn link"
               disabled={!text.trim()}
               onClick={async () => {
-                try {
-                  await navigator.clipboard.writeText(text)
-                } catch {
-                  /* clipboard can be blocked in the embedded browser; the text is selectable */
-                }
+                await copyText(text)
                 setCopied(true)
                 setTimeout(() => setCopied(false), 1500)
               }}
             >
               {copied ? 'Copied' : 'Copy message'}
             </button>
-            <ContactLinks target={message} text={text} />
-            {text.trim() && declining && reason && (
+            {otherRoutes.map((r) => (
               <a
-                className={`btn${sent === 'decline' ? ' muted' : ''}`}
-                href={declineUrl(normalizedKey, reason.code, isOther ? customReason : '', {
-                  channel: message.channel,
-                  letter: true,
-                  letterText: text,
-                })}
-                onClick={markSent('decline', decline?.onClosed)}
-                title="After you send it: log the message and close the lead as skipped with this reason"
+                key={r.button}
+                className="btn link"
+                href={r.href(text)}
+                target="_blank"
+                rel="noreferrer"
+                onClick={() => {
+                  if (!r.prefilled) void copyText(text)
+                }}
               >
-                {sent === 'decline' ? 'Message sent ✓' : 'Message sent'}
+                {r.button}
               </a>
-            )}
-            {text.trim() && replying && (
-              <a
-                className={`btn${sent === 'reply' ? ' muted' : ''}`}
-                href={leadStatusUrl(normalizedKey, currentStatus || 'new', '', {
-                  channel: message.channel,
-                  message: text,
-                })}
-                onClick={markSent('reply', reply?.onSent)}
-                title="After you send it: log your reply (status stays the same) and start waiting on the recruiter"
-              >
-                {sent === 'reply' ? 'Message sent ✓' : 'Message sent'}
-              </a>
-            )}
-            {text.trim() && followingUp && (
-              <a
-                className={`btn${sent === 'followup' ? ' muted' : ''}`}
-                href={leadStatusUrl(normalizedKey, 'following_up', '', {
-                  channel: message.channel,
-                  message: text,
-                })}
-                onClick={markSent('followup', onApplied)}
-                title="After you send it: log the message, set Following up, and restart the wait clock"
-              >
-                {sent === 'followup' ? 'Message sent ✓' : 'Message sent'}
-              </a>
-            )}
+            ))}
+            <SenderSearch sender={message.sender} normalizedKey={normalizedKey} onSaved={onApplied} />
           </div>
         </div>
       )}
@@ -409,54 +436,105 @@ export function ManageLeadForm({
   )
 }
 
-/** Thread / email / search links for reaching the recruiter, most direct first. */
-function ContactLinks({ target, text }: { target: MessageTarget; text: string }) {
-  return (
-    <>
-      {target.threadUrl && (
-        <a className="btn link" href={target.threadUrl} target="_blank" rel="noreferrer">
-          {/linkedin\.com/i.test(target.threadUrl) ? 'Open LinkedIn thread' : 'Open thread'}
-        </a>
-      )}
-      {target.gmailUrl && (
-        <a
-          className="btn link"
-          href={target.gmailUrl}
-          target="_blank"
-          rel="noreferrer"
-          title="The recruiter's last email — reply to it there"
-        >
-          Open email thread
-        </a>
-      )}
-      {target.composeTo && text.trim() && (
-        <a
-          className="btn link"
-          href={gmailComposeUrl(target.composeTo, target.subject, text)}
-          target="_blank"
-          rel="noreferrer"
-          title={`New Gmail draft to ${target.composeTo} with this message`}
-        >
-          New email to recruiter
-        </a>
-      )}
-      <SenderSearch sender={target.sender} />
-    </>
-  )
+async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    /* clipboard can be blocked in the embedded browser; the text is selectable */
+  }
 }
 
-function SenderSearch({ sender }: { sender: SenderInfo }) {
+const CONTACT_ROLES = [
+  { value: 'recruiter', label: 'Recruiter' },
+  { value: 'company', label: 'Company (careers / HR)' },
+  { value: 'hiring_manager', label: 'Hiring manager' },
+]
+
+/** Search Gmail / LinkedIn / the web for the sender, then save what was found
+ * (pre-filled from their message) so the next regenerate picks a direct route. */
+function SenderSearch({
+  sender,
+  normalizedKey,
+  onSaved,
+}: {
+  sender: SenderInfo
+  normalizedKey: string
+  onSaved?: () => void
+}) {
   const links = senderSearchLinks(sender)
-  if (!links.length) return null
+  const fromMessage = extractSenderDetails(sender.messageText || '')
+  const [found, setFound] = useState({
+    name: sender.name || '',
+    email: sender.email ? '' : fromMessage.email,
+    phone: sender.phone ? '' : fromMessage.phone,
+    linkedin: fromMessage.linkedin,
+    role: 'recruiter',
+  })
+  const [saved, setSaved] = useState(false)
+  const set = (k: keyof typeof found) => (e: { target: { value: string } }) => {
+    setFound((f) => ({ ...f, [k]: e.target.value }))
+    setSaved(false)
+  }
+  const hasDetail = Boolean(found.email.trim() || found.phone.trim() || found.linkedin.trim())
+  const prefilled = Boolean(fromMessage.email || fromMessage.phone || fromMessage.linkedin)
   return (
     <details className="sender-search">
-      <summary className="btn link">Search for sender</summary>
-      <div className="sender-search-links">
-        {links.map((l) => (
-          <a key={l.label} className="btn link" href={l.href} target="_blank" rel="noreferrer">
-            {l.label}
+      <summary className="btn link">
+        {prefilled ? 'Search for sender (details found in their message)' : 'Search for sender'}
+      </summary>
+      {links.length > 0 && (
+        <div className="sender-search-links">
+          {links.map((l) => (
+            <a key={l.label} className="btn link" href={l.href} target="_blank" rel="noreferrer">
+              {l.label}
+            </a>
+          ))}
+        </div>
+      )}
+      <div className="lead-panel-fields save-contact">
+        <label className="manage-lead-field">
+          <span>Name</span>
+          <input className="manage-lead-reason" value={found.name} onChange={set('name')} />
+        </label>
+        <label className="manage-lead-field">
+          <span>Email</span>
+          <input className="manage-lead-reason" type="email" value={found.email} onChange={set('email')} />
+        </label>
+        <label className="manage-lead-field">
+          <span>LinkedIn profile URL</span>
+          <input className="manage-lead-reason" value={found.linkedin} onChange={set('linkedin')} />
+        </label>
+        <label className="manage-lead-field">
+          <span>Phone</span>
+          <input className="manage-lead-reason" value={found.phone} onChange={set('phone')} />
+        </label>
+        <label className="manage-lead-field">
+          <span>This is</span>
+          <select value={found.role} onChange={set('role')}>
+            {CONTACT_ROLES.map((r) => (
+              <option key={r.value} value={r.value}>
+                {r.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {hasDetail ? (
+          <a
+            className={`btn${saved ? ' muted' : ''}`}
+            href={saveContactUrl(normalizedKey, found)}
+            onClick={() => {
+              setSaved(true)
+              onSaved?.()
+            }}
+            title="Save to this lead; the page then picks the best way to send"
+          >
+            {saved ? 'Saved ✓' : 'Save contact'}
           </a>
-        ))}
+        ) : (
+          <span className="btn disabled" title="Enter an email, LinkedIn URL, or phone first">
+            Save contact
+          </span>
+        )}
       </div>
     </details>
   )

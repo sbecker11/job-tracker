@@ -102,8 +102,13 @@ export interface ContactPriorityItem {
   todayLabel?: string
   todayRank?: number
   staleActive?: boolean
+  reopened?: boolean
   declineGreeting?: string
   followupDraft?: string
+  hasRecruiter?: boolean
+  companyEmail?: string
+  companyContactName?: string
+  recruiterLinkedinUrl?: string
   postDecline?: boolean
   declineReasonLabel?: string
   termsChanged?: boolean
@@ -279,7 +284,15 @@ function todayFields(
   src: TodayFields,
 ): Pick<
   ContactPriorityItem,
-  'todayTier' | 'todayLabel' | 'todayRank' | 'declineGreeting' | 'followupDraft'
+  | 'todayTier'
+  | 'todayLabel'
+  | 'todayRank'
+  | 'declineGreeting'
+  | 'followupDraft'
+  | 'hasRecruiter'
+  | 'companyEmail'
+  | 'companyContactName'
+  | 'recruiterLinkedinUrl'
 > {
   return {
     todayTier: src.todayTier,
@@ -287,6 +300,10 @@ function todayFields(
     todayRank: src.todayRank,
     declineGreeting: src.declineGreeting,
     followupDraft: src.followupDraft,
+    hasRecruiter: src.hasRecruiter,
+    companyEmail: src.companyEmail,
+    companyContactName: src.companyContactName,
+    recruiterLinkedinUrl: src.recruiterLinkedinUrl,
   }
 }
 
@@ -354,6 +371,7 @@ function fromWait(w: WaitItem): ContactPriorityItem {
     duplicateKeys: w.duplicateKeys,
     status: w.status,
     staleActive: w.staleActive,
+    reopened: w.reopened,
     ...todayFields(w),
   }
 }
