@@ -23,7 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--key", required=True, help="Exact job_leads.normalized_key")
     ap.add_argument("--reason", required=True, choices=[r.code for r in DECLINE_REASONS])
     ap.add_argument("--note", default="", help="Required for --reason other; optional extra context otherwise")
-    ap.add_argument("--channel", default="other", choices=("linkedin", "email", "other"))
+    ap.add_argument("--channel", default="other", choices=("linkedin", "email", "sms", "other"))
     ap.add_argument("--no-letter", action="store_true", help="Skip with the reason, without logging a sent letter")
     ap.add_argument("--letter-text", default="", help="The letter as actually sent (edited); default: the drafted letter")
     ap.add_argument("--print-letter", action="store_true", help="Print the drafted letter and change nothing")

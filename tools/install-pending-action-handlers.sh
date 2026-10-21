@@ -23,6 +23,7 @@ HANDLERS=(
   mark-package-sent
   set-lead-status
   decline-lead
+  send-text
 )
 
 CONSOLE_SCRIPTS=(

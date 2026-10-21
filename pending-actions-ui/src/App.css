@@ -338,6 +338,12 @@ a.channel-email {
   color: var(--email);
 }
 
+.channel-sms {
+  color: #e0b56a;
+  border-color: rgba(224, 181, 106, 0.4);
+  background: rgba(224, 181, 106, 0.1);
+}
+
 .hint-line {
   color: var(--muted);
   font-size: 0.88rem;

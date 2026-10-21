@@ -330,7 +330,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                   ? "Review the reply. It's already written for you."
                   : "Review the follow-up. It's already written for you.",
                 route ? route.step : NO_ROUTE_STEP,
-                'Click "Message sent".',
+                ...(route?.sendsAndLogs ? [] : ['Click "Message sent".']),
               ]
             : null
         const sendTo = route

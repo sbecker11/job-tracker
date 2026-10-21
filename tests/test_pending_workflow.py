@@ -840,3 +840,11 @@ def test_today_order_ranks_across_stages():
     assert {i["todayLabel"] for i in wait if i["normalizedKey"] in ("w-dead", "w-stale")} == {
         "Probably dead — check in or close"
     }
+
+
+def test_call_logged_lead_channel_is_sms_not_email():
+    from job_tracker.pipeline.pending_workflow import _channel_from_addresses
+
+    assert _channel_from_addresses(source_label="call") == "sms"
+    assert _channel_from_addresses(source_label="call", from_address="k@ngt.example") == "email"
+    assert _channel_from_addresses(source_label="") == "email"

@@ -444,6 +444,8 @@ def _channel_from_addresses(*, from_address: str = "", thread_url: str = "", sou
     src = (source_label or "").strip().lower()
     if thread_url or "linkedin" in fr or src.startswith("linkedin"):
         return "linkedin"
+    if not fr and src in ("call", "phone", "sms", "text"):
+        return "sms"
     return "email"
 
 

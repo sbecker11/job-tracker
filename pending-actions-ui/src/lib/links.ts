@@ -204,6 +204,8 @@ export interface SendRoute {
   step: string
   /** True: the link opens with the message filled in. False: copy it first, then paste. */
   prefilled: boolean
+  /** True: the SendText helper confirms, sends and logs it — no Message sent click. */
+  sendsAndLogs?: boolean
   href: (text: string) => string
 }
 
@@ -310,12 +312,30 @@ export function sendRoutes(t: MessageTarget): SendRoute[] {
       button,
       how: 'text',
       to: phone,
-      step: `Click "${button}". Messages opens to ${phone} and the message is copied. Paste it and press Send.`,
-      prefilled: false,
+      step: `Click "${button}". Check the message in the window that opens and click Send — it goes out from Messages and is logged on the lead.`,
+      prefilled: true,
+      sendsAndLogs: true,
       href: () => smsUrl(phone),
     })
   }
   return routes
+}
+
+/** SendText helper: confirm window → Messages → logged via set-lead-status (or decline-lead). */
+export function sendTextUrl(
+  key: string,
+  to: string,
+  name: string,
+  message: string,
+  after: { status: string } | { declineReason: string; declineNote?: string },
+): string {
+  const q: Record<string, string> = { key, to, name, message }
+  if ('status' in after) q.status = after.status
+  else {
+    q.decline_reason = after.declineReason
+    if (after.declineNote) q.decline_note = after.declineNote
+  }
+  return `sendtext://send?${helperQuery(q)}`
 }
 
 export const smsUrl = (phone: string) => `sms:${phone.replace(/[^\d+]/g, '')}`

@@ -12,7 +12,7 @@ export interface CycleStepTiming {
   status: 'ok' | 'failed' | 'timed_out' | 'incomplete'
 }
 
-export type Channel = 'linkedin' | 'email'
+export type Channel = 'linkedin' | 'email' | 'sms'
 
 export interface PipelineStage {
   id: PipelineStageId

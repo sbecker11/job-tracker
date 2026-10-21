@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--on", help="ISO date/timestamp for the stage column (default: now)")
     ap.add_argument(
         "--sent-channel",
-        choices=("linkedin", "email", "other"),
+        choices=("linkedin", "email", "sms", "other"),
         help="Also log --sent-message as an outbound message on this channel (restarts the wait clock)",
     )
     ap.add_argument("--sent-message", default="", help="Text Shawn sent (with --sent-channel)")

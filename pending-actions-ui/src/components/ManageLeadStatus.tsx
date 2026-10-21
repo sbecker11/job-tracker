@@ -8,6 +8,7 @@ import {
   saveContactUrl,
   senderSearchLinks,
   sendRoutes,
+  sendTextUrl,
   type MessageTarget,
   type SendRoute,
   type SenderInfo,
@@ -201,6 +202,20 @@ export function ManageLeadForm({
   const route = routes[0]
   const otherRoutes = routes.slice(1)
   const phone = (message?.sender.phone || '').trim()
+  const mode = declining ? 'decline' : replying ? 'reply' : 'followup'
+  const afterSent = declining ? decline?.onClosed : replying ? reply?.onSent : onApplied
+  const textHref =
+    route?.sendsAndLogs && text.trim()
+      ? sendTextUrl(
+          normalizedKey,
+          route.to,
+          message?.sender.name || '',
+          text,
+          declining && reason
+            ? { declineReason: reason.code, declineNote: isOther ? customReason : '' }
+            : { status: followingUp ? 'following_up' : currentStatus || 'new' },
+        )
+      : ''
   const channel = route?.channel ?? message?.channel ?? 'other'
   const sentLink =
     declining && reason ? (
@@ -363,7 +378,17 @@ export function ManageLeadForm({
           )}
           <SendToBox route={route} message={message} />
           <div className="actions">
-            {route && text.trim() && (
+            {route?.sendsAndLogs && textHref && (
+              <a
+                className={`btn primary${sent === mode ? ' muted' : ''}`}
+                href={textHref}
+                onClick={markSent(mode, afterSent)}
+                title={route.step}
+              >
+                {sent === mode ? `${route.button} ✓` : route.button}
+              </a>
+            )}
+            {route && !route.sendsAndLogs && text.trim() && (
               <a
                 className="btn primary"
                 href={route.href(text)}
@@ -377,7 +402,7 @@ export function ManageLeadForm({
                 {route.button}
               </a>
             )}
-            {text.trim() && sentLink}
+            {text.trim() && !route?.sendsAndLogs && sentLink}
           </div>
           <div className="actions secondary-actions">
             <button

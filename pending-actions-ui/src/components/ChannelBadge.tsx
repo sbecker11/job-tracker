@@ -12,7 +12,7 @@ export function ChannelBadge({
   channel: Channel | string
   href?: string
 }) {
-  const label = channel === 'linkedin' ? 'LinkedIn' : 'Email'
+  const label = channel === 'linkedin' ? 'LinkedIn' : channel === 'sms' ? 'SMS' : 'Email'
   const className = `channel-badge channel-${channel}`
   const title =
     channel === 'linkedin' && href
