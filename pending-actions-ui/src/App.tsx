@@ -457,6 +457,16 @@ export default function App() {
     [busy, replySentDone],
   )
 
+  const onReplyRecorded = useCallback((item: ContactPriorityItem) => {
+    const ackKey = replyAckKey(item)
+    setReplySentDone((prev) => {
+      if (prev[ackKey]) return prev
+      const next: Record<string, true> = { ...prev, [ackKey]: true }
+      saveReplySentAcks(next)
+      return next
+    })
+  }, [])
+
   const priorityAll = useMemo(
     () => (data ? buildContactPriorityQueue(data) : []),
     [data],
@@ -652,6 +662,7 @@ export default function App() {
             items={filtered}
             filterLabel={filterLabel}
             onReplySent={onReplySent}
+            onReplyRecorded={onReplyRecorded}
             replySentDone={replySentDone}
             replyScanningId={replyScanningId}
             replyScanBusy={busy}

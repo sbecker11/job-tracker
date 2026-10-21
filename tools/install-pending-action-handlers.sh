@@ -24,6 +24,7 @@ HANDLERS=(
   set-lead-status
   decline-lead
   send-text
+  record-reply
 )
 
 CONSOLE_SCRIPTS=(
@@ -33,6 +34,7 @@ CONSOLE_SCRIPTS=(
   mark-package-sent
   set-lead-status
   decline-lead
+  record-unmatched-reply
 )
 
 if ! command -v swiftc >/dev/null 2>&1; then

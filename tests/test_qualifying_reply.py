@@ -118,7 +118,7 @@ def test_draft_evan_is_screen_first_not_jd_gate():
     assert "C2C" in draft.body
     assert "rate" not in draft.body.lower()
     assert "$" not in draft.body
-    assert draft.body.strip().endswith("Best, Shawn")
+    assert draft.body.strip().endswith("Best, Shawn\nshawn.becker@spexture.com")
 
 
 def test_draft_madhvendra_skips_jd_and_remote_asks():
@@ -131,7 +131,7 @@ def test_draft_madhvendra_skips_jd_and_remote_asks():
     assert "LLM Data Engineer" in draft.body
     assert "paste the job description" not in draft.body.lower()
     assert "C2C" in draft.body
-    assert draft.body.strip().endswith("Best, Shawn")
+    assert draft.body.strip().endswith("Best, Shawn\nshawn.becker@spexture.com")
     assert draft.gaps.screen_first is False
 
 
@@ -154,7 +154,7 @@ def test_draft_confidential_chat_is_screen_first():
     assert "latest résumé" in draft.body.lower()
     assert "Who is the end client" not in draft.body
     assert "paste the job description" not in draft.body.lower()
-    assert draft.body.strip().endswith("Best, Shawn")
+    assert draft.body.strip().endswith("Best, Shawn\nshawn.becker@spexture.com")
 
 
 def test_promote_heuristic_unmatched(tmp_path: Path):
@@ -192,3 +192,22 @@ def test_promote_heuristic_unmatched(tmp_path: Path):
     assert row["title"] == "LLM Data Engineer"
     assert row["source_label"] == "linkedin_message"
     conn.close()
+
+
+def test_draft_names_recruiter_date_and_client_location():
+    body = (
+        "Hi We have a Lead Python Fullstack role with our direct client in New Jersey it's a Remote role\n\n"
+        "Skills : Python , Fullstack , Claude is Must to Have AI tool Django , Numpy , Panda's\n\n"
+        "Please let me know if you would be interested in this role\n\nRajneesh bhardwaj\nRecruitment Specialist"
+    )
+    draft = draft_qualifying_reply(
+        body,
+        subject="Position for a Lead AI Python Fullstack Remote with Direct client",
+        known_recruiter_name="Rajneesh Bhardwaj",
+        received_at="2026-10-12T16:34:00+00:00",
+    )
+    assert draft.body.startswith("Hi Rajneesh,")
+    assert "Thanks for reaching out on October 12" in draft.body
+    assert "before I send you my résumé" in draft.body
+    assert "on-site with the client in New Jersey?" in draft.body
+    assert draft.body.endswith("Best, Shawn\nshawn.becker@spexture.com")

@@ -644,7 +644,7 @@ def render(conn, *, output_root: Path, now: datetime, automation_state_dir: Path
     unmatched_communications = []
     for r in list_unmatched_messages(conn):
         body = r["body_text"] or ""
-        draft = draft_qualifying_reply(body, subject=r["subject"] or "")
+        draft = draft_qualifying_reply(body, subject=r["subject"] or "", received_at=r["detected_at"] or "")
         unmatched_communications.append(
             {
                 "messageId": r["message_id"],
@@ -849,7 +849,17 @@ def _build_linkedin_reply_queue(
         if not _is_first_touch_linkedin_subject(subj):
             continue
         body = inbound["body_text"] or ""
-        draft = draft_qualifying_reply(body, subject=subj)
+        known = conn.execute(
+            "SELECT name FROM job_contacts WHERE job_key = ? AND COALESCE(name, '') != '' "
+            "AND COALESCE(role, '') != 'company' ORDER BY id LIMIT 1",
+            (r["normalized_key"],),
+        ).fetchone()
+        draft = draft_qualifying_reply(
+            body,
+            subject=subj,
+            known_recruiter_name=known[0] if known else "",
+            received_at=inbound["occurred_at"] or "",
+        )
         # Need a real thread link or a named recruiter — skip empty stubs.
         if not draft.thread_url and not draft.recruiter_name:
             continue

@@ -338,6 +338,10 @@ export function sendTextUrl(
   return `sendtext://send?${helperQuery(q)}`
 }
 
+/** RecordReply helper: confirm the reply sent on LinkedIn → record-unmatched-reply. */
+export const recordReplyUrl = (messageId: string, name: string, text: string, channel = 'linkedin') =>
+  `recordreply://record?${helperQuery({ message_id: messageId, name, text, channel })}`
+
 export const smsUrl = (phone: string) => `sms:${phone.replace(/[^\d+]/g, '')}`
 export const callUrl = (phone: string) => `tel:${phone.replace(/[^\d+]/g, '')}`
 

@@ -12,6 +12,7 @@ import {
   leadAnchorId,
   leadStatusUrl,
   NO_ROUTE_STEP,
+  recordReplyUrl,
   sendRoutes,
 } from '../lib/links'
 import { HistoryLink } from './HistoryLink'
@@ -128,6 +129,8 @@ interface Props {
   items: ContactPriorityItem[]
   filterLabel: string
   onReplySent?: (item: ContactPriorityItem) => void
+  /** Unmatched LinkedIn card: Reply sent opened RecordReply — mark it locally. */
+  onReplyRecorded?: (item: ContactPriorityItem) => void
   /** Keys from replyAckKey — locked after a successful scan for that inbound. */
   replySentDone?: Record<string, true>
   replyScanningId?: string
@@ -166,6 +169,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
   items,
   filterLabel,
   onReplySent,
+  onReplyRecorded,
   replySentDone = {},
   replyScanningId = '',
   replyScanBusy = false,
@@ -313,6 +317,12 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
         // Clarify rows with a lead record reply from Manage lead; keyless
         // ones (unmatched InMails) keep Copy reply / Show steps / Reply sent.
         const replyInPanel = item.stage === 'clarify' && Boolean(item.normalizedKey && item.draftReply)
+        // LinkedIn never emails back what Shawn sends, so unmatched LinkedIn
+        // cards record the reply through RecordReply instead of a Sent scan.
+        const recordable =
+          item.kind === 'unmatched' &&
+          Boolean(item.messageId) &&
+          (item.channel === 'linkedin' || Boolean(item.emailIsLinkedInRelay))
         const followupInPanel =
           item.stage === 'wait_schedule' &&
           Boolean(item.followUpDue && item.normalizedKey && item.followupDraft) &&
@@ -320,9 +330,19 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
           !item.reopened
         const route = replyInPanel || followupInPanel ? sendRoutes(messageTarget(item))[0] : undefined
         const who = item.recruiterName || 'The recruiter'
-        const panelStatus = replyInPanel
-          ? `${who} is waiting on you${item.unansweredDays != null ? ` (${item.unansweredDays}d)` : ''}`
+        const replyDays = item.unansweredDays ?? item.ageDays
+        const panelStatus =
+          replyInPanel || (recordable && item.replyDue)
+          ? `${who} is waiting on you${replyDays != null ? ` (${replyDays}d)` : ''}`
           : `No reply from ${who === 'The recruiter' ? 'the recruiter' : who} in ${item.waitingDays ?? '?'}d — time to follow up`
+        const recordSteps =
+          recordable && item.replyDue && !replyInPanel
+            ? [
+                'Click "Copy reply" and edit it if you like.',
+                'Open the LinkedIn thread, paste the reply and press Send.',
+                'Click "Reply sent" and confirm what you sent — the card moves to Waiting on them.',
+              ]
+            : null
         const panelSteps =
           replyInPanel || followupInPanel
             ? [
@@ -338,7 +358,9 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
               item.resolvedVia && route.to === item.resolvedEmail ? ` (found via ${item.resolvedVia})` : ''
             }`
           : `${who} — no email, LinkedIn or phone on file`
-        const nextAction = panelSteps
+        const steps = panelSteps ?? recordSteps
+        const stepsTitle = panelSteps ? `Manage lead (${panelSteps.length} steps):` : 'Steps:'
+        const nextAction = steps
           ? ''
             : item.nextAction ||
             item.actionHint ||
@@ -491,7 +513,17 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                       {item.duplicateOfCompany ? ` @ ${item.duplicateOfCompany}` : ''}
                     </a>
                   )}
-                  {item.replyDue && onReplySent && !replyInPanel && (
+                  {item.replyDue && recordable && (
+                    <a
+                      className={`btn link regen-btn reply-sent-btn${replyAcknowledged ? ' muted' : ''}`}
+                      href={recordReplyUrl(item.messageId!, item.recruiterName || '', item.draftReply || '')}
+                      onClick={() => onReplyRecorded?.(item)}
+                      title="After you send it on LinkedIn: confirm what you sent, and this card moves to Waiting on them"
+                    >
+                      {replyAcknowledged ? 'Reply sent ✓' : 'Reply sent'}
+                    </a>
+                  )}
+                  {item.replyDue && onReplySent && !replyInPanel && !recordable && (
                     <button
                       type="button"
                       className="btn link regen-btn reply-sent-btn"
@@ -516,13 +548,13 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                   )}
                 </div>
               </div>
-              {panelSteps ? (
+              {steps ? (
                 <div className="next-action priority-wide">
                   <p className="next-action-status">Current status: {panelStatus}</p>
-                  <p className="next-action-sendto">Send to: {sendTo}</p>
-                  <p className="next-action-steps-title">Manage lead ({panelSteps.length} steps):</p>
+                  {panelSteps && <p className="next-action-sendto">Send to: {sendTo}</p>}
+                  <p className="next-action-steps-title">{stepsTitle}</p>
                   <ol className="next-action-steps">
-                    {panelSteps.map((step) => (
+                    {steps.map((step) => (
                       <li key={step}>{step}</li>
                     ))}
                   </ol>

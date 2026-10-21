@@ -23,6 +23,7 @@ without waiting on LLM fallback.
 from __future__ import annotations
 
 import re
+from datetime import datetime
 import sqlite3
 from dataclasses import dataclass, field
 
@@ -266,7 +267,43 @@ def detect_pitch_gaps(text: str, *, subject: str = "") -> PitchGaps:
     return gaps
 
 
-def draft_qualifying_reply(text: str, *, subject: str = "", known_recruiter_name: str = "") -> QualifyingDraft:
+_US_STATES = (
+    "Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|"
+    "Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|"
+    "Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|"
+    "North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|"
+    "Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming"
+)
+_PLACE_RE = re.compile(
+    rf"\b(?:in|at|based in|located in|on-?site in|onsite in|hybrid in)\s+"
+    rf"((?:[A-Z][a-z]+(?: [A-Z][a-z]+)*, [A-Z]{{2}}\b)|(?:{_US_STATES})\b)"
+)
+
+SIGNATURE = "Best, Shawn\nshawn.becker@spexture.com"
+
+
+def extract_pitch_location(text: str) -> str:
+    """A US place the pitch puts the client or role in ("New Jersey", "Bloomfield, CT")."""
+    m = _PLACE_RE.search(text or "")
+    return m.group(1) if m else ""
+
+
+def _received_phrase(received_at: str) -> str:
+    """ "on October 12" for the recruiter's message date (local time), or ""."""
+    if not received_at:
+        return ""
+    try:
+        when = datetime.fromisoformat(received_at.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if when.tzinfo is not None:
+        when = when.astimezone()
+    return f" on {when.strftime('%B')} {when.day}"
+
+
+def draft_qualifying_reply(
+    text: str, *, subject: str = "", known_recruiter_name: str = "", received_at: str = ""
+) -> QualifyingDraft:
     """`known_recruiter_name` (added 2026-08-25): when the caller already has
     a confirmed name for this recruiter on file (`job_contacts.name`, via
     `pending_workflow._recruiter_contact`), pass it here so the greeting uses
@@ -286,7 +323,7 @@ def draft_qualifying_reply(text: str, *, subject: str = "", known_recruiter_name
     role = extract_role_heuristic(text, subject=subject)
 
     greeting = f"Hi {first}," if first else "Hi,"
-    interest = "Thanks for reaching out"
+    interest = "Thanks for reaching out" + _received_phrase(received_at)
     if role and role.title:
         interest += f" about the {role.title} role"
     interest += "."
@@ -310,7 +347,11 @@ def draft_qualifying_reply(text: str, *, subject: str = "", known_recruiter_name
                 "Is the engagement W2 or 1099 direct-to-individual? I'm not set up for C2C."
             )
         if gaps.needs_remote:
-            asks.append("Is the role fully remote (US), or is there an onsite/hybrid requirement?")
+            place = extract_pitch_location(text)
+            asks.append(
+                "Is the role fully remote (US), or is there an onsite/hybrid requirement"
+                + (f" to be on-site with the client in {place}?" if place else "?")
+            )
         if gaps.needs_rate_band:
             asks.append("What's the rate or salary band for the role?")
 
@@ -322,10 +363,10 @@ def draft_qualifying_reply(text: str, *, subject: str = "", known_recruiter_name
         if len(asks) == 1:
             ask_block = asks[0]
         else:
-            ask_block = "A few quick clarifiers before I send a résumé:\n" + "\n".join(
+            ask_block = "A few quick clarifiers before I send you my résumé:\n" + "\n".join(
                 f"- {a}" for a in asks
             )
-        body = f"{greeting}\n\n{interest} {ask_block}\n\nBest, Shawn"
+        body = f"{greeting}\n\n{interest} {ask_block}\n\n{SIGNATURE}"
     # House-rule safety: never invent a dollar figure; asking for their band is fine.
     return QualifyingDraft(
         recruiter_name=name,
@@ -363,7 +404,7 @@ def _draft_screen_first_body(*, greeting: str, interest: str, gaps: PitchGaps) -
         f"{notes_block}"
         f"If it's a fit after we talk, a pasted job description is the most useful "
         f"next step on my side.\n\n"
-        f"Best, Shawn"
+        f"{SIGNATURE}"
     )
 
 

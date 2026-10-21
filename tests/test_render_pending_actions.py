@@ -440,7 +440,7 @@ def test_unmatched_communications_carries_full_body_alongside_preview(tmp_path: 
     assert entry["body"] == long_body
     assert len(entry["preview"]) <= 180
     assert entry["preview"] in long_body
-    assert entry["draftReply"].strip().endswith("Best, Shawn")
+    assert entry["draftReply"].strip().endswith("Best, Shawn\nshawn.becker@spexture.com")
     assert "linkedin_reply_queue" in data
 
     text = render_pending_actions._render_html(data, output_root=tmp_path)
