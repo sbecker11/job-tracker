@@ -109,6 +109,11 @@ export interface ContactPriorityItem {
   companyEmail?: string
   companyContactName?: string
   recruiterLinkedinUrl?: string
+  /** Send to details found elsewhere (another lead, a stored signature) when the lead's own contact has no email. */
+  resolvedEmail?: string
+  resolvedThreadUrl?: string
+  resolvedLinkedinUrl?: string
+  resolvedVia?: string
   postDecline?: boolean
   declineReasonLabel?: string
   termsChanged?: boolean
@@ -293,6 +298,10 @@ function todayFields(
   | 'companyEmail'
   | 'companyContactName'
   | 'recruiterLinkedinUrl'
+  | 'resolvedEmail'
+  | 'resolvedThreadUrl'
+  | 'resolvedLinkedinUrl'
+  | 'resolvedVia'
 > {
   return {
     todayTier: src.todayTier,
@@ -304,6 +313,10 @@ function todayFields(
     companyEmail: src.companyEmail,
     companyContactName: src.companyContactName,
     recruiterLinkedinUrl: src.recruiterLinkedinUrl,
+    resolvedEmail: src.resolvedEmail,
+    resolvedThreadUrl: src.resolvedThreadUrl,
+    resolvedLinkedinUrl: src.resolvedLinkedinUrl,
+    resolvedVia: src.resolvedVia,
   }
 }
 

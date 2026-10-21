@@ -8,6 +8,7 @@ attempts, then age. Used by `scripts/render_pending_actions.py` to emit
 from __future__ import annotations
 
 import re
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -19,7 +20,8 @@ from job_tracker.pipeline.reply_continuity import (
     enrich_item_reply_links,
     recruiting_gmail_message_url,
 )
-from job_tracker.pipeline.store import list_job_conversations
+from job_tracker.pipeline.signature import parse_signature
+from job_tracker.pipeline.store import GENERIC_RELAY_ADDRESSES, list_job_conversations
 from job_tracker.scoring.scorer import DEFAULT_FRAMEWORK_PATH, load_framework
 
 _OUTREACH_MAX_AGE_DAYS = 14
@@ -890,7 +892,85 @@ def _send_route_fields(conn, job_key: str) -> dict:
             fields["companyContactName"] = (r["name"] or "").strip()
         elif role != "company" and (r["linkedin_url"] or "").strip() and "recruiterLinkedinUrl" not in fields:
             fields["recruiterLinkedinUrl"] = r["linkedin_url"].strip()
+    fields.update(_resolve_recipient(conn, job_key))
     return fields
+
+
+_LINKEDIN_PROFILE_RE = re.compile(r"https?://(?:[a-z]{2,3}\.)?linkedin\.com/in/[\w%-]+/?", re.I)
+
+
+def _phone_digits(phone: str) -> str:
+    digits = re.sub(r"\D", "", phone or "")
+    return digits[-10:] if len(digits) >= 10 else ""
+
+
+_ROLE_MAILBOX_RE = re.compile(
+    r"(?:^|[._-])(press|media|careers?|jobs?|hr|info|support|help|privacy|legal|accommodations?|"
+    r"talent|recruiting|recruitment|hiring|apply|admin|contact|hello|sales|team)@",
+    re.I,
+)
+
+
+def _usable_email(email: str) -> bool:
+    email = (email or "").strip().lower()
+    return bool(email) and "@" in email and email not in GENERIC_RELAY_ADDRESSES and not re.search(
+        r"linkedin\.com$|no-?reply|notifications?@|mailer-daemon|spexture\.com$", email
+    ) and not _ROLE_MAILBOX_RE.search(email)
+
+
+def _resolve_recipient(conn, job_key: str) -> dict:
+    """Best-effort Send to details when the lead's own recruiter contact has no
+    email: the same person on another lead (matched by phone or name+email),
+    their signature in this lead's stored inbound messages, or a saved LinkedIn
+    reply thread. Read-only — Save contact is what persists a correction."""
+    contacts = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT * FROM job_contacts WHERE job_key = ? AND COALESCE(role, '') != 'company' ORDER BY id DESC",
+            (job_key,),
+        ).fetchall()
+    ]
+    if any(_usable_email(c.get("email") or "") for c in contacts):
+        return {}
+    out: dict = {}
+    for c in contacts:
+        reply_to = (c.get("linkedin_reply_to") or "").strip()
+        if reply_to.startswith("http") and "resolvedThreadUrl" not in out:
+            out["resolvedThreadUrl"] = reply_to
+    for c in contacts:
+        digits = _phone_digits(c.get("phone") or "")
+        if not digits:
+            continue
+        for other in conn.execute(
+            "SELECT job_key, email, linkedin_url, phone FROM job_contacts "
+            "WHERE job_key != ? AND COALESCE(email, '') != '' ORDER BY id DESC",
+            (job_key,),
+        ).fetchall():
+            if _phone_digits(other["phone"] or "") == digits and _usable_email(other["email"]):
+                out["resolvedEmail"] = other["email"].strip()
+                out["resolvedVia"] = f"same phone on your {other['job_key'].split('::')[0]} lead"
+                if (other["linkedin_url"] or "").strip():
+                    out.setdefault("resolvedLinkedinUrl", other["linkedin_url"].strip())
+                return out
+    try:
+        bodies = conn.execute(
+            "SELECT body_text FROM job_conversations WHERE job_key = ? AND direction = 'inbound' "
+            "AND COALESCE(body_text, '') != '' ORDER BY occurred_at DESC LIMIT 10",
+            (job_key,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        bodies = []
+    for (body,) in bodies:
+        sig = parse_signature(body)
+        email = (sig.email or "").rstrip(".,;")
+        if email and _usable_email(email):
+            out["resolvedEmail"] = email
+            out["resolvedVia"] = "their signature"
+            break
+        m = _LINKEDIN_PROFILE_RE.search(body)
+        if m and "resolvedLinkedinUrl" not in out:
+            out["resolvedLinkedinUrl"] = m.group(0)
+    return out
 
 
 def _recruiter_contact(conn, job_key: str) -> tuple[str, str, str, bool]:

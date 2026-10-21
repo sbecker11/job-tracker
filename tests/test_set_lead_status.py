@@ -277,3 +277,35 @@ def test_status_or_contact_required(tmp_path: Path):
     conn.close()
     with pytest.raises(SystemExit):
         set_lead_status_main(["--db", str(db), "--key", lead.normalized_key])
+
+
+def test_resolve_recipient_uses_same_phone_on_another_lead(tmp_path: Path):
+    from job_tracker.pipeline.pending_workflow import _send_route_fields
+    from job_tracker.pipeline.store import save_lead_contact
+
+    conn = connect(tmp_path / "leads.db")
+    call_lead = _make_lead(conn, company="North Grand", title="Role TBD")
+    other = JobLead(company="Acme", title="Data Engineer", source_message_id="imap:acme-1", source_label="ats_api")
+    upsert_lead(conn, other)
+    save_lead_contact(conn, call_lead.normalized_key, name="Karth", phone="+1 708-589-9292")
+    save_lead_contact(conn, other.normalized_key, name="Karth S", email="karth@ngt.example", phone="(708) 589-9292")
+
+    fields = _send_route_fields(conn, call_lead.normalized_key)
+    assert fields["resolvedEmail"] == "karth@ngt.example"
+    assert "acme" in fields["resolvedVia"]
+    conn.close()
+
+
+def test_resolve_recipient_ignores_role_mailboxes_in_message_text(tmp_path: Path):
+    from job_tracker.pipeline.pending_workflow import _send_route_fields
+
+    conn = connect(tmp_path / "leads.db")
+    lead = _make_lead(conn)
+    conn.execute(
+        "INSERT INTO job_conversations (job_key, message_id, channel, direction, summary, occurred_at, body_text) "
+        "VALUES (?, 'm1', 'email', 'inbound', '', '2026-10-01T00:00:00+00:00', ?)",
+        (lead.normalized_key, "Questions? Email: candidate_accommodations@thyme.example."),
+    )
+    conn.commit()
+    assert "resolvedEmail" not in _send_route_fields(conn, lead.normalized_key)
+    conn.close()

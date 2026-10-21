@@ -11,6 +11,7 @@ import {
   leadAnchorHref,
   leadAnchorId,
   leadStatusUrl,
+  NO_ROUTE_STEP,
   sendRoutes,
 } from '../lib/links'
 import { HistoryLink } from './HistoryLink'
@@ -79,14 +80,16 @@ function mailtoUrl(item: ContactPriorityItem): string | null {
 
 function messageTarget(item: ContactPriorityItem): MessageTarget {
   const subject = [item.company, item.title].filter(Boolean).join(' ')
-  const realEmail = item.recruiterEmail && !item.emailIsLinkedInRelay ? item.recruiterEmail : undefined
+  const realEmail =
+    (item.recruiterEmail && !item.emailIsLinkedInRelay ? item.recruiterEmail : undefined) || item.resolvedEmail
   return {
     channel:
       item.channel === 'linkedin' || item.emailIsLinkedInRelay ? 'linkedin' : realEmail ? 'email' : 'other',
-    threadUrl: item.threadUrl,
+    threadUrl: item.threadUrl || item.resolvedThreadUrl,
     composeTo: realEmail,
+    via: item.resolvedVia,
     gmailUrl: item.gmailUrl,
-    linkedinUrl: item.recruiterLinkedinUrl,
+    linkedinUrl: item.recruiterLinkedinUrl || item.resolvedLinkedinUrl,
     companyEmail: item.companyEmail,
     companyContactName: item.companyContactName,
     recruiterOwned: item.hasRecruiter,
@@ -317,7 +320,6 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
           !item.reopened
         const route = replyInPanel || followupInPanel ? sendRoutes(messageTarget(item))[0] : undefined
         const who = item.recruiterName || 'The recruiter'
-        const noun = replyInPanel ? 'reply' : 'follow-up'
         const panelStatus = replyInPanel
           ? `${who} is waiting on you${item.unansweredDays != null ? ` (${item.unansweredDays}d)` : ''}`
           : `No reply from ${who === 'The recruiter' ? 'the recruiter' : who} in ${item.waitingDays ?? '?'}d — time to follow up`
@@ -325,16 +327,17 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
           replyInPanel || followupInPanel
             ? [
                 replyInPanel
-                  ? 'Choose the reply type, then review the generated reply and its Send to details'
-                  : 'Review the generated follow-up and its Send to details',
-                route
-                  ? route.prefilled
-                    ? `Click "${route.button}" — it opens with the ${noun} and Send to filled in; click Send`
-                    : `Click "${route.button}" — paste the ${noun} and click Send`
-                  : `No way to reach ${who === 'The recruiter' ? 'the recruiter' : who} yet — use Search for sender, then Save contact; then click the send button, paste the ${noun} and click Send`,
-                `Click "${replyInPanel ? 'Reply sent' : 'Follow-up sent'}"`,
+                  ? "Review the reply. It's already written for you."
+                  : "Review the follow-up. It's already written for you.",
+                route ? route.step : NO_ROUTE_STEP,
+                'Click "Message sent".',
               ]
             : null
+        const sendTo = route
+          ? `${route.how === 'text' || route.how === 'email' ? `${who} · ${route.how} ${route.to}` : `${who} · ${route.how}`}${
+              item.resolvedVia && route.to === item.resolvedEmail ? ` (found via ${item.resolvedVia})` : ''
+            }`
+          : `${who} — no email, LinkedIn or phone on file`
         const nextAction = panelSteps
           ? ''
             : item.nextAction ||
@@ -516,6 +519,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
               {panelSteps ? (
                 <div className="next-action priority-wide">
                   <p className="next-action-status">Current status: {panelStatus}</p>
+                  <p className="next-action-sendto">Send to: {sendTo}</p>
                   <p className="next-action-steps-title">Manage lead ({panelSteps.length} steps):</p>
                   <ol className="next-action-steps">
                     {panelSteps.map((step) => (

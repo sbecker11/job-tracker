@@ -1611,3 +1611,36 @@ th.num {
 .save-contact {
   margin-top: 8px;
 }
+
+.send-to {
+  margin: 8px 0 4px;
+  padding: 6px 10px;
+  border: 1px solid #2c3546;
+  border-radius: 6px;
+  font-size: 0.82rem;
+}
+
+.send-to-title {
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+
+.send-to-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.send-to-label {
+  min-width: 4.5em;
+  color: #9aa6bd;
+}
+
+.send-to-value {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.next-action-sendto {
+  font-weight: 500;
+}

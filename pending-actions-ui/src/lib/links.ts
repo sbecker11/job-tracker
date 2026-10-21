@@ -186,28 +186,43 @@ export interface MessageTarget {
   subject: string
   /** False when there's no recruiter at all — Decline can only skip. */
   hasRecruiter: boolean
+  /** Where an address was found when it isn't on the lead itself ("their signature"). */
+  via?: string
 }
 
 export interface SendRoute {
   channel: 'email' | 'linkedin' | 'other'
   /** "Send message to Karth <k@ngt.com> for North Grand Technology — Data Engineer" */
   label: string
-  /** Main button text. */
+  /** Main button text — "Email Priyanshu", "Reply on LinkedIn", "Text Karth". */
   button: string
+  /** How it's sent, for the Send to line: "email", "LinkedIn thread", "text". */
+  how: string
+  /** Address / number / link the message goes to (shown and copyable). */
+  to: string
+  /** Step 2 of the card: what happens on click and what's left to do. */
+  step: string
   /** True: the link opens with the message filled in. False: copy it first, then paste. */
   prefilled: boolean
   href: (text: string) => string
 }
 
+function firstName(name: string): string {
+  const n = name.trim()
+  if (!n || n.includes('@')) return n
+  return n.split(/\s+/)[0]
+}
+
 /** Every way to reach the sender, best first: recruiter email (Gmail draft with
  * the message filled in), LinkedIn thread, LinkedIn profile, the recruiter's
- * email thread, then the company inbox — the last only when no recruiter owns
- * the lead, so an agency's submission is never bypassed. */
+ * email thread, the company inbox (only when no recruiter owns the lead, so an
+ * agency's submission is never bypassed), then a text to their phone. */
 export function sendRoutes(t: MessageTarget): SendRoute[] {
   const found = extractSenderDetails(t.sender.messageText || '')
   if (!t.composeTo && found.email) t = { ...t, composeTo: found.email }
   if (!t.linkedinUrl && found.linkedin) t = { ...t, linkedinUrl: found.linkedin }
   const name = (t.sender.name || '').trim()
+  const first = firstName(name)
   const company = cleanField(t.sender.company)
   const title = cleanField(t.sender.title)
   const forPart =
@@ -216,10 +231,14 @@ export function sendRoutes(t: MessageTarget): SendRoute[] {
   const routes: SendRoute[] = []
   if (t.composeTo) {
     const to = t.composeTo
+    const button = `Email ${first || to}`
     routes.push({
       channel: 'email',
       label: `Send message to ${name && name.toLowerCase() !== to.toLowerCase() ? `${name} <${to}>` : to}${forPart}`,
-      button: `Open Gmail draft to ${name || to}`,
+      button,
+      how: 'email',
+      to,
+      step: `Click "${button}". Gmail opens with To, Subject and the message filled in. Press Send.`,
       prefilled: true,
       href: (text) => gmailComposeUrl(to, t.subject, text),
     })
@@ -227,30 +246,42 @@ export function sendRoutes(t: MessageTarget): SendRoute[] {
   if (t.threadUrl) {
     const url = t.threadUrl
     const li = /linkedin\.com/i.test(url)
+    const button = li ? 'Reply on LinkedIn' : 'Reply in the thread'
     routes.push({
       channel: li ? 'linkedin' : t.channel,
       label: `Send message in the ${li ? 'LinkedIn ' : ''}thread with ${who}${forPart}`,
-      button: li ? 'Copy & open LinkedIn thread' : 'Copy & open thread',
+      button,
+      how: li ? 'LinkedIn thread' : 'thread',
+      to: url,
+      step: `Click "${button}". The thread opens and the message is copied. Paste it and press Send.`,
       prefilled: false,
       href: () => url,
     })
   }
   if (t.linkedinUrl) {
     const url = t.linkedinUrl
+    const button = `Message ${first || 'them'} on LinkedIn`
     routes.push({
       channel: 'linkedin',
       label: `Send message to ${who} on LinkedIn${forPart}`,
-      button: `Copy & open ${name ? `${name}'s` : 'LinkedIn'} profile`,
+      button,
+      how: 'LinkedIn profile',
+      to: url,
+      step: `Click "${button}". Their profile opens and the message is copied. Click Message, paste it and press Send.`,
       prefilled: false,
       href: () => url,
     })
   }
   if (t.gmailUrl) {
     const url = t.gmailUrl
+    const button = 'Reply in Gmail'
     routes.push({
       channel: 'email',
       label: `Reply in the email thread with ${who}${forPart}`,
-      button: 'Copy & open email thread',
+      button,
+      how: 'email thread',
+      to: url,
+      step: `Click "${button}". The email thread opens and the message is copied. Click Reply, paste it and press Send.`,
       prefilled: false,
       href: () => url,
     })
@@ -258,16 +289,41 @@ export function sendRoutes(t: MessageTarget): SendRoute[] {
   if (t.companyEmail && !t.recruiterOwned) {
     const to = t.companyEmail
     const org = (t.companyContactName || company || to).trim()
+    const button = `Email ${company || to}`
     routes.push({
       channel: 'email',
       label: `Send message to ${org} <${to}> about ${title || 'the role'}`,
-      button: `Open Gmail draft to ${company || to}`,
+      button,
+      how: 'email',
+      to,
+      step: `Click "${button}". Gmail opens with To, Subject and the message filled in. Press Send.`,
       prefilled: true,
       href: (text) => gmailComposeUrl(to, t.subject, text),
     })
   }
+  const phone = (t.sender.phone || found.phone || '').trim()
+  if (phone) {
+    const button = `Text ${first || phone}`
+    routes.push({
+      channel: 'other',
+      label: `Text ${who} at ${phone}${forPart}`,
+      button,
+      how: 'text',
+      to: phone,
+      step: `Click "${button}". Messages opens to ${phone} and the message is copied. Paste it and press Send.`,
+      prefilled: false,
+      href: () => smsUrl(phone),
+    })
+  }
   return routes
 }
+
+export const smsUrl = (phone: string) => `sms:${phone.replace(/[^\d+]/g, '')}`
+export const callUrl = (phone: string) => `tel:${phone.replace(/[^\d+]/g, '')}`
+
+/** Step 2 when no route was found — the Send to box in Manage lead has everything to copy. */
+export const NO_ROUTE_STEP =
+  'No email, LinkedIn or phone found. Copy the Send to details and the message from Manage lead into your email or LinkedIn, then press Send.'
 
 /** Save a contact found via Search for sender (set-lead-status --contact-*). */
 export function saveContactUrl(

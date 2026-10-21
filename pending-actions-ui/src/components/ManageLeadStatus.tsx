@@ -1,6 +1,7 @@
 import { useContext, useState } from 'react'
 import { DeclineReasonsContext } from '../lib/declineReasons'
 import {
+  callUrl,
   declineUrl,
   extractSenderDetails,
   leadStatusUrl,
@@ -8,6 +9,7 @@ import {
   senderSearchLinks,
   sendRoutes,
   type MessageTarget,
+  type SendRoute,
   type SenderInfo,
 } from '../lib/links'
 
@@ -198,6 +200,7 @@ export function ManageLeadForm({
   const routes = message ? sendRoutes(message) : []
   const route = routes[0]
   const otherRoutes = routes.slice(1)
+  const phone = (message?.sender.phone || '').trim()
   const channel = route?.channel ?? message?.channel ?? 'other'
   const sentLink =
     declining && reason ? (
@@ -220,7 +223,7 @@ export function ManageLeadForm({
         onClick={markSent('reply', reply?.onSent)}
         title="After you send it: log your reply (status stays the same) and start waiting on the recruiter"
       >
-        {sent === 'reply' ? 'Reply sent ✓' : 'Reply sent'}
+        {sent === 'reply' ? 'Message sent ✓' : 'Message sent'}
       </a>
     ) : followingUp ? (
       <a
@@ -229,7 +232,7 @@ export function ManageLeadForm({
         onClick={markSent('followup', onApplied)}
         title="After you send it: log the message, set Following up, and restart the wait clock"
       >
-        {sent === 'followup' ? 'Follow-up sent ✓' : 'Follow-up sent'}
+        {sent === 'followup' ? 'Message sent ✓' : 'Message sent'}
       </a>
     ) : null
 
@@ -358,15 +361,7 @@ export function ManageLeadForm({
               <pre className="draft original-message-body">{reply.original}</pre>
             </details>
           )}
-          <p className="send-route">
-            {route ? (
-              <>
-                Next: <strong>{route.label}</strong>
-              </>
-            ) : (
-              'No way to reach the sender yet — open Search for sender below, then Save contact.'
-            )}
-          </p>
+          <SendToBox route={route} message={message} />
           <div className="actions">
             {route && text.trim() && (
               <a
@@ -377,11 +372,7 @@ export function ManageLeadForm({
                 onClick={() => {
                   if (!route.prefilled) void copyText(text)
                 }}
-                title={
-                  route.prefilled
-                    ? 'Opens with the message filled in'
-                    : 'Copies the message, then opens — just paste and send'
-                }
+                title={route.step}
               >
                 {route.button}
               </a>
@@ -415,6 +406,11 @@ export function ManageLeadForm({
                 {r.button}
               </a>
             ))}
+            {phone && (
+              <a className="btn link" href={callUrl(phone)} title="Call instead — the message works as talking points">
+                Call {message.sender.name?.split(/\s+/)[0] || phone}
+              </a>
+            )}
             <SenderSearch sender={message.sender} normalizedKey={normalizedKey} onSaved={onApplied} />
           </div>
         </div>
@@ -431,6 +427,46 @@ export function ManageLeadForm({
             {sent === 'skip' ? 'Skipped ✓' : 'Skip without message'}
           </a>
         </div>
+      )}
+    </div>
+  )
+}
+
+function CopyField({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <div className="send-to-row">
+      <span className="send-to-label">{label}</span>
+      <span className="send-to-value">{value}</span>
+      <button
+        type="button"
+        className="btn link"
+        onClick={async () => {
+          await copyText(value)
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1500)
+        }}
+      >
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+    </div>
+  )
+}
+
+/** Who the message goes to and how — copyable, so a route that can't be
+ * pre-filled (or no route at all) is still a straight copy/paste. */
+function SendToBox({ route, message }: { route?: SendRoute; message: MessageTarget }) {
+  const name = (message.sender.name || '').trim()
+  const viaNote = message.via && route?.to === message.composeTo ? ` (found via ${message.via})` : ''
+  return (
+    <div className="send-to">
+      <p className="send-to-title">
+        Send to{route ? ` — ${route.how}${viaNote}` : ' — no email, LinkedIn or phone found; copy these into your email or LinkedIn'}
+      </p>
+      {name && <CopyField label="Name" value={name} />}
+      {route && route.to !== name && <CopyField label={route.how === 'text' ? 'Phone' : 'To'} value={route.to} />}
+      {(!route || route.channel === 'email') && message.subject && (
+        <CopyField label="Subject" value={message.subject} />
       )}
     </div>
   )
@@ -476,11 +512,15 @@ function SenderSearch({
     setSaved(false)
   }
   const hasDetail = Boolean(found.email.trim() || found.phone.trim() || found.linkedin.trim())
-  const prefilled = Boolean(fromMessage.email || fromMessage.phone || fromMessage.linkedin)
+  const prefilled = Boolean(
+    (fromMessage.email && !sender.email) || (fromMessage.phone && !sender.phone) || fromMessage.linkedin,
+  )
   return (
     <details className="sender-search">
       <summary className="btn link">
-        {prefilled ? 'Search for sender (details found in their message)' : 'Search for sender'}
+        {prefilled
+          ? 'Wrong or missing recipient? Search for sender (details found in their message)'
+          : 'Wrong or missing recipient? Search for sender'}
       </summary>
       {links.length > 0 && (
         <div className="sender-search-links">

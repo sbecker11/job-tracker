@@ -37,6 +37,11 @@ export interface TodayFields {
   companyEmail?: string
   companyContactName?: string
   recruiterLinkedinUrl?: string
+  /** Send to details found elsewhere (another lead, a stored signature) when the lead's own contact has no email. */
+  resolvedEmail?: string
+  resolvedThreadUrl?: string
+  resolvedLinkedinUrl?: string
+  resolvedVia?: string
 }
 
 /** One "no thank you" reason (job_tracker.pipeline.decline.DECLINE_REASONS). */
