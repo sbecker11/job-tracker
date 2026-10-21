@@ -85,7 +85,13 @@ function messageTarget(item: ContactPriorityItem): MessageTarget {
     threadUrl: item.threadUrl,
     composeTo: realEmail,
     gmailUrl: item.gmailUrl,
-    searchQuery: item.recruiterEmail || item.recruiterName || item.company || undefined,
+    sender: {
+      name: item.recruiterName,
+      email: realEmail,
+      phone: item.recruiterPhone,
+      company: item.company,
+      title: item.title,
+    },
     subject: `RE: ${subject}`,
     hasRecruiter: Boolean(item.recruiterName || item.recruiterEmail || item.threadUrl),
   }

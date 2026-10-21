@@ -92,6 +92,59 @@ export function gmailSearchUrl(query: string): string {
   return `https://mail.google.com/mail/u/${RECRUITER_REPLY_ACCOUNT_SLOT}/#search/${encodeURIComponent(query)}`
 }
 
+export interface SenderInfo {
+  name?: string
+  /** Real inbox only — LinkedIn relay addresses find nothing. */
+  email?: string
+  phone?: string
+  company?: string
+  title?: string
+}
+
+/** Drops placeholder company/title text ("Role TBD", "(end-client TBD)"). */
+function cleanField(value: string | undefined): string {
+  const v = (value || '')
+    .replace(/\s*\([^)]*\b(?:tbd|unknown)\b[^)]*\)/gi, '')
+    .trim()
+  return /^(?:role\s+)?(?:tbd|unknown|n\/a)$/i.test(v) ? '' : v
+}
+
+const quoted = (s: string) => `"${s}"`
+const googleUrl = (q: string) => `https://www.google.com/search?q=${encodeURIComponent(q)}`
+
+/** "Search for sender" links — one per kind of search the known fields support. */
+export function senderSearchLinks(sender: SenderInfo): { label: string; href: string }[] {
+  const name = (sender.name || '').trim()
+  const email = (sender.email || '').trim()
+  const phone = (sender.phone || '').trim()
+  const company = cleanField(sender.company)
+  const title = cleanField(sender.title)
+  const links: { label: string; href: string }[] = []
+  if (email) links.push({ label: `Gmail: ${email}`, href: gmailSearchUrl(email) })
+  else if (name) links.push({ label: `Gmail: ${name}`, href: gmailSearchUrl(quoted(name)) })
+  if (name) {
+    links.push({
+      label: 'LinkedIn: sender',
+      href: `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(
+        [name, company].filter(Boolean).join(' '),
+      )}`,
+    })
+    links.push({ label: 'Web: sender', href: googleUrl([quoted(name), company].filter(Boolean).join(' ')) })
+  }
+  if (email) links.push({ label: 'Web: email', href: googleUrl(quoted(email)) })
+  if (phone) links.push({ label: 'Web: phone', href: googleUrl(quoted(phone)) })
+  if (company || title) {
+    links.push({ label: 'Web: company + role', href: googleUrl([company, title, 'job'].filter(Boolean).join(' ')) })
+    links.push({
+      label: 'LinkedIn Jobs: role',
+      href: `https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(
+        [title, company].filter(Boolean).join(' '),
+      )}`,
+    })
+  }
+  return links
+}
+
 export function formatDecidedAt(iso?: string): string {
   if (!iso) return '—'
   const d = new Date(iso)

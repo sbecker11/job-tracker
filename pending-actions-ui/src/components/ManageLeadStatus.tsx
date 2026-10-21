@@ -1,6 +1,12 @@
 import { useContext, useState } from 'react'
 import { DeclineReasonsContext } from '../lib/declineReasons'
-import { declineUrl, gmailComposeUrl, gmailSearchUrl, leadStatusUrl } from '../lib/links'
+import {
+  declineUrl,
+  gmailComposeUrl,
+  leadStatusUrl,
+  senderSearchLinks,
+  type SenderInfo,
+} from '../lib/links'
 
 /** Mirrors job_tracker.pipeline.models.LEAD_STAGES — kept as a plain literal
  * list here (not fetched from the backend) since the set of valid statuses
@@ -71,8 +77,8 @@ export interface MessageTarget {
   composeTo?: string
   /** Recruiter's last email, opened in Gmail (reply from there). */
   gmailUrl?: string
-  /** Gmail search terms when there's no thread, address, or message link. */
-  searchQuery?: string
+  /** What's known about the sender, for the "Search for sender" links. */
+  sender: SenderInfo
   subject: string
   /** False when there's no recruiter at all — Decline can only skip. */
   hasRecruiter: boolean
@@ -203,15 +209,14 @@ export function ManageLeadForm({
   return (
     <div className="manage-lead-form">
       <h4 className="lead-panel-title">Manage Lead</h4>
+      {currentStatus && (
+        <p className="manage-lead-current">
+          Current status: <strong>{statusLabel(currentStatus)}</strong>
+        </p>
+      )}
       <div className="lead-panel-fields">
-        {currentStatus && (
-          <div className="manage-lead-field">
-            <span>Current status</span>
-            <strong className="manage-lead-current">{statusLabel(currentStatus)}</strong>
-          </div>
-        )}
-        <label className="manage-lead-field">
-          <span>Change to</span>
+        <label className="manage-lead-field manage-lead-action">
+          <span>Take action:</span>
           <select
             value={status}
             onChange={(e) => {
@@ -435,11 +440,24 @@ function ContactLinks({ target, text }: { target: MessageTarget; text: string })
           New email to recruiter
         </a>
       )}
-      {!target.threadUrl && !target.gmailUrl && !target.composeTo && target.searchQuery && (
-        <a className="btn link" href={gmailSearchUrl(target.searchQuery)} target="_blank" rel="noreferrer">
-          Search Gmail for the thread
-        </a>
-      )}
+      <SenderSearch sender={target.sender} />
     </>
+  )
+}
+
+function SenderSearch({ sender }: { sender: SenderInfo }) {
+  const links = senderSearchLinks(sender)
+  if (!links.length) return null
+  return (
+    <details className="sender-search">
+      <summary className="btn link">Search for sender</summary>
+      <div className="sender-search-links">
+        {links.map((l) => (
+          <a key={l.label} className="btn link" href={l.href} target="_blank" rel="noreferrer">
+            {l.label}
+          </a>
+        ))}
+      </div>
+    </details>
   )
 }

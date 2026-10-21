@@ -1454,6 +1454,14 @@ th.num {
   color: var(--muted);
 }
 
+.manage-lead-field.manage-lead-action {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: inherit;
+}
+
 .manage-lead-field select {
   font-size: 0.8rem;
   padding: 3px 4px;
@@ -1539,7 +1547,34 @@ th.num {
 }
 
 .manage-lead-current {
-  display: block;
-  padding: 4px 0;
+  margin: 0;
   font-size: 0.85rem;
+}
+
+.sender-search {
+  display: inline-block;
+}
+
+.sender-search > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.sender-search > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sender-search > summary::after {
+  content: ' ▾';
+}
+
+.sender-search[open] > summary::after {
+  content: ' ▴';
+}
+
+.sender-search-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
 }
