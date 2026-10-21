@@ -164,6 +164,7 @@ export function ManageLeadForm({
   const [letterEdit, setLetterEdit] = useState<string | null>(null)
   const [sent, setSent] = useState('')
   const [copied, setCopied] = useState(false)
+  const [sentVia, setSentVia] = useState('')
 
   const canDecline = Boolean(decline && message && reasons.length)
   const declining = canDecline && status === DECLINE_STATUS
@@ -216,7 +217,7 @@ export function ManageLeadForm({
             : { status: followingUp ? 'following_up' : currentStatus || 'new' },
         )
       : ''
-  const channel = route?.channel ?? message?.channel ?? 'other'
+  const channel = sentVia || route?.channel || message?.channel || 'other'
   const sentLink =
     declining && reason ? (
       <a
@@ -395,6 +396,7 @@ export function ManageLeadForm({
                 target="_blank"
                 rel="noreferrer"
                 onClick={() => {
+                  setSentVia('')
                   if (!route.prefilled) void copyText(text)
                 }}
                 title={route.step}
@@ -402,7 +404,21 @@ export function ManageLeadForm({
                 {route.button}
               </a>
             )}
-            {text.trim() && !route?.sendsAndLogs && sentLink}
+            {text.trim() && !route?.sendsAndLogs && sentLink && (
+              <>
+                <label className="sent-via" title="Which app you actually sent it from — logged with the message">
+                  via{' '}
+                  <select value={channel} onChange={(e) => setSentVia(e.target.value)}>
+                    {SENT_VIA.map(([value, label]) => (
+                      <option key={value} value={value}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {sentLink}
+              </>
+            )}
           </div>
           <div className="actions secondary-actions">
             <button
@@ -425,6 +441,7 @@ export function ManageLeadForm({
                 target="_blank"
                 rel="noreferrer"
                 onClick={() => {
+                  setSentVia(r.channel)
                   if (!r.prefilled) void copyText(text)
                 }}
               >
@@ -456,6 +473,13 @@ export function ManageLeadForm({
     </div>
   )
 }
+
+const SENT_VIA: [string, string][] = [
+  ['linkedin', 'LinkedIn'],
+  ['email', 'Email'],
+  ['sms', 'Text'],
+  ['other', 'Other'],
+]
 
 function CopyField({ label, value }: { label: string; value: string }) {
   const [copied, setCopied] = useState(false)

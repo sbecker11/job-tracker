@@ -1614,6 +1614,19 @@ th.num {
   font-size: 0.8rem;
 }
 
+.sent-via {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--muted, #666);
+}
+
+.sent-via select {
+  font: inherit;
+  padding: 0.15rem 0.3rem;
+}
+
 .save-contact {
   margin-top: 8px;
 }
