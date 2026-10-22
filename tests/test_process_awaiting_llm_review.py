@@ -236,3 +236,20 @@ def test_limit_caps_candidates(monkeypatch, tmp_path: Path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "1 lead(s) awaiting full-LLM-review" in out
+
+
+def test_recent_rejection_skips_the_lead_without_an_llm_call(seeded_db: Path, monkeypatch, capsys):
+    hit = {"normalized_key": "waferwire inc::software engineer", "company": "WaferWire Inc", "rejected_at": "2026-10-01T00:00:00+00:00"}
+    monkeypatch.setattr(process_awaiting_llm_review, "find_recent_rejection", lambda conn, company, title: hit)
+
+    def _no_llm(*a, **k):
+        raise AssertionError("LLM review should not run for a recently rejected role")
+
+    monkeypatch.setattr(process_awaiting_llm_review, "generate_two_tier_package", _no_llm)
+    assert sweep_main(["--db", str(seeded_db)]) == 0
+    assert "skipped: Software Engineer @ WaferWire (WaferWire Inc rejected this role on 2026-10-01" in capsys.readouterr().out
+    conn = connect(seeded_db)
+    row = conn.execute("SELECT status, notes FROM job_leads").fetchone()
+    conn.close()
+    assert row["status"] == "skipped"
+    assert "Auto-skipped before LLM review" in row["notes"]

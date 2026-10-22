@@ -120,7 +120,7 @@ Machine copy: `config/framework.yaml` (kept in sync by `verify_framework_sync`).
 | EVAL-6 | US-citizen / no-sponsorship JD requirements are a clean ✅ in every evaluation (§2, §3). | test: `test_no_llm_review.py` | OK |
 | EVAL-7 | LLM evaluation returns a verdict in {pursue, review, pass}; anything else is rejected and retried, not defaulted. | test: `test_llm_apply.py` | OK (2026-10-22; one retry, then `LLMApplyError`) |
 | EVAL-8 | Unresolvable JD (gated link / thin snippet) → `match_pct = 0`, verdict `REVIEW NEEDED` (§12). | test: `test_llm_apply.py` | OK |
-| EVAL-9 | A rejection from the same company+role within 90 days forces `pass` in every evaluation path, including the LLM sweep. | test: `test_triage.py` | **BROKEN** — sweep skips it |
+| EVAL-9 | A rejection from the same company+role within 90 days forces `pass` in every evaluation path, including the LLM sweep. | tests: `test_triage.py`, `test_process_awaiting_llm_review.py` | OK (2026-10-22; the sweep skips the lead with a note before any LLM call) |
 | EVAL-10 | Cost reporting uses current model prices. | — | OK (2026-10-22). Anthropic made $2/$10 Sonnet 5's standard price, so the numbers were right; the stale comment is fixed and there is now one price table (`llm_extract`). |
 
 ## 8. Lead lifecycle
@@ -240,7 +240,7 @@ Highest impact first. Each fix ships with the test/check named in its rule.
 4. ~~**DRAFT-4 / DRAFT-1 / CON-1 / CON-2**~~ — done 2026-10-22; the card check is clean.
 5. ~~**PKG-2**~~ — done 2026-10-22.
 6. ~~**CARD-1 / CARD-8 / TURN-3**~~ — done 2026-10-22.
-7. **EVAL-9, LOG-5, MAT-5, NEXT-2, ROUTE-5 (page side), LIFE-5** — smaller fixes.
+7. **LOG-5, MAT-5, NEXT-2, ROUTE-5 (page side), LIFE-5** — smaller fixes.
 
 ## 14. Open decisions for Shawn
 

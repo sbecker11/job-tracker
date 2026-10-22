@@ -38,8 +38,11 @@ from pathlib import Path
 from job_tracker.pipeline.llm_apply import DEFAULT_MODEL, DEFAULT_OUTPUT_ROOT, generate_two_tier_package
 from job_tracker.pipeline.store import (
     DEFAULT_DB_PATH,
+    DEFAULT_REJECTION_COOLDOWN_DAYS,
     advance_status,
+    append_lead_note,
     connect,
+    find_recent_rejection,
     get_sibling_titles,
     list_leads_awaiting_full_llm_review,
     update_llm_evaluation,
@@ -75,6 +78,22 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = connect(args.db)
     candidates = list_leads_awaiting_full_llm_review(conn, gate_pct)
+    rejected_recently = []
+    for lead in candidates:
+        hit = find_recent_rejection(conn, lead["company"], lead["title"])
+        if hit is not None and hit["normalized_key"] != lead["normalized_key"]:
+            rejected_recently.append((lead, hit))
+    for lead, hit in rejected_recently:
+        reason = (
+            f"{hit['company']} rejected this role on {(hit['rejected_at'] or '')[:10]}, within the "
+            f"{DEFAULT_REJECTION_COOLDOWN_DAYS}-day cooldown"
+        )
+        print(f"{'would skip' if args.dry_run else 'skipped'}: {lead['title']} @ {lead['company']} ({reason})")
+        if not args.dry_run:
+            advance_status(conn, lead["normalized_key"], "skipped", force=True)
+            append_lead_note(conn, lead["normalized_key"], f"Auto-skipped before LLM review: {reason}")
+    skipped_keys = {lead["normalized_key"] for lead, _ in rejected_recently}
+    candidates = [c for c in candidates if c["normalized_key"] not in skipped_keys]
     if args.limit:
         candidates = candidates[: args.limit]
 
