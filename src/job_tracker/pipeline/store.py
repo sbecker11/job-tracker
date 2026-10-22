@@ -1498,7 +1498,16 @@ def add_job_conversation(
     overrides that inference outright (True -> set, False -> clear,
     regardless of direction) for cases direction alone doesn't capture well
     — e.g. a phone call you logged after the fact where you left a
-    voicemail and are still the one waiting."""
+    voicemail and are still the one waiting.
+
+    An inbound message that is already logged on this lead (same id, or the
+    Gmail and IMAP copies of one email — see `find_duplicate_inbound`) is not
+    inserted again; the existing row's id is returned and whose-turn is left
+    alone, so a late copy can't undo a reply sent in between."""
+    if conversation.direction == "inbound":
+        existing = find_duplicate_inbound(conn, conversation)
+        if existing is not None:
+            return existing
     cursor = conn.execute(
         """
         INSERT INTO job_conversations (
@@ -1538,6 +1547,52 @@ def add_job_conversation(
 
     conn.commit()
     return cursor.lastrowid
+
+
+_DUPLICATE_INBOUND_SIMILARITY = 0.85
+
+
+def _comparable_text(text: str | None) -> str:
+    return re.sub(r"\W+", " ", (text or "").lower()).strip()[:2000]
+
+
+def find_duplicate_inbound(conn: sqlite3.Connection, conversation: JobConversation) -> int | None:
+    """Id of an inbound row on the same lead that is this same message: the
+    same message id, or the same subject logged within `_SAME_EMAIL_WINDOW`
+    with a near-identical body. The Gmail-API and IMAP readers ingest one
+    email under different ids, stamp it at scan time, and wrap the body
+    slightly differently, so neither id nor time nor exact text matches."""
+    if conversation.message_id:
+        row = conn.execute(
+            "SELECT id FROM job_conversations WHERE job_key = ? AND direction = 'inbound' AND message_id = ?",
+            (conversation.job_key, conversation.message_id),
+        ).fetchone()
+        if row is not None:
+            return row["id"]
+    subject = _comparable_text(conversation.summary)
+    when = _parse_iso(conversation.occurred_at)
+    if not subject or when is None:
+        return None
+    body = _comparable_text(conversation.body_text)
+    for row in conn.execute(
+        "SELECT id, summary, body_text, occurred_at FROM job_conversations "
+        "WHERE job_key = ? AND direction = 'inbound' ORDER BY id DESC",
+        (conversation.job_key,),
+    ):
+        if _comparable_text(row["summary"]) != subject:
+            continue
+        other_when = _parse_iso(row["occurred_at"])
+        if other_when is None or abs(other_when - when) > _SAME_EMAIL_WINDOW:
+            continue
+        other_body = _comparable_text(row["body_text"])
+        if body == other_body or (
+            body
+            and other_body
+            and SequenceMatcher(None, body, other_body, autojunk=False).ratio()
+            >= _DUPLICATE_INBOUND_SIMILARITY
+        ):
+            return row["id"]
+    return None
 
 
 def set_awaiting_response(
