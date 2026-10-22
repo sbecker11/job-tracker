@@ -2137,7 +2137,26 @@ def find_job_by_thread_id(conn: sqlite3.Connection, thread_id: str) -> str | Non
 # accumulated enough distinct jobs to cross the threshold. Checked by exact
 # domain suffix, not substring, so this can never over-match a company's own
 # subdomain that merely contains one of these as a substring.
-_GENERIC_RELAY_DOMAINS = frozenset({"ashbyhq.com", "greenhouse-mail.io"})
+# LinkedIn and the job boards are multi-tenant the same way: every
+# notification, digest and alert comes from a shared address, and one stub
+# lead holding e.g. messages-noreply@linkedin.com caught every later LinkedIn
+# notification (2026-10-22). LinkedIn's per-thread uuid@reply.linkedin.com is
+# matched before this check.
+_GENERIC_RELAY_DOMAINS = frozenset(
+    {
+        "ashbyhq.com",
+        "greenhouse-mail.io",
+        "linkedin.com",
+        "talent.com",
+        "adzuna.com",
+        "adzunajobs.com",
+        "jobcase.com",
+        "joblookup.com",
+        "ziprecruiter.com",
+        "glassdoor.com",
+        "theladders.com",
+    }
+)
 
 
 def _is_generic_relay_domain(email: str) -> bool:
@@ -2181,7 +2200,7 @@ def find_job_by_contact_email(conn: sqlite3.Connection, email: str) -> str | Non
     contacted" is close to a random guess.
     """
     email = (email or "").strip().lower()
-    if not email or _is_generic_relay_domain(email) or is_own_address(email):
+    if not email or is_own_address(email):
         return None
     if is_linkedin_thread_reply_address(email):
         # Per-thread bridge — unique, match via linkedin_reply_to only.
@@ -2191,6 +2210,8 @@ def find_job_by_contact_email(conn: sqlite3.Connection, email: str) -> str | Non
             (email,),
         ).fetchone()
         return row["job_key"] if row else None
+    if _is_generic_relay_domain(email):
+        return None
     distinct_jobs = conn.execute(
         "SELECT COUNT(DISTINCT job_key) AS n FROM job_contacts WHERE lower(email) = ?", (email,)
     ).fetchone()["n"]
