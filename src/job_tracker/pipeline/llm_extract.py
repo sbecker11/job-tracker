@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = os.environ.get("JOB_TRACKER_LLM_MODEL", "claude-haiku-4-5")
 
-# USD per million tokens: (input, output). Keep in sync with llm_apply.py.
+# USD per million tokens: (input, output). Source: platform.claude.com/docs/en/about-claude/pricing
+# (checked 2026-10-22). Sonnet 5's $2/$10 launch price became its standard price.
 _MODEL_PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
     "claude-haiku-4-5": (1.00, 5.00),
     "claude-sonnet-4-5": (3.00, 15.00),

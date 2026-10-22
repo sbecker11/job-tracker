@@ -36,20 +36,13 @@ from job_tracker.pipeline.letter_style import (
     apply_template_styles,
     looks_like_signature_line,
 )
+from job_tracker.pipeline.llm_extract import _MODEL_PRICING_USD_PER_MTOK
 from job_tracker.scoring.scorer import DealbreakerHit, ScoreResult, score_jd, should_run_llm_review
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = os.environ.get("JOB_TRACKER_APPLY_MODEL", "claude-sonnet-5")
 
-# USD per million tokens: (input, output). Source: platform.claude.com/docs/en/about-claude/pricing
-# (checked 2026-07-03). Sonnet 5 is on introductory pricing through 2026-08-31, then $3/$15.
-_MODEL_PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
-    "claude-haiku-4-5": (1.00, 5.00),
-    "claude-sonnet-4-5": (3.00, 15.00),
-    "claude-sonnet-5": (2.00, 10.00),
-    "claude-opus-4-8": (5.00, 25.00),
-}
 
 _CANDIDATE_PROFILE_PATH = Path(
     os.environ.get("JOB_TRACKER_CANDIDATE_PROFILE_PATH", str(Path.home() / "CLAUDE.md"))
