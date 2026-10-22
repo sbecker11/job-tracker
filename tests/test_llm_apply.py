@@ -156,11 +156,17 @@ def test_evaluate_lead_parses_response_and_computes_metrics():
     assert result.metrics.cost_usd == pytest.approx(1000 / 1_000_000 * 1.00 + 200 / 1_000_000 * 5.00)
 
 
-def test_evaluate_lead_defaults_verdict_to_review_when_missing():
-    payload = json.dumps({"match_pct": 50})
-    client = _FakeClient(responses=[payload])
+def test_evaluate_lead_retries_a_missing_or_unknown_verdict():
+    client = _FakeClient(responses=[json.dumps({"match_pct": 50}), json.dumps({"verdict": "Pass", "match_pct": 40})])
     result = llm_apply.evaluate_lead("JD", company="Acme", title="Eng", model="claude-haiku-4-5", client=client)
-    assert result.verdict == "review"
+    assert result.verdict == "pass"
+    assert result.match_pct == 40
+
+
+def test_evaluate_lead_rejects_a_verdict_that_stays_invalid():
+    client = _FakeClient(responses=[json.dumps({"verdict": "maybe"}), json.dumps({"verdict": "apply"})])
+    with pytest.raises(llm_apply.LLMApplyError, match="verdict"):
+        llm_apply.evaluate_lead("JD", company="Acme", title="Eng", model="claude-haiku-4-5", client=client)
 
 
 def test_evaluate_lead_canonicalizes_legacy_structural_verdict():

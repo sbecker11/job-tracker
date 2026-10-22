@@ -541,6 +541,9 @@ Respond with ONLY a raw JSON object (no markdown fences, no prose outside the JS
 """
 
 
+_VERDICTS = ("pursue", "review", "pass")
+
+
 def evaluate_lead(
     jd_text: str,
     *,
@@ -563,6 +566,16 @@ def evaluate_lead(
     # raising the ceiling doesn't raise cost since billing is by tokens
     # actually generated, not the ceiling.
     data, calls = _call_and_parse_json(system, user, model=model, client=client, max_tokens=16000, step="evaluate")
+    verdict = str(data.get("verdict", "")).strip().lower()
+    if verdict not in _VERDICTS:
+        logger.warning("evaluate returned verdict %r, retrying once", data.get("verdict"))
+        data, retry_calls = _call_and_parse_json(
+            system, user, model=model, client=client, max_tokens=16000, step="evaluate"
+        )
+        calls = [*calls, *retry_calls]
+        verdict = str(data.get("verdict", "")).strip().lower()
+        if verdict not in _VERDICTS:
+            raise LLMApplyError(f"evaluate returned verdict {data.get('verdict')!r}, expected one of {_VERDICTS}")
 
     def _dict_list(key: str, expected_keys: tuple[str, ...]) -> list[dict]:
         items = data.get(key) or []
@@ -578,7 +591,7 @@ def evaluate_lead(
         return out
 
     return EvaluationResult(
-        verdict=str(data.get("verdict", "review")).strip().lower(),
+        verdict=verdict,
         match_pct=float(data.get("match_pct", 0) or 0),
         job_summary=str(data.get("job_summary", "")),
         dealbreaker_checks=_dict_list("dealbreaker_checks", ("check", "status", "notes")),
