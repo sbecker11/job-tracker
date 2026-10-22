@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
@@ -157,6 +157,14 @@ def _human_inbound_conversations(convs: list) -> list:
         and not _is_digest_conversation(c)
         and not _is_auto_ack_conversation(c)
     ]
+
+
+def _sort_time(ts: str | None) -> datetime:
+    try:
+        when = datetime.fromisoformat((ts or "").replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
 
 
 def _unanswered_inbound(convs: list) -> object | None:
@@ -730,8 +738,16 @@ def build_clarify_queue(
         recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
         body = unanswered["body_text"] or ""
         subj = unanswered["summary"] or r["title"] or ""
+        human_in = sorted(_human_inbound_conversations(convs), key=lambda c: _sort_time(c["occurred_at"]))
+        pitch = (human_in[0]["body_text"] or "") if human_in else body
+        later = "\n".join(c["body_text"] or "" for c in human_in[1:])
         drafted = draft_qualifying_reply(
-            body, subject=subj, known_recruiter_name=recruiter, received_at=unanswered["occurred_at"] or ""
+            pitch,
+            subject=subj,
+            known_recruiter_name=recruiter,
+            received_at=unanswered["occurred_at"] or "",
+            thread_replies=later,
+            followup=True,
         )
         gaps = drafted.gaps
         still_needs_clarifiers = any(

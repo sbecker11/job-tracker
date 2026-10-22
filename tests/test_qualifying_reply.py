@@ -233,3 +233,24 @@ def test_inmail_with_credential_greets_by_name_and_finds_comm_thread():
     assert draft.thread_url == (
         "https://www.linkedin.com/messaging/thread/2-NzRkZDc0MzctOWUwMC00ODVkLWJjMjUtMzFmZjFlMDNhNWJlXzEwMA==/"
     )
+
+
+RAJNEESH_PITCH = (
+    "Position for a Lead AI Python Fullstack Remote with Direct client\n"
+    "Hi We have a Lead Python Fullstack role with our direct client in New Jersey.\n"
+    "https://www.linkedin.com/messaging/thread/2-abc/"
+)
+RAJNEESH_REPLY = "Message replied: Position for a Lead AI Python Fullstack Remote with Direct client\nHi Shawn rate on this is $80/hr on w2 max , Remote no Travel"
+
+
+def test_followup_reads_the_whole_thread_and_does_not_reask():
+    draft = draft_qualifying_reply(
+        RAJNEESH_PITCH, subject="Message replied", known_recruiter_name="Rajneesh Bhardwaj",
+        thread_replies=RAJNEESH_REPLY, followup=True,
+    )
+    assert draft.body.startswith("Hi Rajneesh,\n\nThanks for the update.")
+    assert "Thanks for reaching out" not in draft.body
+    assert "remote" not in draft.body.lower()
+    assert "W2 or 1099" not in draft.body
+    assert "rate or salary band" not in draft.body
+    assert "end client" in draft.body

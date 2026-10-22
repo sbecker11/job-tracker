@@ -254,8 +254,20 @@ def extract_role_heuristic(text: str, *, subject: str = "") -> ExtractedRole | N
     )
 
 
-def detect_pitch_gaps(text: str, *, subject: str = "") -> PitchGaps:
-    blob = f"{subject}\n{text or ''}"
+# A recruiter's reply on a live thread is short and conversational ("Remote no
+# Travel", "it's W2 only"), so any mention there answers the question even
+# without the "Location: Remote" layout a pitch uses.
+_REPLY_ANSWERS = {
+    "remote": re.compile(r"(?i)\b(remote|on-?site|hybrid|in[- ]office)\b"),
+    "engagement": re.compile(r"(?i)\b(w-?2|1099|c2c|corp[- ]to[- ]corp|full[- ]time|fte|permanent)\b"),
+    "end_client": re.compile(r"(?i)\b(end[- ]?client|client|company)\s+(is|name\s+is)\s+\S+"),
+}
+
+
+def detect_pitch_gaps(text: str, *, subject: str = "", thread_replies: str = "") -> PitchGaps:
+    """`thread_replies`: their later messages on a live thread, which can
+    answer a question in a few words."""
+    blob = f"{subject}\n{text or ''}\n{thread_replies or ''}"
     skill_hits = len(
         re.findall(r"(?i)\b(aws|python|java|spark|sql|llm|data|glue|emr)\b", blob)
     )
@@ -272,6 +284,13 @@ def detect_pitch_gaps(text: str, *, subject: str = "") -> PitchGaps:
         gaps.needs_remote = False
     if re.search(r"(?i)\b(w2|1099|c2c)\b", blob):
         gaps.needs_engagement = False
+    if thread_replies:
+        if _REPLY_ANSWERS["remote"].search(thread_replies):
+            gaps.needs_remote = False
+        if _REPLY_ANSWERS["engagement"].search(thread_replies):
+            gaps.needs_engagement = False
+        if _REPLY_ANSWERS["end_client"].search(thread_replies):
+            gaps.needs_end_client = False
     gaps.screen_first = bool(
         gaps.needs_jd
         and (
@@ -316,7 +335,13 @@ def _received_phrase(received_at: str) -> str:
 
 
 def draft_qualifying_reply(
-    text: str, *, subject: str = "", known_recruiter_name: str = "", received_at: str = ""
+    text: str,
+    *,
+    subject: str = "",
+    known_recruiter_name: str = "",
+    received_at: str = "",
+    thread_replies: str = "",
+    followup: bool = False,
 ) -> QualifyingDraft:
     """`known_recruiter_name` (added 2026-08-25): when the caller already has
     a confirmed name for this recruiter on file (`job_contacts.name`, via
@@ -326,21 +351,28 @@ def draft_qualifying_reply(
     LinkedIn InMail chrome ("Name\\nReply\\n") and a plain email's sign-off
     often doesn't match it, silently falling back to a bare "Hi," even
     though the lead's contact card already has the right name (surfaced by
-    a PurpleLab/Carlos Delgado lead whose reply greeted no one by name)."""
+    a PurpleLab/Carlos Delgado lead whose reply greeted no one by name).
+
+    `followup`: Shawn has already replied on this thread, so the draft
+    thanks them for the update instead of "Thanks for reaching out", and
+    `thread_replies` (their later messages) settle what they've answered."""
     extracted_name = extract_linkedin_sender_name(text)
     name = known_recruiter_name.strip() or extracted_name
     first = name.split()[0] if name else ""
     # Drop trailing initial like "Evan" from "Evan T."
     if first.endswith("."):
         first = first[:-1]
-    gaps = detect_pitch_gaps(text, subject=subject)
+    gaps = detect_pitch_gaps(text, subject=subject, thread_replies=thread_replies)
     role = extract_role_heuristic(text, subject=subject)
 
     greeting = f"Hi {first}," if first else "Hi,"
-    interest = "Thanks for reaching out" + _received_phrase(received_at)
-    if role and role.title:
-        interest += f" about the {role.title} role"
-    interest += "."
+    if followup:
+        interest = "Thanks for the update."
+    else:
+        interest = "Thanks for reaching out" + _received_phrase(received_at)
+        if role and role.title:
+            interest += f" about the {role.title} role"
+        interest += "."
 
     if gaps.screen_first:
         body = _draft_screen_first_body(
