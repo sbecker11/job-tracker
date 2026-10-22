@@ -73,10 +73,10 @@ function revealFolderUrl(folderPath: string | undefined): string | null {
 }
 
 /** Opens Gmail compose in the browser (Chrome), pre-filled from this lead, instead of mailto:. */
-function mailtoUrl(item: ContactPriorityItem): string | null {
+function mailtoUrl(item: ContactPriorityItem, text = item.draftReply || ''): string | null {
   if (!item.recruiterEmail) return null
   const subject = [item.company, item.title].filter(Boolean).join(' ')
-  return gmailComposeUrl(item.recruiterEmail, `RE: ${subject}`, item.draftReply || '')
+  return gmailComposeUrl(item.recruiterEmail, `RE: ${subject}`, text)
 }
 
 function messageTarget(item: ContactPriorityItem): MessageTarget {
@@ -194,6 +194,8 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
   const toggleLeadPanel = (id: string, kind: 'manage') =>
     setLeadPanel((cur) => (cur?.id === id && cur.kind === kind ? null : { id, kind }))
   const [copiedId, setCopiedId] = useState('')
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const draftOf = (it: ContactPriorityItem) => drafts[it.id] ?? it.draftReply ?? ''
   const [query, setQuery] = useState('')
 
   // Clears a stale search term when a jump-to-lead arrives for a row the
@@ -525,7 +527,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                   {item.replyDue && recordable && (
                     <a
                       className={`btn link regen-btn reply-sent-btn${replyAcknowledged ? ' muted' : ''}`}
-                      href={recordReplyUrl(item.messageId!, item.recruiterName || '', item.draftReply || '')}
+                      href={recordReplyUrl(item.messageId!, item.recruiterName || '', draftOf(item))}
                       onClick={() => onReplyRecorded?.(item)}
                       title="After you send it on LinkedIn: confirm what you sent, and this card moves to Waiting on them"
                     >
@@ -605,7 +607,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     type="button"
                     className="btn"
                     onClick={async () => {
-                      await copyText(item.draftReply || '')
+                      await copyText(draftOf(item))
                       setCopiedId(item.id)
                       setTimeout(() => setCopiedId(''), 1500)
                     }}
@@ -696,17 +698,17 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                       target="_blank"
                       rel="noreferrer"
                       onClick={() => {
-                        if (item.draftReply) void copyText(item.draftReply)
+                        if (draftOf(item)) void copyText(draftOf(item))
                       }}
                       title="Opens the thread with the reply copied — paste it and press Send"
                     >
                       {/linkedin\.com/i.test(item.threadUrl) ? 'Reply on LinkedIn' : 'Open thread'}
                     </a>
                   ) : null}
-                  {mailtoUrl(item) && (
+                  {mailtoUrl(item, draftOf(item)) && (
                     <a
                       className="btn link"
-                      href={mailtoUrl(item)!}
+                      href={mailtoUrl(item, draftOf(item))!}
                       target="_blank"
                       rel="noreferrer"
                       title={item.recruiterEmail}
@@ -724,7 +726,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     <a className="btn link" href={item.gmailUrl} target="_blank" rel="noreferrer">
                       Reply in Gmail
                     </a>
-                  ) : !item.threadUrl && !mailtoUrl(item) ? (
+                  ) : !item.threadUrl && !mailtoUrl(item, draftOf(item)) ? (
                     <span className="btn disabled">Reply in Gmail</span>
                   ) : null}
                   {dismissUrl(item) && (
@@ -738,7 +740,13 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                   )}
                 </div>
                 {item.draftReply ? (
-                  <pre className="draft">{item.draftReply}</pre>
+                  <textarea
+                    className="draft followup-edit"
+                    rows={Math.max(6, draftOf(item).split('\n').length + 1)}
+                    value={draftOf(item)}
+                    onChange={(e) => setDrafts((d) => ({ ...d, [item.id]: e.target.value }))}
+                    aria-label="Reply message (editable)"
+                  />
                 ) : (
                   <p className="empty-hint">No generated draft — reply from the thread/inbox.</p>
                 )}
@@ -782,7 +790,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                           type="button"
                           className="btn"
                           onClick={async () => {
-                            await copyText(item.draftReply || '')
+                            await copyText(draftOf(item))
                             setCopiedId(item.id)
                             setTimeout(() => setCopiedId(''), 1500)
                           }}
@@ -790,10 +798,10 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                           {copiedId === item.id ? 'Copied' : 'Copy message'}
                         </button>
                       )}
-                      {mailtoUrl(item) && (
+                      {mailtoUrl(item, draftOf(item)) && (
                         <a
                           className="btn link"
-                          href={mailtoUrl(item)!}
+                          href={mailtoUrl(item, draftOf(item))!}
                           target="_blank"
                           rel="noreferrer"
                           title={item.recruiterEmail}
@@ -812,7 +820,15 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                         </a>
                       )}
                     </div>
-                    {item.draftReply && <pre className="draft">{item.draftReply}</pre>}
+                    {item.draftReply && (
+                      <textarea
+                        className="draft followup-edit"
+                        rows={Math.max(6, draftOf(item).split('\n').length + 1)}
+                        value={draftOf(item)}
+                        onChange={(e) => setDrafts((d) => ({ ...d, [item.id]: e.target.value }))}
+                        aria-label="Reply message (editable)"
+                      />
+                    )}
                   </li>
                   <li>
                     <strong>Mark sent → Wait</strong>
