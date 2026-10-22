@@ -122,6 +122,7 @@ Machine copy: `config/framework.yaml` (kept in sync by `verify_framework_sync`).
 | EVAL-8 | Unresolvable JD (gated link / thin snippet) → `match_pct = 0`, verdict `REVIEW NEEDED` (§12). | test: `test_llm_apply.py` | OK |
 | EVAL-9 | A rejection from the same company+role within 90 days forces `pass` in every evaluation path, including the LLM sweep. | tests: `test_triage.py`, `test_process_awaiting_llm_review.py` | OK (2026-10-22; the sweep skips the lead with a note before any LLM call) |
 | EVAL-10 | Cost reporting uses current model prices. | — | OK (2026-10-22). Anthropic made $2/$10 Sonnet 5's standard price, so the numbers were right; the stale comment is fixed and there is now one price table (`llm_extract`). |
+| EVAL-11 | Every Anthropic API call (job-tracker and comms-migration) appends one line to `<workspace>/var/llm-calls.jsonl`; `spend_report` totals it per month and source so it can be checked against Anthropic's bills (`~/CLAUDE.md` §14). (Added 2026-10-22.) | tests: `test_llm_call_log.py`, comms `test_llm_classify.py` | OK |
 
 ## 8. Lead lifecycle
 

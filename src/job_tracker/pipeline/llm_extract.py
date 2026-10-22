@@ -25,6 +25,7 @@ import os
 import time
 
 from job_tracker.email.models import EmailMessage, ExtractedRole
+from job_tracker.pipeline.llm_call_log import log_call
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,7 @@ def _call_llm_raw(message: EmailMessage, *, model: str, client=None) -> list[dic
     input_tokens = getattr(usage, "input_tokens", 0) or 0
     output_tokens = getattr(usage, "output_tokens", 0) or 0
     cost = _cost_usd(model, input_tokens, output_tokens)
+    log_call(step="extract", model=model, input_tokens=input_tokens, output_tokens=output_tokens, cost_usd=cost)
     print(
         f"    [llm extract] actual ~{_fmt_usd(cost)} "
         f"({input_tokens} in / {output_tokens} out, {elapsed_s:.1f}s)",

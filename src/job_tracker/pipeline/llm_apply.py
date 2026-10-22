@@ -36,6 +36,7 @@ from job_tracker.pipeline.letter_style import (
     apply_template_styles,
     looks_like_signature_line,
 )
+from job_tracker.pipeline.llm_call_log import log_call
 from job_tracker.pipeline.llm_extract import _MODEL_PRICING_USD_PER_MTOK
 from job_tracker.scoring.scorer import DealbreakerHit, ScoreResult, score_jd, should_run_llm_review
 
@@ -342,6 +343,7 @@ def _call(system: str, user: str, *, model: str, client=None, max_tokens: int = 
         elapsed_s=elapsed_s, cost_usd=_cost_usd(model, input_tokens, output_tokens),
     )
     _print_llm_call_actual(metrics)
+    log_call(step=step, model=model, input_tokens=input_tokens, output_tokens=output_tokens, cost_usd=metrics.cost_usd)
     return text, metrics
 
 

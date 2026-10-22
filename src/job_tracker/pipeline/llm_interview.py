@@ -22,7 +22,8 @@ import os
 from dataclasses import dataclass
 
 from job_tracker.email.models import EmailMessage
-from job_tracker.pipeline.llm_extract import DEFAULT_MODEL, LLMExtractionError, _ANTHROPIC_TIMEOUT_S
+from job_tracker.pipeline.llm_call_log import log_call
+from job_tracker.pipeline.llm_extract import DEFAULT_MODEL, LLMExtractionError, _ANTHROPIC_TIMEOUT_S, _cost_usd
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +150,13 @@ def extract_interview_details_llm(
             max_tokens=512,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
+        )
+        usage = getattr(response, "usage", None)
+        input_tokens = getattr(usage, "input_tokens", 0) or 0
+        output_tokens = getattr(usage, "output_tokens", 0) or 0
+        log_call(
+            step="interview", model=model, input_tokens=input_tokens, output_tokens=output_tokens,
+            cost_usd=_cost_usd(model, input_tokens, output_tokens),
         )
         raw_text = "".join(block.text for block in response.content if getattr(block, "type", "") == "text")
         data = _parse_response_text(raw_text)

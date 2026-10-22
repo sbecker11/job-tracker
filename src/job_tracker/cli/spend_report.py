@@ -1,4 +1,6 @@
-"""Phase 4 — weekly spend / pursue rollup from stored LLM cost fields.
+"""Phase 4 — weekly spend / pursue rollup from stored LLM cost fields, plus
+real spend per month from the workspace call log (`llm_call_log`), which
+covers every API call from job-tracker and comms-migration.
 
   python scripts/spend_report.py
   python scripts/spend_report.py --json
@@ -11,6 +13,7 @@ import json
 import sys
 from pathlib import Path
 
+from job_tracker.pipeline.llm_call_log import log_path
 from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect
 
 
@@ -39,6 +42,26 @@ def build_spend_summary(conn) -> dict:
     }
 
 
+def monthly_call_spend(path: Path | None = None) -> dict[str, dict[str, dict[str, float]]]:
+    """{"2026-10": {"comms-migration": {"calls": 12, "costUsd": 0.03}, ...}, ...}"""
+    out: dict[str, dict[str, dict[str, float]]] = {}
+    p = path or log_path()
+    if not p.is_file():
+        return out
+    for line in p.read_text(encoding="utf-8").splitlines():
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        month = str(entry.get("ts", ""))[:7]
+        if not month:
+            continue
+        bucket = out.setdefault(month, {}).setdefault(str(entry.get("source", "?")), {"calls": 0, "costUsd": 0.0})
+        bucket["calls"] += 1
+        bucket["costUsd"] = round(bucket["costUsd"] + float(entry.get("cost_usd") or 0), 6)
+    return dict(sorted(out.items()))
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
@@ -50,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
         summary = build_spend_summary(conn)
     finally:
         conn.close()
+    summary["monthlyCallSpend"] = monthly_call_spend()
 
     if args.json:
         print(json.dumps(summary, indent=2))
@@ -62,6 +86,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  Packages generated:            {summary['packagesGenerated']}")
     print(f"  Rejected leads:                {summary['rejectedLeads']}")
     print(f"  LLM extraction cache rows:     {summary['llmExtractionCacheRows']} (short-circuit hits)")
+    print(f"\n=== API spend by month (all calls, {log_path()}) ===")
+    if not summary["monthlyCallSpend"]:
+        print("  (no calls logged yet)")
+    for month, sources in summary["monthlyCallSpend"].items():
+        total = sum(b["costUsd"] for b in sources.values())
+        detail = ", ".join(f"{src} {int(b['calls'])} calls ${b['costUsd']:.2f}" for src, b in sorted(sources.items()))
+        print(f"  {month}: ${total:.2f}  ({detail})")
     return 0
 
 
