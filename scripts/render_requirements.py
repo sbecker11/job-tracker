@@ -146,12 +146,13 @@ def render(markdown: str) -> str:
         for r in s.rules:
             k = status_kind(r.status)
             label = "" if k == "OTHER" else f'<span class="badge">{k}</span>'
+            detail = r.status if k == "OTHER" else re.sub(rf"^\**{k}\**\s*(?:—\s*)?", "", r.status, flags=re.I)
             rows.append(
                 f'<tr class="rule {k}" id="{r.code}" data-kind="{k}">'
                 f'<td class="code"><a href="#{r.code}">{r.code}</a></td>'
                 f"<td>{inline(r.text)}</td>"
                 f'<td class="enforced">{enforced_html(r.enforced)}</td>'
-                f'<td class="status">{label}{inline(r.status)}</td></tr>'
+                f'<td class="status">{label}{inline(detail)}</td></tr>'
             )
         body.append(
             f'<section id="{anchor}"><h2>{html.escape(s.title)}</h2>'
