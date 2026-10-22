@@ -138,7 +138,7 @@ package_generated → applied → following_up → interviewing → offered → 
 | LIFE-4 | Application-received → `applied`; interview invite → `interviewing`; rejection → `rejected` (recorded from any status). Off-ramp and `reopened` leads never auto-advance. | test: `test_post_application.py` | OK |
 | LIFE-5 | Generating a package on a lead moves it to `package_generated` — or the tool refuses/warns when the lead is skipped. | — | **BROKEN** — `apply_package --force` leaves it silently skipped |
 | LIFE-6 | Every status value used anywhere is in `LEAD_STAGES`. | — | **BROKEN** — `market_withdrawal_draft` uses "duplicate" |
-| LIFE-7 | `scan_rejection_backlog` imports and runs. | — | **BROKEN** — imports a missing module |
+| LIFE-7 | `scan_rejection_backlog` imports and runs. | test: `test_cli_imports.py` | OK (2026-10-22) |
 
 ## 9. Packages
 
@@ -149,7 +149,7 @@ Craft and naming: `~/CLAUDE.md` §4, §5, §10, §12.
 | PKG-1 | Every artifact lives in `~/Desktop/Resumes/2026/<Company>/<Role>/`; résumé and cover letter are generated only on an LLM *pursue* (or explicit force). | test: `test_llm_apply.py` | OK |
 | PKG-2 | Post-generation safety: banned terms, work-authorization language and compensation figures are checked in **both** résumé and cover letter, and catch common phrasings ("$120,000 per year", "$75 an hour", "$80 hourly"). | test: `test_llm_apply.py` | OK (2026-10-22; both documents checked; no false hits on the 51 existing packages) |
 | PKG-3 | Every résumé entry has a `role_note` title; no degree/cert years. | — | GAP |
-| PKG-4 | New cover letters are named `Shawn_Becker_Cover_Letter_<Company>_<Role>.docx` (`~/CLAUDE.md` §12); existing files are not renamed. (Decided 2026-10-22.) | — | **BROKEN** — code writes `coverLetter` |
+| PKG-4 | New cover letters are named `Shawn_Becker_Cover_Letter_<Company>_<Role>.docx` (`~/CLAUDE.md` §12); existing files are not renamed. (Decided 2026-10-22.) | test: `test_llm_apply.py` | OK (2026-10-22) |
 
 ## 10. Pending Actions cards
 
@@ -198,10 +198,10 @@ work-authorization, no availability; asking for their band is fine).
 | DRAFT-2 | **First-touch reply** (JD-first track): "Thanks for reaching out on <date> [about the <role> role]." then only the still-open clarifiers — JD, end client, W2 or 1099-direct (not set up for C2C), remote / on-site place, rate or salary band. | test: `test_qualifying_reply.py` | OK |
 | DRAFT-3 | **Screen-first track** when the recruiter wants a résumé or call before sharing a JD: offer the generic latest résumé and a call (§12). | test: `test_qualifying_reply.py` | OK |
 | DRAFT-4 | **Reply on a live thread** reads the whole conversation: no first-touch "Thanks for reaching out", and never re-asks a question the recruiter already answered (remote, engagement type, rate, end client, stack). | check: `first_touch_on_followup`, `reasks_answered`; test: `test_qualifying_reply.py` | OK (2026-10-22; `draft_qualifying_reply(followup=True, thread_replies=…)`) |
-| DRAFT-5 | Every short-form message (qualifying, follow-up, decline, résumé-send) ends with `qualifying_reply.SIGNATURE`: "Best, Shawn" + `shawn.becker@spexture.com`. (Decided 2026-10-22.) | — | **BROKEN** — decline and follow-up drafts end "Best,\nShawn" |
+| DRAFT-5 | Every short-form message (qualifying, follow-up, decline, résumé-send) ends with `qualifying_reply.SIGNATURE`: "Best, Shawn" + `shawn.becker@spexture.com`. (Decided 2026-10-22.) | tests: `test_decline.py`, `test_set_lead_status.py` | OK (2026-10-22) |
 | DRAFT-6 | Location wording in every message: "100% remote, or within ~15 minutes of Lehi". (Decided 2026-10-22; `~/CLAUDE.md` §12 updated the same day.) | `qualifying_reply._draft_screen_first_body` | OK |
 | DRAFT-7 | Every draft is editable on the page before sending, and the edited text is what gets copied and logged. | — | OK (`f02ec2a`) |
-| DRAFT-8 | A C2C-only mention still triggers the "not set up for C2C" clarifier. | — | **BROKEN** — C2C counts as "engagement known" |
+| DRAFT-8 | A C2C-only mention still triggers the "not set up for C2C" clarifier. | test: `test_qualifying_reply.py` | OK (2026-10-22; a recruiter *reply* saying C2C still counts as answered) |
 
 ### 11b. Logging what was sent
 
@@ -240,7 +240,7 @@ Highest impact first. Each fix ships with the test/check named in its rule.
 4. ~~**DRAFT-4 / DRAFT-1 / CON-1 / CON-2**~~ — done 2026-10-22; the card check is clean.
 5. ~~**PKG-2**~~ — done 2026-10-22.
 6. **CARD-1 / CARD-8 / TURN-3** — one card per lead, one meaning per field, parsed timestamps.
-7. **LIFE-7, LIFE-6, EVAL-7, EVAL-9, EVAL-10, LOG-4, LOG-5, MAT-5, NEXT-2, ROUTE-5 (page side), LIFE-5, DRAFT-8** — smaller fixes.
+7. **LIFE-6, EVAL-7, EVAL-9, EVAL-10, LOG-4, LOG-5, MAT-5, NEXT-2, ROUTE-5 (page side), LIFE-5** — smaller fixes.
 
 ## 14. Open decisions for Shawn
 

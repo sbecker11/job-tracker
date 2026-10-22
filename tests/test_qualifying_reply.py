@@ -254,3 +254,10 @@ def test_followup_reads_the_whole_thread_and_does_not_reask():
     assert "W2 or 1099" not in draft.body
     assert "rate or salary band" not in draft.body
     assert "end client" in draft.body
+
+
+def test_c2c_only_mention_still_asks_about_engagement():
+    pitch = "Data Engineer, 12-month contract, $60/hr on C2C. Python, Spark, AWS Glue, SQL."
+    assert detect_pitch_gaps(pitch).needs_engagement
+    assert not detect_pitch_gaps(pitch.replace("on C2C", "on W2 or C2C")).needs_engagement
+    assert not detect_pitch_gaps(pitch, thread_replies="It's C2C only, sorry.").needs_engagement

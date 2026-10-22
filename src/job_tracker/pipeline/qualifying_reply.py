@@ -78,8 +78,9 @@ _SUBJECT_TRAILING_NOISE_RE = re.compile(
 _LINKEDIN_FOOTER_MARKERS = ("This email was intended", "Learn why we included", "Unsubscribe:")
 
 # Signals that engagement type / location / client are already answered.
+# C2C is not on this list: a C2C-only pitch still needs the W2/1099 question.
 _ENGAGEMENT_KNOWN_RE = re.compile(
-    r"\b(w2|1099|c2c|corp[\s\-]?to[\s\-]?corp|full[\s\-]?time|fte|permanent)\b",
+    r"\b(w-?2|1099|full[\s\-]?time|fte|permanent)\b",
     re.I,
 )
 _REMOTE_KNOWN_RE = re.compile(
@@ -282,8 +283,6 @@ def detect_pitch_gaps(text: str, *, subject: str = "", thread_replies: str = "")
     # Location: Remote settles remote; Type: Contract does NOT settle W2 vs C2C.
     if re.search(r"(?im)^Location\s*[:\-]\s*Remote\b", blob):
         gaps.needs_remote = False
-    if re.search(r"(?i)\b(w2|1099|c2c)\b", blob):
-        gaps.needs_engagement = False
     if thread_replies:
         if _REPLY_ANSWERS["remote"].search(thread_replies):
             gaps.needs_remote = False
