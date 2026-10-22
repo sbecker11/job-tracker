@@ -5,9 +5,9 @@ workspace root** so all siblings stay in one window.
 
 | Sibling | Owns | One-liner |
 |---------|------|-----------|
-| [`comms-migration/`](comms-migration/) | **Routing** | Hubs, contacts, `rules/senders.yaml`, Gmail classify/label |
-| [`job-tracker/`](job-tracker/) | **Processing** | Gmail → score → résumé/cover-letter packages |
-| [`recruiting-automation/`](recruiting-automation/) | **Orchestration** | Hourly `launchd` schedule, HALT, status |
+| [`comms-migration/`](../../comms-migration/) | **Routing** | Hubs, contacts, `rules/senders.yaml`, Gmail classify/label |
+| [`job-tracker/`](../) | **Processing** | Gmail → score → résumé/cover-letter packages |
+| [`recruiting-automation/`](../../recruiting-automation/) | **Orchestration** | Hourly `launchd` schedule, HALT, status |
 
 Related (not part of the hourly pipeline): `workspace-resume-flyer/`.
 
@@ -23,11 +23,12 @@ mail arrives
 | Doc | Audience |
 |-----|----------|
 | **This file** | Humans — install, ops, orientation |
-| [`AGENTS.md`](AGENTS.md) | Cursor agents — ownership map (no candidate facts) |
+| [`AGENTS.md`](../../AGENTS.md) | Cursor agents — ownership map (no candidate facts) |
 | [`SECRETS.md`](SECRETS.md) | git-crypt keys, `.env`, Time Machine exclusions |
 | `~/CLAUDE.md` | Candidate profile (only source of truth for packages) |
 | Each sibling `README.md` | That repo’s quick start |
 | Each sibling `docs/REFERENCE.md` | Full historical / deep reference |
+| [`REQUIREMENTS.md`](REQUIREMENTS.md) · [read-only view](requirements.html) | job-tracker's numbered pipeline rules; the HTML view is searchable and filters by status |
 
 ## New-machine install
 

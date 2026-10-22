@@ -3,7 +3,7 @@
 How credentials are stored, encrypted, and backed up across the three sibling
 repos. Sibling `README.md` files link here instead of duplicating unlock steps.
 
-Also see the umbrella [`README.md`](README.md) for the full new-machine checklist.
+Also see the umbrella [`README.md`](../../README.md) for the full new-machine checklist.
 
 ## git-crypt: `.env` is tracked, not git-ignored (2026-08-19)
 

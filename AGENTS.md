@@ -6,7 +6,8 @@
 the numbered rules for intake, matching, contacts, evaluation, lifecycle,
 Pending Actions cards, send routes, drafts and logging. Code that disagrees
 with a rule is a bug; rules marked DECIDE need Shawn's call. Each decision has
-one owner (its §12) — call it, don't copy it.
+one owner (its §12) — call it, don't copy it. A searchable, read-only view is
+generated at [`docs/requirements.html`](docs/requirements.html); never edit it by hand.
 
 Job-search **processing** pipeline: Gmail → classify → ATS JD resolve → score →
 store → (on pursue) résumé/cover-letter packages.

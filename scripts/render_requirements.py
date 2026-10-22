@@ -99,6 +99,7 @@ a { color: var(--link); }
 header { position: sticky; top: 0; background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px; z-index: 1; }
 .title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
 h1 { font-size: 18px; margin: 0; }
+h1 .source { font-size: 12px; font-weight: 400; margin-left: 10px; }
 .controls { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 input[type=search] { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; width: 320px; font: inherit; color: var(--text); background: var(--raised); }
 .chip, #theme { border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; background: var(--raised); color: var(--text); cursor: pointer; font: inherit; }
@@ -201,7 +202,8 @@ def render(markdown: str) -> str:
         f"<script>{_THEME_HEAD_JS}</script>"
         f"<style>{_CSS}</style></head><body>"
         "<!-- Generated from docs/REQUIREMENTS.md by scripts/render_requirements.py. Do not edit. -->"
-        "<header><div class=\"title-row\"><h1>job-tracker requirements</h1>"
+        "<header><div class=\"title-row\"><h1>job-tracker requirements "
+        '<a class="source" href="REQUIREMENTS.md">source: REQUIREMENTS.md</a></h1>'
         '<button id="theme" type="button">Light theme</button></div><div class="controls">'
         '<input id="q" type="search" placeholder="Search rules, files, tests…">'
         f"{''.join(chips)}</div></header>"

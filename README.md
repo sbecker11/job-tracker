@@ -11,8 +11,9 @@ packages under `~/Desktop/Resumes/2026/`.
 
 > **Just want to run it?** → [`PRIMER.md`](PRIMER.md)  
 > Umbrella install / ops → [`../README.md`](../README.md) (or [`docs/WORKSPACE.md`](docs/WORKSPACE.md))  
-> Secrets / git-crypt → [`../SECRETS.md`](../SECRETS.md) (or [`docs/SECRETS.md`](docs/SECRETS.md))  
-> Full historical detail → [`docs/REFERENCE.md`](docs/REFERENCE.md)
+> Secrets / git-crypt → [`docs/SECRETS.md`](docs/SECRETS.md)  
+> Full historical detail → [`docs/REFERENCE.md`](docs/REFERENCE.md)  
+> Rules the code must follow → [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) (searchable view: [`docs/requirements.html`](docs/requirements.html))
 
 ## Quick start
 
@@ -22,7 +23,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 pip install -e ".[dev]"
 
-# Unlock .env — see ../SECRETS.md (key: ~/.git-crypt-keys/job-tracker.key)
+# Unlock .env — see docs/SECRETS.md (key: ~/.git-crypt-keys/job-tracker.key)
 # Prefer shared ANTHROPIC_API_KEY in ../.env when possible
 ```
 
@@ -91,11 +92,12 @@ Keep `config/framework.yaml` in sync when CLAUDE.md dealbreakers/skills change.
 | CLI entrypoints | `src/job_tracker/cli/` + `scripts/` |
 | Dealbreakers / skills | `config/framework.yaml` |
 | Pending-actions UI | `pending-actions-ui/` |
-| Design docs | `docs/JOB_CRM_VISION.md`, `docs/CATEGORY_HANDLER_EXTENSIBILITY.md` |
+| Requirements (rules) | [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) · [`docs/requirements.html`](docs/requirements.html) |
+| Design docs | [`docs/JOB_CRM_VISION.md`](docs/JOB_CRM_VISION.md), [`docs/CATEGORY_HANDLER_EXTENSIBILITY.md`](docs/CATEGORY_HANDLER_EXTENSIBILITY.md) |
 
 ## `.env` / git-crypt
 
-Tracked + encrypted. Unlock steps: [`../SECRETS.md`](../SECRETS.md).
+Tracked + encrypted. Unlock steps: [`docs/SECRETS.md`](docs/SECRETS.md).
 
 ## More detail
 

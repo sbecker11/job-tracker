@@ -4,7 +4,7 @@
 
 Job-search **automation pipeline** for Shawn Becker's recruiting funnel.
 
-> **Just want to run it?** See [`PRIMER.md`](PRIMER.md) for the end-to-end
+> **Just want to run it?** See [`PRIMER.md`](../PRIMER.md) for the end-to-end
 > command sequence: inbox → scored leads → targeted résumé/cover-letter
 > packages. Everything below is the fuller reference.
 
@@ -402,7 +402,7 @@ python scripts/triage_recruiter_inbox.py --rejection-cooldown-days 30
 pytest tests/test_classifier.py tests/test_gmail_reader.py -v
 ```
 
-Coverage policy, omit allowlist, and per-file helper: [`COVERAGE.md`](COVERAGE.md).
+Coverage policy, omit allowlist, and per-file helper: [`COVERAGE.md`](../COVERAGE.md).
 
 For a rollup across `job-tracker`, `comms-migration`, and `recruiting-automation`:
 

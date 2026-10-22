@@ -4,8 +4,8 @@
 hourly pipeline sees it. Update this when adding a forward, account, or cycle
 step.
 
-Ref: [`comms-migration/routing-inventory.md`](../comms-migration/routing-inventory.md),
-[`recruiting-automation/run_cycle.sh`](../recruiting-automation/run_cycle.sh).
+Ref: [`comms-migration/routing-inventory.md`](../../comms-migration/routing-inventory.md),
+[`recruiting-automation/run_cycle.sh`](../../recruiting-automation/run_cycle.sh).
 
 ---
 
@@ -63,4 +63,4 @@ python scripts/resync_labels.py --dry-run
 
 Matrix shows **0 unwatched active sources** for addresses you still publish to
 recruiters. Anything in "Gap / notes" with no cycle step gets a manual playbook
-entry in [`PRIMER.md`](../job-tracker/PRIMER.md) § Backfill.
+entry in [`PRIMER.md`](../PRIMER.md) § Backfill.
