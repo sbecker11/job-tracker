@@ -1297,7 +1297,7 @@ def record_message_processed(
 # everything above.
 
 
-def add_job_contact(conn: sqlite3.Connection, contact: JobContact) -> int:
+def add_job_contact(conn: sqlite3.Connection, contact: JobContact) -> int | None:
     """Insert a JobContact, or — if a matching row already exists for this
     job_key — just bump `last_contacted_at` (and backfill `name`/`phone` if
     this call supplies one the stored row doesn't have yet — e.g. a manual
@@ -1316,8 +1316,13 @@ def add_job_contact(conn: sqlite3.Connection, contact: JobContact) -> int:
     `linkedin_reply_to` (2026-08-11) is never stored in `email` — if a caller
     passes a reply.linkedin.com address as `email`, it is moved to
     `linkedin_reply_to` so Tier-2 identity matching stays clean.
+
+    Returns None (stores nothing) for Shawn's own address — he is never a
+    contact on his own leads.
     """
     email = (contact.email or "").strip().lower()
+    if is_own_address(email):
+        return None
     li_reply = (contact.linkedin_reply_to or "").strip().lower()
     if is_linkedin_thread_reply_address(email):
         li_reply = li_reply or email
@@ -1839,6 +1844,35 @@ GENERIC_RELAY_ADDRESSES = frozenset(
 )
 
 
+# Shawn's own mailboxes (REQUIREMENTS ING-1, ING-6). Mail from these is his
+# own — outbound, never a recruiter reply — and never becomes a contact.
+OWN_ADDRESSES = frozenset(
+    {
+        "shawn.becker@spexture.com",
+        "shawnbecker.recruiting@gmail.com",
+        "scbboston@gmail.com",
+    }
+)
+_OWN_DOMAINS = ("@spexture.com",)
+
+
+def is_own_address(address: str) -> bool:
+    """True for any of Shawn's own addresses (bare or "Name <addr>")."""
+    a = (address or "").strip().lower()
+    if "<" in a and ">" in a:
+        a = a[a.rindex("<") + 1 : a.rindex(">")].strip()
+    return a in OWN_ADDRESSES or a.endswith(_OWN_DOMAINS)
+
+
+_FORWARD_SUBJECT_RE = re.compile(r"^\s*(?:fwd?|fw)\s*:", re.I)
+
+
+def is_own_sent_message(from_address: str, subject: str) -> bool:
+    """Shawn's own reply/new message — not a forward. Forwards ("Fwd:", "FW:")
+    are how he feeds job alerts in, so they're triaged on their content."""
+    return is_own_address(from_address) and not _FORWARD_SUBJECT_RE.match(subject or "")
+
+
 def is_linkedin_thread_reply_address(email: str) -> bool:
     """True for LinkedIn's per-thread email bridge (uuid@reply.linkedin.com).
 
@@ -1960,7 +1994,7 @@ def find_job_by_contact_email(conn: sqlite3.Connection, email: str) -> str | Non
     contacted" is close to a random guess.
     """
     email = (email or "").strip().lower()
-    if not email or _is_generic_relay_domain(email):
+    if not email or _is_generic_relay_domain(email) or is_own_address(email):
         return None
     if is_linkedin_thread_reply_address(email):
         # Per-thread bridge — unique, match via linkedin_reply_to only.

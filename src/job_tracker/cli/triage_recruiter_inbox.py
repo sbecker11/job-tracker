@@ -124,7 +124,7 @@ from job_tracker.pipeline.store import (
     connect,
     find_matching_job,
     is_communication_seen,
-    is_message_processed,
+    is_own_sent_message,
     processed_at,
     record_message_processed,
     update_llm_evaluation,
@@ -463,7 +463,7 @@ def main(argv: list[str] | None = None) -> int:
                     if last_processed is not None and last_processed >= args.force_since:
                         skipped_already_processed += 1
                         continue
-                elif not args.force and is_message_processed(conn, message_id):
+                elif not args.force and is_communication_seen(conn, message_id):
                     # Allow reclaim of LinkedIn InMails wrongly parked as
                     # NEEDS_REVIEW with empty lead_keys (see module docstring).
                     if not is_reclaimable_linkedin_poison(conn, message_id):
@@ -472,6 +472,15 @@ def main(argv: list[str] | None = None) -> int:
 
             try:
                 message = fetch_message(service, message_id)
+
+                # Shawn's own sent mail (Sent copies share the thread's
+                # Category label). scan_communications --include-sent logs it
+                # as outbound; it is never a recruiter reply (REQUIREMENTS ING-1).
+                # His forwards still go through triage.
+                if is_own_sent_message(message.from_address, message.subject):
+                    print(f"\n[OWN] {message.subject}  <{message.from_address}>  ({message_id}) — your own message, skipped")
+                    skipped_already_processed += 1
+                    continue
 
                 # LinkedIn personal-reply path (2026-08-01) — never run
                 # triage_message on hit-reply@ / inmail-hit-reply@. See

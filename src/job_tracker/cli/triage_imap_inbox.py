@@ -95,6 +95,7 @@ from job_tracker.pipeline.store import (
     contact_addresses_from_inbound,
     find_matching_job,
     is_communication_seen,
+    is_own_sent_message,
     record_message_processed,
     record_unmatched_message,
     update_llm_evaluation,
@@ -510,6 +511,12 @@ def main(argv: list[str] | None = None) -> int:
                 continue
 
             if not args.dry_run and not args.force and is_communication_seen(conn, message.id):
+                skipped_already_processed += 1
+                continue
+
+            # Shawn's own replies (BCC / Sent copies) are logged outbound by
+            # the Gmail scan; never triage them as inbound (REQUIREMENTS ING-1).
+            if is_own_sent_message(message.from_address, message.subject):
                 skipped_already_processed += 1
                 continue
 
