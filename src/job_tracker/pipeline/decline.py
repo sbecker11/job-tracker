@@ -16,6 +16,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from job_tracker.pipeline.models import JobConversation
+from job_tracker.pipeline.qualifying_reply import SIGNATURE
 from job_tracker.pipeline.store import (
     add_job_conversation,
     advance_status,
@@ -78,7 +79,7 @@ _BY_CODE = {r.code: r for r in DECLINE_REASONS}
 
 DECLINE_CLOSING = (
     "Thanks again for thinking of me, and please keep me in mind for future roles that are a "
-    "closer fit.\n\nBest,\nShawn"
+    f"closer fit.\n\n{SIGNATURE}"
 )
 
 
@@ -160,7 +161,7 @@ def draft_post_decline_reply(*, recruiter_name: str = "", company: str = "", tit
     role = f" on the {title} role" if title else ""
     return (
         f"Hi {who},\n\nThanks for getting back to me. My answer{role} is the same for now, "
-        f"but I appreciate you keeping me in mind for anything that's a closer fit.\n\nBest,\nShawn"
+        f"but I appreciate you keeping me in mind for anything that's a closer fit.\n\n{SIGNATURE}"
     )
 
 

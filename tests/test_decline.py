@@ -57,7 +57,7 @@ def test_every_letter_follows_reply_house_rules(reason):
     assert letter.startswith("Hi Ed,\n\nThank you for reaching out about the Data Engineer role at Acme.")
     assert reason.sentence in letter
     assert "keep me in mind for future roles" in letter
-    assert letter.endswith("Best,\nShawn")
+    assert letter.endswith("Best, Shawn\nshawn.becker@spexture.com")
     assert "$" not in letter and "/hr" not in letter.lower()
     for banned in ("citizen", "sponsor", "visa", "authoriz", "available"):
         assert banned not in letter.lower()
@@ -171,7 +171,7 @@ def test_reply_after_decline_surfaces_as_clarify_card(tmp_path: Path):
     assert card["replyDue"] is True
     assert card["todayTier"] == 1
     assert "replied after you declined (Rate too low)" in card["nextAction"]
-    assert card["draftReply"].endswith("Best,\nShawn")
+    assert card["draftReply"].endswith("Best, Shawn\nshawn.becker@spexture.com")
     assert "declineGreeting" not in card
     assert [r["code"] for r in workflow["declineReasons"]][0] == "not_qualified"
     assert "keep me in mind" in workflow["declineClosing"]

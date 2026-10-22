@@ -161,7 +161,7 @@ def test_followup_draft_uses_first_name_and_drops_placeholders():
     assert draft_wait_followup_message(title="Data Engineer", company="Acme").startswith(
         "Hi there,\n\nJust checking in on the Data Engineer role at Acme. I wanted to see"
     )
-    assert msg.endswith("Best,\nShawn")
+    assert msg.endswith("Best, Shawn\nshawn.becker@spexture.com")
 
 
 def test_reopened_status_clears_deleted_and_stamps_latest_reopen(tmp_path: Path):

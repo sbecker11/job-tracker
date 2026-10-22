@@ -15,6 +15,7 @@ from typing import Any, Callable
 from urllib.parse import quote
 
 from job_tracker.pipeline.qualifying_reply import (
+    SIGNATURE,
     detect_pitch_gaps,
     draft_qualifying_reply,
     extract_linkedin_thread_url,
@@ -304,7 +305,7 @@ def draft_recruiter_followup_ack(
         f"Hi {who},\n\n"
         f"Thanks for the follow-up{role_clause} — still very interested. "
         f"Happy to jump on a quick call or send anything else you need.\n\n"
-        f"Best,\nShawn"
+        f"{SIGNATURE}"
     )
 
 
@@ -354,7 +355,7 @@ def draft_resume_send_message(
         f"Hi {who},\n\n"
         f"Please find attached my résumé and cover letter{role_clause}.\n\n"
         f"Happy to walk through fit whenever useful.\n\n"
-        f"Best,\nShawn"
+        f"{SIGNATURE}"
     )
 
 
@@ -383,7 +384,7 @@ def draft_wait_followup_message(
         f"Hi {who},\n\n"
         f"Just checking in{role_clause}. {days_bit}wanted to see whether there's any update, "
         f"or if you need anything else from me.\n\n"
-        f"Best,\nShawn"
+        f"{SIGNATURE}"
     )
 
 
