@@ -246,62 +246,32 @@ def _next_action_clarify(
     screen_first: bool = False,
 ) -> str:
     who = recruiter_name.strip() or "the recruiter"
-    linkedin = bool(
-        (thread_url or "").strip()
-        or (channel == "linkedin" and not (gmail_url or "").strip())
-    )
+    thread_url = (thread_url or "").strip()
+    gmail_url = (gmail_url or "").strip()
     age = f" ({unanswered_days}d unanswered)" if unanswered_days else ""
 
+    steps: list[str] = []
     if screen_first:
-        prefix = (
-            f"YOUR ACTION: Recruiter wants résumé + call before a JD{age} — reply now. "
-            if reply_due
-            else "YOUR ACTION: "
-        )
-        if linkedin:
-            return (
-                f"{prefix}"
-                f"(1) Attach latest résumé (generic, not JD-tailored) "
-                f"(2) Copy reply (3) Open LinkedIn thread (4) Paste & send to {who} "
-                f"(5) Dismiss / marked replied"
-            )
-        via = (
-            f"Reply in Gmail to {who} (LinkedIn continuity copy)"
-            if (gmail_url or "").strip()
-            else f"Reply in Gmail to {who}"
-        )
-        return (
-            f"{prefix}"
-            f"(1) Attach latest résumé (generic, not JD-tailored) "
-            f"(2) Copy reply (3) {via} (4) Dismiss / marked replied"
-        )
-
-    if (thread_url or "").strip():
-        open_step = f"Open LinkedIn thread (3) Paste & send to {who}"
-    elif (gmail_url or "").strip():
-        open_step = f"Reply in Gmail to {who} (LinkedIn continuity copy)"
+        steps.append("Attach latest résumé (generic, not JD-tailored)")
+    steps.append("Copy reply")
+    if thread_url:
+        steps += ["Open LinkedIn thread", f"Paste & send to {who}"]
+    elif channel == "linkedin" and gmail_url:
+        steps.append(f"Reply in Gmail to {who} (LinkedIn continuity copy)")
     elif channel == "linkedin":
-        open_step = f"Open LinkedIn thread (3) Paste & send to {who}"
+        steps.append(f"Find {who}'s LinkedIn conversation, paste & send")
     else:
-        open_step = f"Reply in Gmail to {who}"
+        steps.append(f"Reply in Gmail to {who}")
+    steps.append("Dismiss / marked replied")
 
-    if reply_due:
-        if (thread_url or "").strip() or (channel == "linkedin" and not (gmail_url or "").strip()):
-            return (
-                f"YOUR ACTION: Recruiter followed up{age} — reply now. "
-                f"(1) Copy reply (2) {open_step} "
-                f"(4) Dismiss / marked replied"
-            )
-        return (
-            f"YOUR ACTION: Recruiter followed up{age} — reply now. "
-            f"(1) Copy reply (2) {open_step} (3) Dismiss / marked replied"
-        )
-    if (thread_url or "").strip() or (channel == "linkedin" and not (gmail_url or "").strip()):
-        return (
-            f"YOUR ACTION: (1) Copy reply (2) {open_step} "
-            f"(4) Dismiss / marked replied"
-        )
-    return f"YOUR ACTION: (1) Copy reply (2) {open_step} (3) Dismiss / marked replied"
+    if screen_first and reply_due:
+        prefix = f"Recruiter wants résumé + call before a JD{age} — reply now. "
+    elif reply_due:
+        prefix = f"Recruiter followed up{age} — reply now. "
+    else:
+        prefix = ""
+    numbered = " ".join(f"({i}) {step}" for i, step in enumerate(steps, 1))
+    return f"YOUR ACTION: {prefix}{numbered}"
 
 
 def draft_recruiter_followup_ack(
@@ -588,6 +558,8 @@ def build_clarify_queue(
             recruiter_name=item.get("recruiterName") or "",
             reply_due=True,
             unanswered_days=unanswered_days,
+            thread_url=item.get("threadUrl") or "",
+            gmail_url=item.get("gmailUrl") or "",
         )
         _add(
             {
@@ -631,7 +603,11 @@ def build_clarify_queue(
         reply_id = f"mid:{mid}" if mid else f"fallback:{(name or '').lower()}|{(m.get('subject') or '').lower()}"
         channel = _channel_from_addresses(from_address=fr, thread_url=thread)
         next_action = _next_action_clarify(
-            channel=channel, recruiter_name=name, reply_due=True, unanswered_days=m.get("ageDays") or 0
+            channel=channel,
+            recruiter_name=name,
+            reply_due=True,
+            unanswered_days=m.get("ageDays") or 0,
+            thread_url=thread,
         )
         _add(
             {
@@ -704,6 +680,7 @@ def build_clarify_queue(
             recruiter_name=draft.recruiter_name or recruiter,
             reply_due=True,
             unanswered_days=_unanswered_days(convs, age_days_fn, now),
+            thread_url=draft.thread_url or "",
         )
         _add(
             {
@@ -805,6 +782,7 @@ def build_clarify_queue(
             recruiter_name=recruiter or drafted.recruiter_name,
             reply_due=True,
             unanswered_days=unanswered_days,
+            thread_url=thread,
         )
         _add(
             {

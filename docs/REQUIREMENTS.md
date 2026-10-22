@@ -184,7 +184,7 @@ Craft and naming: `~/CLAUDE.md` §4, §5, §10, §12.
 | ID | Rule | Enforced | Status |
 |---|---|---|---|
 | NEXT-1 | Cards show "Current status: …" and "Manage lead (N steps):" as a numbered list: review the message → the chosen route's step → click **Message sent** (omitted when the route sends and logs itself). | — | OK |
-| NEXT-2 | Step wording matches the actual route. Never "LinkedIn continuity copy" on an email card, never "Open LinkedIn thread" without a link. | — | **BROKEN** — `_next_action_clarify` |
+| NEXT-2 | Step wording matches the actual route. Never "LinkedIn continuity copy" on an email card, never "Open LinkedIn thread" without a link. | test: `test_next_action_wording.py` | OK — fixed 2026-10-22 |
 
 ## 11. Drafts and logging what was sent
 
