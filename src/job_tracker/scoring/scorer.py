@@ -149,6 +149,8 @@ def _dealbreaker_sweep(text: str, framework: dict[str, Any]) -> list[Dealbreaker
 
 
 def _clean_keyword_label(pattern: str) -> str:
+    pattern = re.sub(r"\(\?<?[!=].*$", "", pattern)
+    pattern = re.sub(r"\(\?-?[a-z]+:([^)]*)\)", r"\1", pattern)
     return re.sub(r"\\b|\\\.", "", pattern).replace("\\", "")
 
 
@@ -160,9 +162,12 @@ def _weighted_hits(text: str, terms: list[dict[str, Any]]) -> tuple[float, list[
     matched: list[str] = []
     for term in terms:
         pattern = term["keyword"]
+        label = _clean_keyword_label(pattern)
+        if label.lower() in (m.lower() for m in matched):
+            continue
         if re.search(pattern, text, re.I):
             weight += term.get("weight", 1)
-            matched.append(_clean_keyword_label(pattern))
+            matched.append(label)
     return weight, matched
 
 
@@ -235,8 +240,8 @@ def score_jd(
     mention_only_hits = [h for h in dealbreaker_hits if not h.load_bearing]
 
     thresholds = framework.get("thresholds") or {}
-    pursue_min = thresholds.get("pursue_min_pct", 15)
-    review_min = thresholds.get("review_min_pct", 5)
+    pursue_min = thresholds.get("pursue_min_pct", 50)
+    review_min = thresholds.get("review_min_pct", 25)
 
     rationale: list[str] = []
 
@@ -388,8 +393,8 @@ def rule_checklist(
         )
 
     thresholds = framework.get("thresholds") or {}
-    pursue_min = thresholds.get("pursue_min_pct", 15)
-    review_min = thresholds.get("review_min_pct", 5)
+    pursue_min = thresholds.get("pursue_min_pct", 50)
+    review_min = thresholds.get("review_min_pct", 25)
     llm_gate = thresholds.get("llm_review_min_pct", 70)
 
     if score.relevant_weight >= MIN_RELEVANT_WEIGHT:

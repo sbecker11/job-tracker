@@ -202,3 +202,21 @@ def test_soft_section_ends_at_next_heading_even_if_unrecognized():
     hits = [h for h in result.dealbreaker_hits if h.id == "onsite_only"]
     assert hits and hits[0].load_bearing
     assert result.verdict == "pass"
+
+
+def test_eval5_keywords_do_not_misfire():
+    from job_tracker.scoring.scorer import _clean_keyword_label
+
+    one099 = score_jd("Contract role. 1099 only. Python, AWS, Spark, SQL, Airflow, dbt required. Remote.")
+    assert not any(h.id == "c2c_only" for h in one099.dealbreaker_hits)
+    english = score_jd(
+        "We go above and beyond. Our go-live is in March. Ready to go to market. "
+        "Python, Java, Spring Boot, AWS, Kafka, PostgreSQL required."
+    )
+    assert not any(h.id == "golang" for h in english.dealbreaker_hits)
+    real_go = score_jd("Requirements:\nStrong Go experience building services in Go and Golang. Kubernetes, AWS.")
+    assert any(h.id == "golang" and h.load_bearing for h in real_go.dealbreaker_hits)
+    js = score_jd("Requirements: JavaScript, React, TypeScript, Node.js, CSS, HTML.")
+    assert "java" not in js.matched_skills
+    assert "java" in score_jd("Java 21, Spring Boot, AWS, Kafka, PostgreSQL, Python.").matched_skills
+    assert _clean_keyword_label(r"(?-i:\bGo\b)(?![- ](?:live|to)\b)") == "Go"

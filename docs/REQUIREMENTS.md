@@ -113,10 +113,10 @@ Machine copy: `config/framework.yaml` (kept in sync by `verify_framework_sync`).
 | ID | Rule | Enforced | Status |
 |---|---|---|---|
 | EVAL-1 | Rule-based score: dealbreaker sweep (load-bearing = hits in hard-requirement text ≥ `min_hits`; "nice to have" sections don't count), then match % = matched skill weight / recognized JD weight; < 5 recognized weight → 0 %. | test: `test_scorer.py` | OK |
-| EVAL-2 | Verdict bands come only from `framework.yaml` (pursue ≥ 50, review ≥ 25). No code default may differ. | — | **BROKEN** — code fallbacks 15/5 |
+| EVAL-2 | Verdict bands come only from `framework.yaml` (pursue ≥ 50, review ≥ 25). No code default may differ. | — | OK (2026-10-22; fallbacks now 50/25) |
 | EVAL-3 | The LLM review gate (match ≥ 70 %, `thresholds.llm_review_min_pct`) is read from `framework.yaml` in one place. | test: `test_scorer.py` | OK (value duplicated in 4 files — §12) |
 | EVAL-4 | A rule-based "pursue" (50–69 %, below the LLM gate) may move a lead to `pursued` without an LLM review. (Decided 2026-10-22.) | — | GAP |
-| EVAL-5 | Dealbreaker keywords must not misfire: "1099 only" is not C2C (§3 allows 1099 direct); "go" as English isn't Go; `java` doesn't match JavaScript; each vocabulary term is counted once. | test: `test_scorer.py` (add cases) | **BROKEN** — all four misfire today |
+| EVAL-5 | Dealbreaker keywords must not misfire: "1099 only" is not C2C (§3 allows 1099 direct); "go" as English isn't Go; `java` doesn't match JavaScript; each vocabulary term is counted once. | test: `test_scorer.py` (`test_eval5_keywords_do_not_misfire`) | OK (2026-10-22; Go matches only capitalised "Go", not "Go-To-Market"/"Go through"; `\bjava\b`; duplicate `ansible` removed; the scorer counts a term once) |
 | EVAL-6 | US-citizen / no-sponsorship JD requirements are a clean ✅ in every evaluation (§2, §3). | test: `test_no_llm_review.py` | OK |
 | EVAL-7 | LLM evaluation returns a verdict in {pursue, review, pass}; anything else is rejected and retried, not defaulted. | — | **BROKEN** — unvalidated, defaults to review |
 | EVAL-8 | Unresolvable JD (gated link / thin snippet) → `match_pct = 0`, verdict `REVIEW NEEDED` (§12). | test: `test_llm_apply.py` | OK |
@@ -235,12 +235,12 @@ drifted — the root cause of most repeat bugs. Target owners:
 Highest impact first. Each fix ships with the test/check named in its rule.
 
 1. ~~**ING-1 / ING-6 data cleanup**~~ — done 2026-10-22: 19 own-address contacts removed, 21 duplicate inbound copies deleted, 16 replies flipped to outbound, 74 misfiled forwards detached (not re-triaged; they were old alerts). The two "Spexture" leads were already skipped and are left as is.
-2. **EVAL-5** — "1099 only" fails as C2C; "go" fires Golang; `java` matches JavaScript.
+2. ~~**EVAL-5**~~ — done 2026-10-22. Rescoring stored JDs under the new rules flips 14 skipped leads from pass to pursue (old misfire: English "go"); none were reopened.
 3. **ROUTE-1 / §12** — page re-derives channel and recipients (source of today's LinkedIn/email confusion).
 4. ~~**DRAFT-4 / DRAFT-1 / CON-1 / CON-2**~~ — done 2026-10-22; the card check is clean.
 5. **PKG-2** — safety checks miss résumé work-auth and common comp phrasings.
 6. **CARD-1 / CARD-8 / TURN-3** — one card per lead, one meaning per field, parsed timestamps.
-7. **LIFE-7, LIFE-6, EVAL-2, EVAL-7, EVAL-9, EVAL-10, LOG-4, LOG-5, MAT-5, NEXT-2, ROUTE-5 (page side), LIFE-5, DRAFT-8** — smaller fixes.
+7. **LIFE-7, LIFE-6, EVAL-7, EVAL-9, EVAL-10, LOG-4, LOG-5, MAT-5, NEXT-2, ROUTE-5 (page side), LIFE-5, DRAFT-8** — smaller fixes.
 
 ## 14. Open decisions for Shawn
 

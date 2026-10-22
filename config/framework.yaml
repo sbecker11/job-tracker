@@ -24,12 +24,16 @@ candidate:
 dealbreakers:
   - id: c2c_only
     label: "C2C-only (no W2 option)"
-    keywords: ["corp-to-corp only", "corp to corp only", "c2c only", "1099 only", "no w2"]
+    # "1099 only" is deliberately absent: 1099 direct-to-individual is a fit
+    # (CLAUDE.md §3); only corp-to-corp billing is structurally impossible.
+    keywords: ["corp-to-corp only", "corp to corp only", "c2c only", "no w2"]
     min_hits: 1
     verdict: "Structural mismatch — cannot do C2C"
   - id: golang
     label: "Go/Golang as load-bearing requirement"
-    keywords: ["golang", "\\bgo\\b"]
+    # The language is written "Go"; lowercase "go" and English phrases
+    # ("go-live", "Go above and beyond") are not the language.
+    keywords: ["golang", "(?-i:\\bGo\\b)(?!-(?:to|live|getter)\\b|\\s+(?:through|fast|above|beyond|ahead|back|out|forward|get|after|over|hand)\\b)"]
     min_hits: 2
     verdict: "Dealbreaker if load-bearing"
   - id: django
@@ -147,7 +151,7 @@ not_dealbreakers:
 # match_pct = (sum of weights matched in the JD) / (sum of all weights below).
 skills:
   # Core / most current (weight 3)
-  - keyword: "java"
+  - keyword: "\\bjava\\b"
     weight: 3
   - keyword: "spring boot"
     weight: 3
@@ -261,7 +265,7 @@ skills:
 generic_tech_vocabulary:
   # Languages
   - keyword: "golang"
-  - keyword: "\\bgo\\b"
+  - keyword: "(?-i:\\bGo\\b)(?!-(?:to|live|getter)\\b|\\s+(?:through|fast|above|beyond|ahead|back|out|forward|get|after|over|hand)\\b)"
   - keyword: "\\bc\\+\\+"
   - keyword: "\\bc#"
   - keyword: "\\.net\\b"
@@ -313,7 +317,6 @@ generic_tech_vocabulary:
   - keyword: "\\bgcp\\b"
   - keyword: "google cloud"
   # Infra / DevOps
-  - keyword: "ansible"
   - keyword: "cloudformation"
   - keyword: "\\bhelm\\b"
   - keyword: "\\bistio\\b"
