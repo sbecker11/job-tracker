@@ -1,0 +1,7 @@
+#!/bin/sh
+# Keep docs/requirements.html in step with docs/REQUIREMENTS.md.
+# Enabled per clone with: git config core.hooksPath .githooks
+if git diff --cached --name-only | grep -qx 'docs/REQUIREMENTS.md'; then
+  python3 scripts/render_requirements.py || exit 1
+  git add docs/requirements.html
+fi
