@@ -139,6 +139,8 @@ interface Props {
   onReplyRecorded?: (item: ContactPriorityItem) => void
   /** Keys from replyAckKey — locked after a successful scan for that inbound. */
   replySentDone?: Record<string, true>
+  /** Ack keys whose RecordReply confirm hasn't come back yet. */
+  replyRecordPending?: Record<string, number>
   replyScanningId?: string
   replyScanBusy?: boolean
   /** Switch to the Duplicates filter, focused on this lead's group. */
@@ -177,6 +179,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
   onReplySent,
   onReplyRecorded,
   replySentDone = {},
+  replyRecordPending = {},
   replyScanningId = '',
   replyScanBusy = false,
   onViewDuplicates,
@@ -375,6 +378,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
             'YOUR ACTION: See stage chip and use the buttons on the right.'
         const ackKey = replyAckKey(item)
         const replyAcknowledged = Boolean(replySentDone[ackKey])
+        const replyRecording = Boolean(replyRecordPending[ackKey]) && !replyAcknowledged
         const replyScanning = replyScanningId === item.id
         const showDetail = open && (item.stage === 'clarify' || item.stage === 'send_resume')
         const highlighted = Boolean(item.normalizedKey) && item.normalizedKey === highlightKey
@@ -531,7 +535,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                       onClick={() => onReplyRecorded?.(item)}
                       title="After you send it on LinkedIn: confirm what you sent, and this card moves to Waiting on them"
                     >
-                      {replyAcknowledged ? 'Reply sent ✓' : 'Reply sent'}
+                      {replyAcknowledged ? 'Reply sent ✓' : replyRecording ? 'Confirm in RecordReply…' : 'Reply sent'}
                     </a>
                   )}
                   {item.replyDue && onReplySent && !replyInPanel && !recordable && (

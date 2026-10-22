@@ -47,6 +47,10 @@ const REGEN_POLL_MS = 1500
  * could realistically have new data" is fine and keeps a left-open tab
  * from ever drifting more than ~1 minute stale. */
 const BACKGROUND_REFRESH_MS = 60_000
+/** How long a RecordReply click waits for the regenerated page to show the reply logged. */
+const RECORD_REPLY_TIMEOUT_MS = 600_000
+/** Poll cadence while a RecordReply confirm is outstanding (the helper regenerates on success). */
+const RECORD_REPLY_POLL_MS = 5_000
 const NO_DECLINE_REASONS: DeclineReason[] = []
 /** Delay before the auto-Regenerate after a Decline/Dismiss/Manage-lead click,
  * so the helper app's database write lands before the page is rebuilt. */
@@ -457,14 +461,11 @@ export default function App() {
     [busy, replySentDone],
   )
 
+  /** Ack key → click time for RecordReply links not yet confirmed by the helper. */
+  const [recordPending, setRecordPending] = useState<Record<string, number>>({})
   const onReplyRecorded = useCallback((item: ContactPriorityItem) => {
     const ackKey = replyAckKey(item)
-    setReplySentDone((prev) => {
-      if (prev[ackKey]) return prev
-      const next: Record<string, true> = { ...prev, [ackKey]: true }
-      saveReplySentAcks(next)
-      return next
-    })
+    setRecordPending((prev) => ({ ...prev, [ackKey]: Date.now() }))
   }, [])
 
   const priorityAll = useMemo(
@@ -472,6 +473,48 @@ export default function App() {
     [data],
   )
   const counts = useMemo(() => contactQueueCounts(priorityAll), [priorityAll])
+
+  // RecordReply regenerates the page only after Shawn confirms (REQUIREMENTS
+  // LOG-5): acknowledge once data generated after the click no longer shows
+  // that message as reply-due; give up (no ack) after the timeout.
+  useEffect(() => {
+    const keys = Object.keys(recordPending)
+    if (!keys.length) return
+    const generatedMs = Date.parse(data?.generatedAt || '') || 0
+    const stillDue = new Set(priorityAll.filter((i) => i.replyDue).map(replyAckKey))
+    const confirmed = keys.filter((k) => generatedMs > recordPending[k] && !stillDue.has(k))
+    const expired = keys.filter(
+      (k) => !confirmed.includes(k) && nowMs - recordPending[k] > RECORD_REPLY_TIMEOUT_MS,
+    )
+    if (!confirmed.length && !expired.length) return
+    if (confirmed.length) {
+      setReplySentDone((prev) => {
+        const next: Record<string, true> = { ...prev }
+        for (const k of confirmed) next[k] = true
+        saveReplySentAcks(next)
+        return next
+      })
+    }
+    setRecordPending((prev) => {
+      const next = { ...prev }
+      for (const k of [...confirmed, ...expired]) delete next[k]
+      return next
+    })
+  }, [recordPending, data?.generatedAt, priorityAll, nowMs])
+
+  const recordPendingCount = Object.keys(recordPending).length
+  useEffect(() => {
+    if (!recordPendingCount) return
+    const id = window.setInterval(() => {
+      if (busyRef.current) return
+      fetchWorkflow()
+        .then((payload) => setData(payload))
+        .catch(() => {
+          /* next tick retries */
+        })
+    }, RECORD_REPLY_POLL_MS)
+    return () => window.clearInterval(id)
+  }, [recordPendingCount])
   const byStatus = useMemo(() => statusCounts(priorityAll), [priorityAll])
   const filtered = useMemo(() => {
     const generatedMs = data?.generatedAt ? new Date(data.generatedAt).getTime() : 0
@@ -663,6 +706,7 @@ export default function App() {
             filterLabel={filterLabel}
             onReplySent={onReplySent}
             onReplyRecorded={onReplyRecorded}
+            replyRecordPending={recordPending}
             replySentDone={replySentDone}
             replyScanningId={replyScanningId}
             replyScanBusy={busy}
