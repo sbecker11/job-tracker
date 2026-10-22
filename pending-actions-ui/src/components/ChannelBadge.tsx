@@ -15,7 +15,9 @@ export function ChannelBadge({
   const label = channel === 'linkedin' ? 'LinkedIn' : channel === 'sms' ? 'SMS' : 'Email'
   const className = `channel-badge channel-${channel}`
   const title =
-    channel === 'linkedin' && href
+    href && /linkedin\.com/i.test(href)
+      ? 'Open the LinkedIn conversation'
+      : channel === 'linkedin' && href
       ? 'Open LinkedIn message copy in shawnbecker.recruiting@gmail.com'
       : href
         ? 'Open last message in shawnbecker.recruiting@gmail.com'

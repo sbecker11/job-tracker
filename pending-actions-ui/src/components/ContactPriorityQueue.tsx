@@ -107,6 +107,12 @@ function messageTarget(item: ContactPriorityItem): MessageTarget {
   }
 }
 
+/** LinkedIn message whose only "email" is LinkedIn's notification (replies go to LinkedIn's relay). */
+function linkedinNotice(item: ContactPriorityItem): boolean {
+  const t = messageTarget(item)
+  return t.channel === 'linkedin' && !t.composeTo
+}
+
 function mailtoLabel(item: ContactPriorityItem): string {
   return item.emailIsLinkedInRelay ? 'LinkedIn reply' : 'Recruiter email'
 }
@@ -471,7 +477,10 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     />
                   )}
                   {item.channel && (
-                    <ChannelBadge channel={item.channel} href={item.gmailUrl} />
+                    <ChannelBadge
+                      channel={item.channel}
+                      href={item.channel === 'linkedin' && item.threadUrl ? item.threadUrl : item.gmailUrl}
+                    />
                   )}
                   {item.stage === 'send_resume' && (
                     <span className={`pkg-chip${item.packageReady ? ' ready' : ' missing'}`}>
@@ -681,8 +690,17 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
               <div className="priority-detail">
                 <div className="actions">
                   {item.threadUrl ? (
-                    <a className="btn link" href={item.threadUrl} target="_blank" rel="noreferrer">
-                      Open thread
+                    <a
+                      className="btn link"
+                      href={item.threadUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={() => {
+                        if (item.draftReply) void copyText(item.draftReply)
+                      }}
+                      title="Opens the thread with the reply copied — paste it and press Send"
+                    >
+                      {/linkedin\.com/i.test(item.threadUrl) ? 'Reply on LinkedIn' : 'Open thread'}
                     </a>
                   ) : null}
                   {mailtoUrl(item) && (
@@ -696,7 +714,13 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                       {mailtoLabel(item)}
                     </a>
                   )}
-                  {item.gmailUrl ? (
+                  {item.gmailUrl && linkedinNotice(item) ? (
+                    !item.threadUrl && (
+                      <a className="btn link" href={item.gmailUrl} target="_blank" rel="noreferrer">
+                        Open LinkedIn notification
+                      </a>
+                    )
+                  ) : item.gmailUrl ? (
                     <a className="btn link" href={item.gmailUrl} target="_blank" rel="noreferrer">
                       Reply in Gmail
                     </a>

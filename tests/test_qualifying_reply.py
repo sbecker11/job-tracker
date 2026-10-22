@@ -211,3 +211,25 @@ def test_draft_names_recruiter_date_and_client_location():
     assert "before I send you my résumé" in draft.body
     assert "on-site with the client in New Jersey?" in draft.body
     assert draft.body.endswith("Best, Shawn\nshawn.becker@spexture.com")
+
+
+INMAIL_WITH_CREDENTIAL = """Enterprise Data Architecture & Applied AI Consulting Opportunity
+Carlson Nkwain, PhD
+Global Health & International Development Advisor | Health Security
+https://www.linkedin.com/comm/in/carlson-nkwain?lipi=urn%3Ali&trk=eml
+Hello Shawn,
+I'm representing a U.S.-based AI startup. Would you be interested in learning more?
+Carlson Nkwain, PhD
+Yes, interested…https://www.linkedin.com/comm/messaging/thread/2-NzRkZDc0MzctOWUwMC00ODVkLWJjMjUtMzFmZjFlMDNhNWJlXzEwMA==/?lipi=urn%3Ali&midToken=AQH
+Reply
+        https://www.linkedin.com/comm/messaging/thread/2-NzRkZDc0MzctOWUwMC00ODVkLWJjMjUtMzFmZjFlMDNhNWJlXzEwMA==/?lipi=urn%3Ali
+"""
+
+
+def test_inmail_with_credential_greets_by_name_and_finds_comm_thread():
+    draft = draft_qualifying_reply(INMAIL_WITH_CREDENTIAL, subject="Enterprise Data Architecture & Applied AI Consulting Opportunity")
+    assert draft.recruiter_name == "Carlson Nkwain"
+    assert draft.body.startswith("Hi Carlson,")
+    assert draft.thread_url == (
+        "https://www.linkedin.com/messaging/thread/2-NzRkZDc0MzctOWUwMC00ODVkLWJjMjUtMzFmZjFlMDNhNWJlXzEwMA==/"
+    )

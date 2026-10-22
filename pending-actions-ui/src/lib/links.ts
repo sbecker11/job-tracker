@@ -274,7 +274,24 @@ export function sendRoutes(t: MessageTarget): SendRoute[] {
       href: () => url,
     })
   }
-  if (t.gmailUrl) {
+  // A LinkedIn lead's "email" is LinkedIn's notification — replying to it goes
+  // to LinkedIn's relay, not the recruiter.
+  const linkedinNotice = t.channel === 'linkedin' && !t.composeTo
+  if (t.gmailUrl && linkedinNotice && !routes.length) {
+    const url = t.gmailUrl
+    const button = 'Open LinkedIn notification'
+    routes.push({
+      channel: 'linkedin',
+      label: `Answer ${who} on LinkedIn${forPart}`,
+      button,
+      how: 'LinkedIn (via the notification email)',
+      to: url,
+      step: `Click "${button}". LinkedIn's email opens and the message is copied. Click its Reply button to open the LinkedIn conversation, paste it and press Send.`,
+      prefilled: false,
+      href: () => url,
+    })
+  }
+  if (t.gmailUrl && !linkedinNotice) {
     const url = t.gmailUrl
     const button = 'Reply in Gmail'
     routes.push({

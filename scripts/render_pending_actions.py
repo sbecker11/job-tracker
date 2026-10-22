@@ -822,6 +822,7 @@ def _build_linkedin_reply_queue(
                 "messageBody": clean_message_body_for_display(m.get("body") or ""),
                 "ageDays": m.get("ageDays") or 0,
                 "messageId": m.get("messageId") or "",
+                "fromAddress": m.get("fromAddress") or "",
             }
         )
 

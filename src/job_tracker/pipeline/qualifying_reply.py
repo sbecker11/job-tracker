@@ -36,8 +36,17 @@ from job_tracker.scoring.scorer import score_jd
 _THREAD_URL_RE = re.compile(
     r"(https://www\.linkedin\.com/messaging/thread/\S+)", re.I
 )
+# InMail notifications link through /comm/ with tracking params.
+_COMM_THREAD_URL_RE = re.compile(
+    r"https://www\.linkedin\.com/comm/messaging/thread/([^\s/?]+)", re.I
+)
 _SENDER_NAME_RE = re.compile(
     r"\n\s*([A-Z][\w.'\-]+(?: [A-Z][\w.'\-]+){0,3})\n\s*Reply\n",
+)
+# InMail layout: "Name, PhD" / headline / profile link.
+_INMAIL_NAME_RE = re.compile(
+    r"\n\s*([A-Z][\w.'\-]+(?: [A-Z][\w.'\-]+){0,3})(?:,\s*[A-Za-z.]{2,8})*[ \t]*\n"
+    r"(?:[^\n]*\n)?\s*https://www\.linkedin\.com/(?:comm/)?in/",
 )
 _POSITION_RE = re.compile(
     r"(?im)^(?:Position|Role|Title)\s*[:\-]\s*(.+?)\s*$"
@@ -144,8 +153,12 @@ class QualifyingDraft:
 def extract_linkedin_thread_url(text: str) -> str:
     if not text:
         return ""
-    m = _THREAD_URL_RE.search(text.replace("\r\n", "\n"))
-    return (m.group(1).rstrip(").,]'\"")) if m else ""
+    text = text.replace("\r\n", "\n")
+    m = _THREAD_URL_RE.search(text)
+    if m:
+        return m.group(1).rstrip(").,]'\"")
+    m = _COMM_THREAD_URL_RE.search(text)
+    return f"https://www.linkedin.com/messaging/thread/{m.group(1)}/" if m else ""
 
 
 def extract_linkedin_sender_name(text: str) -> str:
@@ -154,7 +167,8 @@ def extract_linkedin_sender_name(text: str) -> str:
     sig = parse_signature(text)
     if sig.name:
         return sig.name
-    m = _SENDER_NAME_RE.search("\n" + text.replace("\r\n", "\n"))
+    text = "\n" + text.replace("\r\n", "\n")
+    m = _SENDER_NAME_RE.search(text) or _INMAIL_NAME_RE.search(text)
     return m.group(1).strip() if m else ""
 
 

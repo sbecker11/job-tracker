@@ -550,7 +550,7 @@ def build_clarify_queue(
         channel = _channel_from_addresses(
             thread_url=item.get("threadUrl") or "",
             source_label="linkedin_message" if item.get("kind") == "lead" else "",
-            from_address="",
+            from_address=item.get("fromAddress") or "",
         )
         next_action = _next_action_clarify(
             channel=channel,
