@@ -53,6 +53,7 @@ from job_tracker.pipeline.store import (  # noqa: E402
     heal_applied_crm,
     list_job_conversations,
     list_unmatched_messages,
+    sender_name,
 )
 from job_tracker.scoring.scorer import DEFAULT_FRAMEWORK_PATH, load_framework, score_jd  # noqa: E402
 
@@ -645,7 +646,12 @@ def render(conn, *, output_root: Path, now: datetime, automation_state_dir: Path
     unmatched_communications = []
     for r in list_unmatched_messages(conn):
         body = r["body_text"] or ""
-        draft = draft_qualifying_reply(body, subject=r["subject"] or "", received_at=r["detected_at"] or "")
+        draft = draft_qualifying_reply(
+            body,
+            subject=r["subject"] or "",
+            received_at=r["detected_at"] or "",
+            known_recruiter_name=sender_name(r["from_address"] or "", body) if r["direction"] == "inbound" else "",
+        )
         unmatched_communications.append(
             {
                 "messageId": r["message_id"],

@@ -2029,8 +2029,8 @@ _NOT_A_PERSON_RE = re.compile(
     r"(?i)(?:^|[._-])(press|media|careers?|jobs?|hr|info|support|help|privacy|legal|accommodations?|"
     r"talent|recruiting|recruitment|hiring|apply|admin|contact|hello|sales|team|alerts?|"
     r"notifications?|updates|no-?reply|donotreply|mailer-daemon)@|"
-    r"no-?reply|@(?:[\w-]+\.)*linkedin\.com$|@(alerts\.)?talent\.com$|@(mail\.)?greenhouse(-mail)?\.io$|"
-    r"@ashbyhq\.com$"
+    r"no[._-]?reply|marketing|@(?:[\w-]+\.)*linkedin\.com$|@(alerts\.)?talent\.com$|@(mail\.)?greenhouse(-mail)?\.io$|"
+    r"@ashbyhq\.com$|@googlegroups\.com$"
 )
 
 
@@ -2058,6 +2058,19 @@ def name_from_email(email: str) -> str:
         return ""
     parts = [p for p in parts if len(p) > 1][:2]
     return " ".join(p.capitalize() for p in parts)
+
+
+def sender_name(email: str, body: str = "") -> str:
+    """The sender's display name from a 'From: Name <email>' line in `body`
+    (forwards and quoted replies carry one), else `name_from_email`."""
+    e = (email or "").strip()
+    if body and is_person_email(e):
+        m = re.search(
+            rf'From:\s*"?([^"<>&\n@]+?)"?\s*(?:<|&lt;){re.escape(e)}(?:>|&gt;)', body, re.I
+        )
+        if m and re.search(r"[A-Za-z]{2}", m.group(1)):
+            return m.group(1).strip()
+    return name_from_email(e)
 
 
 def is_linkedin_thread_reply_address(email: str) -> bool:
@@ -2647,6 +2660,8 @@ def resolve_unmatched_message(
     fallback_address = row["from_address"] if row["direction"] == "inbound" else ""
     if fallback_address and fallback_address.strip().lower() in GENERIC_RELAY_ADDRESSES:
         fallback_address = ""
+    if not contact_name and (contact_email or fallback_address):
+        contact_name = sender_name(contact_email or fallback_address, row["body_text"] or "")
     contact_id = None
     if contact_name or contact_email or contact_phone or fallback_address:
         contact_id = add_job_contact(
