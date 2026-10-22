@@ -16,6 +16,7 @@ from pathlib import Path
 from job_tracker.pipeline.llm_call_log import log_path
 from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect
 
+BILLING_URL = "https://platform.claude.com/settings/billing"
 
 def build_spend_summary(conn) -> dict:
     row = conn.execute(
@@ -93,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         total = sum(b["costUsd"] for b in sources.values())
         detail = ", ".join(f"{src} {int(b['calls'])} calls ${b['costUsd']:.2f}" for src, b in sorted(sources.items()))
         print(f"  {month}: ${total:.2f}  ({detail})")
+    print(f"  Billed totals: {BILLING_URL}")
     return 0
 
 
