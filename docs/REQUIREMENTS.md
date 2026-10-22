@@ -147,7 +147,7 @@ Craft and naming: `~/CLAUDE.md` §4, §5, §10, §12.
 | ID | Rule | Enforced | Status |
 |---|---|---|---|
 | PKG-1 | Every artifact lives in `~/Desktop/Resumes/2026/<Company>/<Role>/`; résumé and cover letter are generated only on an LLM *pursue* (or explicit force). | test: `test_llm_apply.py` | OK |
-| PKG-2 | Post-generation safety: banned terms, work-authorization language and compensation figures are checked in **both** résumé and cover letter, and catch common phrasings ("$120,000 per year", "$75 an hour", "$80 hourly"). | test: `test_llm_apply.py` | **BROKEN** — work-auth checks the cover letter only; comp regex misses those phrasings |
+| PKG-2 | Post-generation safety: banned terms, work-authorization language and compensation figures are checked in **both** résumé and cover letter, and catch common phrasings ("$120,000 per year", "$75 an hour", "$80 hourly"). | test: `test_llm_apply.py` | OK (2026-10-22; both documents checked; no false hits on the 51 existing packages) |
 | PKG-3 | Every résumé entry has a `role_note` title; no degree/cert years. | — | GAP |
 | PKG-4 | New cover letters are named `Shawn_Becker_Cover_Letter_<Company>_<Role>.docx` (`~/CLAUDE.md` §12); existing files are not renamed. (Decided 2026-10-22.) | — | **BROKEN** — code writes `coverLetter` |
 
@@ -238,7 +238,7 @@ Highest impact first. Each fix ships with the test/check named in its rule.
 2. ~~**EVAL-5**~~ — done 2026-10-22. Rescoring stored JDs under the new rules flips 14 skipped leads from pass to pursue (old misfire: English "go"); none were reopened.
 3. **ROUTE-1 / §12** — page re-derives channel and recipients (source of today's LinkedIn/email confusion).
 4. ~~**DRAFT-4 / DRAFT-1 / CON-1 / CON-2**~~ — done 2026-10-22; the card check is clean.
-5. **PKG-2** — safety checks miss résumé work-auth and common comp phrasings.
+5. ~~**PKG-2**~~ — done 2026-10-22.
 6. **CARD-1 / CARD-8 / TURN-3** — one card per lead, one meaning per field, parsed timestamps.
 7. **LIFE-7, LIFE-6, EVAL-7, EVAL-9, EVAL-10, LOG-4, LOG-5, MAT-5, NEXT-2, ROUTE-5 (page side), LIFE-5, DRAFT-8** — smaller fixes.
 

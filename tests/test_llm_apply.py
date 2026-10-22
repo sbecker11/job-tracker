@@ -239,6 +239,37 @@ def test_check_house_rules_flags_work_authorization_statement():
     assert any("work-authorization" in w for w in warnings)
 
 
+@pytest.mark.parametrize(
+    "phrase",
+    ["a base of $120,000 per year", "$75 an hour", "$80 hourly", "$140K", "$130,000", "my pay range", "$95/yr"],
+)
+def test_comp_figure_catches_common_phrasings(phrase):
+    assert llm_apply._COMP_FIGURE_RE.search(phrase), phrase
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    ["U.S. citizen", "no need for visa sponsorship", "do not require sponsorship", "authorized to work in the US",
+     "permanent resident", "H-1B", "holds a security clearance"],
+)
+def test_work_auth_catches_common_phrasings(phrase):
+    assert llm_apply._WORK_AUTH_RE.search(phrase), phrase
+
+
+def test_work_auth_checked_in_resume_too():
+    content = {"resume": {"summary": "U.S. citizen; no sponsorship needed."}, "cover_letter": {}}
+    assert any("résumé" in w for w in llm_apply._check_house_rules(content, company="Acme"))
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    ["Built payment flows for Visa and Mastercard networks", "Cut AWS costs on a 2,000-node fleet",
+     "3 NLP patents", "Java 21, Spring Boot 3.2.4", "149 tests, 94.5% instruction coverage"],
+)
+def test_safety_checks_leave_normal_text_alone(phrase):
+    assert not llm_apply._COMP_FIGURE_RE.search(phrase) and not llm_apply._WORK_AUTH_RE.search(phrase), phrase
+
+
 def test_check_house_rules_clean_content_has_no_warnings():
     warnings = llm_apply._check_house_rules(_CLEAN_CONTENT, company="Acme")
     assert warnings == []

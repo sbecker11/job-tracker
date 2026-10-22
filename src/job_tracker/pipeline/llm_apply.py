@@ -106,9 +106,11 @@ _BANNED_TERMS = ["Spexture LLC", "sub-100ms response", "Cline", "Member Nav", "C
 # a role that didn't ask for one), so it gets a regex safety net on top of
 # the prompt.
 _WORK_AUTH_RE = re.compile(
-    r"\bUS citizen(ship)?\b|\bgreen card\b|authorized to work|work authorization|"
-    r"eligible for (a )?(public trust|security clearance|clearance)|"
-    r"sponsorship (is )?(not )?(required|needed|available)",
+    r"\bU\.?\s?S\.?\s+citizen(ship)?\b|\bcitizenship\b|\bgreen card\b|\bpermanent resident\b|"
+    r"authori[sz]ed to work|work authori[sz]ation|right to work|\bH-?1B\b|\bTN visa\b|\bvisa (status|sponsorship|holder)\b|"
+    r"eligible for (a )?(public trust|security clearance|clearance)|\bsecurity clearance\b|"
+    r"sponsorship (is )?(not )?(required|needed|available)|"
+    r"(without|no need for|not (require|need)|do not (require|need)|don't (require|need))\s+(any\s+)?(visa\s+)?sponsorship",
     re.IGNORECASE,
 )
 # CLAUDE.md §4 house rule #12 (added 2026-07-05 after a real leak was found in
@@ -116,9 +118,11 @@ _WORK_AUTH_RE = re.compile(
 # C2C rate). No dollar figure, hourly rate, or salary range belongs in either
 # deliverable — compensation is a live conversation, never written down here.
 _COMP_FIGURE_RE = re.compile(
-    r"\$\s?\d[\d,.]*\s*(?:/\s*hr|per\s*hour|/\s*hour|k\b)|"
-    r"\b\d[\d,.]*\s*(?:k|K)\s*(?:/\s*yr|per\s*year|base|salary)|"
-    r"\bhourly rate\b|\bsalary range\b|\bcompensation range\b",
+    r"\$\s?\d[\d,.]*\s*(?:k\b)?\s*(?:/\s*(?:hr|hour|yr|year|annum)\b|per\s+(?:hour|hr|year|annum)\b|"
+    r"an?\s+hour\b|a\s+year\b|hourly\b|annually\b|salary\b|base\b)|"
+    r"\$\s?\d[\d,.]*\s*k\b|\$\s?\d{2,3}(?:,\d{3})+\b|"
+    r"\b\d[\d,.]*\s*k\s*(?:/\s*yr|per\s*year|base|salary)|"
+    r"\b(?:hourly|bill|pay)\s+rate\b|\b(?:salary|compensation|pay|rate)\s+range\b",
     re.IGNORECASE,
 )
 
@@ -947,12 +951,12 @@ def _check_house_rules(content: dict, *, company: str) -> list[str]:
     text = json.dumps(content)
     warnings = [f"banned term found: {term!r}" for term in _BANNED_TERMS if term.lower() in text.lower()]
 
-    cover_text = json.dumps(content.get("cover_letter") or {})
-    if _WORK_AUTH_RE.search(cover_text):
-        warnings.append(
-            "possible work-authorization/citizenship/clearance statement found in cover letter — "
-            "CLAUDE.md bans these outright; remove before sending"
-        )
+    for part, label in (("resume", "résumé"), ("cover_letter", "cover letter")):
+        if _WORK_AUTH_RE.search(json.dumps(content.get(part) or {})):
+            warnings.append(
+                f"possible work-authorization/citizenship/clearance statement found in {label} — "
+                "CLAUDE.md bans these outright; remove before sending"
+            )
 
     if _COMP_FIGURE_RE.search(text):
         warnings.append(
