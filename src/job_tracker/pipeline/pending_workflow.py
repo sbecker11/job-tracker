@@ -739,7 +739,7 @@ def build_clarify_queue(
         SELECT normalized_key, company, title, source_label, first_seen
         FROM job_leads
         WHERE deleted_at IS NULL
-          AND status NOT IN ('rejected', 'skipped', 'withdrawn', 'accepted', 'started',
+          AND status NOT IN ('rejected', 'skipped', 'accepted', 'started',
                              'deleted', 'unavailable', 'hired')
         """
     ):
@@ -1422,7 +1422,7 @@ def build_wait_schedule_queue(
         FROM job_leads
         WHERE deleted_at IS NULL
           AND awaiting_response_since IS NOT NULL
-          AND status NOT IN ('rejected', 'skipped', 'withdrawn', 'accepted', 'started',
+          AND status NOT IN ('rejected', 'skipped', 'accepted', 'started',
                              'deleted', 'unavailable', 'hired')
         ORDER BY awaiting_response_since ASC
         """

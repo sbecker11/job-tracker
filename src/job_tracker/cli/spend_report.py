@@ -23,7 +23,7 @@ def build_spend_summary(conn) -> dict:
           SUM(CASE WHEN status = 'package_generated' THEN 1 ELSE 0 END) AS packages_generated,
           SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected_leads
         FROM job_leads
-        WHERE status NOT IN ('deleted', 'duplicate')
+        WHERE status != 'deleted'
         """
     ).fetchone()
     cache_rows = conn.execute("SELECT COUNT(*) AS n FROM llm_extraction_cache").fetchone()["n"]

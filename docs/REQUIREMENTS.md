@@ -137,7 +137,7 @@ package_generated → applied → following_up → interviewing → offered → 
 | LIFE-3 | Declining sets `skipped` with a reason from `DECLINE_REASONS`, logs the letter (if sent) outbound, and stops the wait clock. A later recruiter reply that changes the declined term resurfaces the lead. | test: `test_decline.py` | OK |
 | LIFE-4 | Application-received → `applied`; interview invite → `interviewing`; rejection → `rejected` (recorded from any status). Off-ramp and `reopened` leads never auto-advance. | test: `test_post_application.py` | OK |
 | LIFE-5 | Generating a package on a lead moves it to `package_generated` — or the tool refuses/warns when the lead is skipped. | — | **BROKEN** — `apply_package --force` leaves it silently skipped |
-| LIFE-6 | Every status value used anywhere is in `LEAD_STAGES`. | — | **BROKEN** — `market_withdrawal_draft` uses "duplicate" |
+| LIFE-6 | Every status value used anywhere is in `LEAD_STAGES`. | test: `test_lead_stage_values.py` (SQL status literals) | OK (2026-10-22; removed `duplicate` ×2 and `withdrawn`) |
 | LIFE-7 | `scan_rejection_backlog` imports and runs. | test: `test_cli_imports.py` | OK (2026-10-22) |
 
 ## 9. Packages
@@ -240,7 +240,7 @@ Highest impact first. Each fix ships with the test/check named in its rule.
 4. ~~**DRAFT-4 / DRAFT-1 / CON-1 / CON-2**~~ — done 2026-10-22; the card check is clean.
 5. ~~**PKG-2**~~ — done 2026-10-22.
 6. ~~**CARD-1 / CARD-8 / TURN-3**~~ — done 2026-10-22.
-7. **LIFE-6, EVAL-7, EVAL-9, EVAL-10, LOG-4, LOG-5, MAT-5, NEXT-2, ROUTE-5 (page side), LIFE-5** — smaller fixes.
+7. **EVAL-7, EVAL-9, EVAL-10, LOG-4, LOG-5, MAT-5, NEXT-2, ROUTE-5 (page side), LIFE-5** — smaller fixes.
 
 ## 14. Open decisions for Shawn
 

@@ -31,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     conn = connect(args.db)
     drafts: list[tuple[str, str, str]] = []
     try:
-        terminal = {"skipped", "rejected", "deleted", "unavailable", "hired", "accepted", "duplicate"}
+        terminal = {"skipped", "rejected", "deleted", "unavailable", "hired", "accepted"}
         for lead in list_leads(conn):
             d = dict(lead)
             if (d.get("company") or "").lower() == args.accepted_company.lower() and (
