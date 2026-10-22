@@ -183,11 +183,11 @@ def _unanswered_inbound(convs: list) -> object | None:
     if not human_in:
         return None
     outbound = [c for c in convs if (c["direction"] or "") == "outbound"]
-    last_in = max(human_in, key=lambda c: c["occurred_at"] or "")
+    last_in = max(human_in, key=lambda c: _sort_time(c["occurred_at"]))
     if not outbound:
         return last_in
-    last_out = max(outbound, key=lambda c: c["occurred_at"] or "")
-    if (last_in["occurred_at"] or "") > (last_out["occurred_at"] or ""):
+    last_out = max(outbound, key=lambda c: _sort_time(c["occurred_at"]))
+    if _sort_time(last_in["occurred_at"]) > _sort_time(last_out["occurred_at"]):
         return last_in
     return None
 
@@ -841,7 +841,7 @@ def build_clarify_queue(
             continue
         convs = list(list_job_conversations(conn, key))
         unanswered = _unanswered_inbound(convs)
-        if unanswered is None or (unanswered["occurred_at"] or "") <= (r["declined_at"] or ""):
+        if unanswered is None or _sort_time(unanswered["occurred_at"]) <= _sort_time(r["declined_at"]):
             continue
         unanswered_days = age_days_fn(unanswered["occurred_at"], now)
         if unanswered_days > _REPLY_DUE_MAX_AGE_DAYS:

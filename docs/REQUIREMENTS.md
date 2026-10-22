@@ -103,7 +103,7 @@ is updated first.
 |---|---|---|---|
 | TURN-1 | Outbound sets `awaiting_response_since` to its time; inbound from the other party clears it; `other` leaves it. Explicit overrides allowed (e.g. voicemail left). | test: `test_store.py`, `test_log_contact.py` | OK |
 | TURN-2 | Automated mail (digests, auto-acks, job alerts) never counts as the recruiter replying. | test: `test_pending_workflow.py` (digest) | OK |
-| TURN-3 | Timestamps are compared as parsed datetimes, never as strings. | — | **BROKEN** — `_unanswered_inbound`, post-decline check |
+| TURN-3 | Timestamps are compared as parsed datetimes, never as strings. | test: `test_timestamp_order.py` | OK (2026-10-22; 27 stored rows use `-06:00`, which sorted wrong as strings). SQL `ORDER BY` for display is unchanged. |
 
 ## 7. Evaluation (scoring and review)
 
@@ -239,7 +239,7 @@ Highest impact first. Each fix ships with the test/check named in its rule.
 3. **ROUTE-1 / §12** — page re-derives channel and recipients (source of today's LinkedIn/email confusion).
 4. ~~**DRAFT-4 / DRAFT-1 / CON-1 / CON-2**~~ — done 2026-10-22; the card check is clean.
 5. ~~**PKG-2**~~ — done 2026-10-22.
-6. **CARD-1 / CARD-8 / TURN-3** — one card per lead, one meaning per field, parsed timestamps.
+6. **CARD-1 / CARD-8** — one card per lead, one meaning per field. (TURN-3 done 2026-10-22.)
 7. **LIFE-6, EVAL-7, EVAL-9, EVAL-10, LOG-4, LOG-5, MAT-5, NEXT-2, ROUTE-5 (page side), LIFE-5** — smaller fixes.
 
 ## 14. Open decisions for Shawn

@@ -42,12 +42,13 @@ class PromoteResult:
 def _eligible_rows(conn: sqlite3.Connection, *, newer_than_days: int | None) -> list[sqlite3.Row]:
     cutoff = None
     if newer_than_days is not None:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=newer_than_days)).isoformat()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=newer_than_days)
     rows = []
     for row in store.list_unmatched_messages(conn):
         if row["direction"] != "inbound":
             continue
-        if cutoff and (row["detected_at"] or "") < cutoff:
+        detected = store._parse_iso(row["detected_at"])
+        if cutoff and (detected is None or detected < cutoff):
             continue
         if store.get_llm_cache(conn, row["message_id"]) is not None:
             continue
