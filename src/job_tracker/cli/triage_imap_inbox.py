@@ -115,6 +115,26 @@ from job_tracker.pipeline.triage import (
 # two specifically, as opposed to any other `@linkedin.com` digest sender.
 _LINKEDIN_PERSONAL_REPLY_SENDERS = frozenset({"hit-reply@linkedin.com", "inmail-hit-reply@linkedin.com"})
 
+# LinkedIn social notifications (posts, impressions, puzzles, data archives,
+# "add X", message digests). None has ever been a recruiter pitch, yet each
+# cost an LLM extraction and some became junk stub leads (2026-10-22). Real
+# LinkedIn messages arrive from the personal-reply senders above; invitations
+# and job alerts can carry a pitch, so they still go through triage.
+_LINKEDIN_NOTIFICATION_SENDERS = frozenset(
+    {
+        "messages-noreply@linkedin.com",
+        "notifications-noreply@linkedin.com",
+        "updates-noreply@linkedin.com",
+        "editors-noreply@linkedin.com",
+        "security-noreply@linkedin.com",
+        "messaging-digest-noreply@linkedin.com",
+    }
+)
+
+
+def _is_linkedin_notification(message) -> bool:
+    return (getattr(message, "from_address", None) or "").strip().lower() in _LINKEDIN_NOTIFICATION_SENDERS
+
 # IMAP hierarchy separator on Hostinger (Dovecot) is "." with everything
 # nested under INBOX (see `INBOX.Archive`, `INBOX.Sent`, etc. already there)
 # — mirrors that convention instead of inventing a top-level mailbox.
@@ -478,6 +498,7 @@ def main(argv: list[str] | None = None) -> int:
     results = []
     skipped_already_processed = 0
     skipped_personal_noise = 0
+    skipped_platform_noise = 0
     linked_to_existing_count = 0
     errored_uids: list[str] = []
     stopped_for_wall_budget = False
@@ -530,6 +551,23 @@ def main(argv: list[str] | None = None) -> int:
                         subject=message.subject,
                         from_address=message.from_address,
                         archived=False,
+                    )
+                continue
+
+            if _is_linkedin_notification(message):
+                skipped_platform_noise += 1
+                if not args.dry_run:
+                    _file_message(
+                        imap_conn, uid, source_folder=args.folder, to_folder=_OUTCOME_FOLDERS[SKIP], file_mail=file_mail
+                    )
+                    record_message_processed(
+                        conn,
+                        message.id,
+                        outcome="PLATFORM_NOISE",
+                        subject=message.subject,
+                        from_address=message.from_address,
+                        label_applied=_OUTCOME_FOLDERS[SKIP] if file_mail else "",
+                        archived=file_mail,
                     )
                 continue
 
@@ -706,6 +744,8 @@ def main(argv: list[str] | None = None) -> int:
             f"\n(skipped {skipped_personal_noise} Apple/personal receipt(s) — left in INBOX)",
             file=sys.stderr,
         )
+    if skipped_platform_noise:
+        print(f"\n(skipped {skipped_platform_noise} LinkedIn notification(s) — no LLM call)", file=sys.stderr)
 
     if stopped_for_wall_budget:
         print(

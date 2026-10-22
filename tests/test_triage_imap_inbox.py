@@ -123,6 +123,30 @@ def test_triage_imap_live_moves_and_stores(monkeypatch, mock_imap, tmp_path: Pat
     assert "Processed 1" in capsys.readouterr().err
 
 
+def test_triage_imap_files_linkedin_notifications_without_llm(monkeypatch, mock_imap, tmp_path: Path, capsys):
+    db = tmp_path / "leads.db"
+    monkeypatch.setattr(imap_cli, "list_message_uids", lambda *a, **k: ["1"])
+    monkeypatch.setattr(
+        imap_cli,
+        "fetch_message",
+        lambda *a, **k: _msg(from_address="messages-noreply@linkedin.com", subject="Your full LinkedIn data archive is ready!"),
+    )
+
+    def no_triage(*a, **k):
+        raise AssertionError("LinkedIn notifications must not reach triage")
+
+    monkeypatch.setattr(imap_cli, "triage_message", no_triage)
+    monkeypatch.setattr(imap_cli, "match_message_to_job", no_triage)
+
+    assert imap_main(["--db", str(db), "--llm-fallback"]) == 0
+    assert mock_imap.moves == [{"uid": "1", "from": "INBOX", "to": "INBOX.JobTracker.SKIP"}]
+    conn = connect(db)
+    assert conn.execute("SELECT outcome FROM processed_messages").fetchone()["outcome"] == "PLATFORM_NOISE"
+    assert conn.execute("SELECT COUNT(*) FROM job_leads").fetchone()[0] == 0
+    conn.close()
+    assert "LinkedIn notification" in capsys.readouterr().err
+
+
 def test_triage_imap_skips_already_seen(monkeypatch, mock_imap, tmp_path: Path, capsys):
     db = tmp_path / "leads.db"
     conn = connect(db)
