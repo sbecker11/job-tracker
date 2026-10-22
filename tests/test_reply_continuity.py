@@ -149,3 +149,29 @@ def test_backfill_inbound_empty_message_id(tmp_path, monkeypatch):
     ).fetchone()
     assert row["message_id"] == "19fb2d71933ae946"
     conn.close()
+
+
+def test_company_title_search_hit_must_name_the_company():
+    def search(query: str, limit: int) -> list[str]:
+        return ["1a034f57063a5901"]
+
+    def body(message_id: str) -> str:
+        return (
+            "Subject: Remote Lead Front-End AI Application Engineer Opportunity with CVS Health\n"
+            "Sr Lead Software Engineer Reply https://www.linkedin.com/messaging/thread/2-cvs/"
+        )
+
+    resolved = resolve_reply_continuity(
+        company="Cox Communications", subject="Sr Lead Software Engineer", search_gmail=search, fetch_body=body
+    )
+    assert resolved["threadUrl"] == "" and resolved["gmailUrl"] == ""
+
+
+def test_one_word_of_the_company_is_not_enough():
+    from job_tracker.pipeline.reply_continuity import body_names_company
+
+    cvs = "Subject: Lead Front-End AI Engineer with CVS Health\nAshleigh Cox\nRecruiter"
+    assert not body_names_company(cvs, "Cox Communications")
+    assert body_names_company("Join Cox Communications in Atlanta", "Cox Communications")
+    assert body_names_company("Role at NeoTek, Inc.", "NeoTek Inc.")
+    assert body_names_company("anything", "Undisclosed")

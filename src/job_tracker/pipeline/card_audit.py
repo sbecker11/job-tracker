@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from job_tracker.pipeline.store import is_person_email, is_same_inbound_message
 
 CHECKS: dict[str, str] = {
     "email_on_linkedin": "LinkedIn message shown as an email card",
@@ -26,8 +26,6 @@ CHECKS: dict[str, str] = {
 }
 
 _EMAIL_RE = re.compile(r"^[\w.+'-]+@[\w-]+(?:\.[\w-]+)+$")
-# Job-board alert and relay senders: an address, but not a person to write to.
-_BOARD_RE = re.compile(r"(?i)^(jobs|support|alerts?|notifications?|no-?reply|donotreply)@|@(?:[\w-]+\.)*linkedin\.com$")
 _LI_THREAD_RE = re.compile(r"linkedin\.com/(?:comm/)?messaging/thread/", re.I)
 _OFFICE_LABEL_RE = re.compile(r"(?i)\b(office|main|desk|fax|switchboard|tel)\b[^0-9\n]{0,6}$")
 _ANSWER_PATTERNS: dict[str, tuple[re.Pattern[str], re.Pattern[str]]] = {
@@ -95,31 +93,22 @@ def _conversations(conn: sqlite3.Connection | None, key: str) -> list[sqlite3.Ro
         return []
     return list(
         conn.execute(
-            "SELECT direction, occurred_at, coalesce(body_text, summary, '') AS text "
+            "SELECT direction, occurred_at, message_id, summary, body_text, coalesce(body_text, summary, '') AS text "
             "FROM job_conversations WHERE job_key = ? ORDER BY occurred_at",
             (key,),
         )
     )
 
 
-def _parse_ts(s: str) -> datetime | None:
-    try:
-        ts = datetime.fromisoformat(s.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
-
 
 def _duplicate_inbound(convs: list[sqlite3.Row]) -> str:
     inbound = [c for c in convs if c["direction"] == "inbound" and c["occurred_at"]]
-    for a, b in zip(inbound, inbound[1:]):
-        ta, tb = _parse_ts(a["occurred_at"]), _parse_ts(b["occurred_at"])
-        if ta is None or tb is None:
-            continue
-        gap = abs((tb - ta).total_seconds())
-        head = lambda t: re.sub(r"\W+", " ", t).strip().lower()[:60]  # noqa: E731
-        if gap <= 15 * 60 and head(a["text"]) and head(a["text"]) == head(b["text"]):
-            return f"two copies at {a['occurred_at'][:16]}"
+    for i, a in enumerate(inbound):
+        for b in inbound[i + 1 :]:
+            if (a["message_id"] and a["message_id"] == b["message_id"]) or is_same_inbound_message(
+                (a["summary"], a["body_text"], a["occurred_at"]), (b["summary"], b["body_text"], b["occurred_at"])
+            ):
+                return f"two copies at {a['occurred_at'][:16]}"
     return ""
 
 
@@ -135,14 +124,14 @@ def audit_cards(payload: dict, conn: sqlite3.Connection | None = None) -> list[C
         thread = item.get("threadUrl") or item.get("resolvedThreadUrl") or ""
         name = item.get("recruiterName") or ""
         email = (item.get("recruiterEmail") or "").strip()
-        real_email = bool(_EMAIL_RE.match(email)) and not _BOARD_RE.search(email)
+        real_email = is_person_email(email)
         is_li = bool(item.get("emailIsLinkedInRelay") or _LI_THREAD_RE.search(body) or _LI_THREAD_RE.search(thread))
 
         if is_li and not real_email and item.get("channel") not in ("linkedin", "sms"):
             flag("email_on_linkedin", item, f"channel={item.get('channel')}")
         if item.get("channel") == "linkedin" and not thread and _LI_THREAD_RE.search(body):
             flag("missing_thread", item)
-        if "@" in name and not _BOARD_RE.search(name):
+        if "@" in name:
             flag("email_as_name", item, name)
         if email and not _EMAIL_RE.match(email):
             flag("bad_email", item, email)

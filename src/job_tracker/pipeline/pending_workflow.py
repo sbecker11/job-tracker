@@ -14,14 +14,23 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
-from job_tracker.pipeline.qualifying_reply import detect_pitch_gaps, draft_qualifying_reply
+from job_tracker.pipeline.qualifying_reply import (
+    detect_pitch_gaps,
+    draft_qualifying_reply,
+    extract_linkedin_thread_url,
+)
 from job_tracker.pipeline.reply_continuity import (
     RECRUITING_GMAIL_USER,
     enrich_item_reply_links,
     recruiting_gmail_message_url,
 )
 from job_tracker.pipeline.signature import parse_signature
-from job_tracker.pipeline.store import GENERIC_RELAY_ADDRESSES, list_job_conversations
+from job_tracker.pipeline.store import (
+    GENERIC_RELAY_ADDRESSES,
+    is_person_email,
+    list_job_conversations,
+    name_from_email,
+)
 from job_tracker.scoring.scorer import DEFAULT_FRAMEWORK_PATH, load_framework
 
 _OUTREACH_MAX_AGE_DAYS = 14
@@ -770,12 +779,13 @@ def build_clarify_queue(
                 inbound_snippet=subj,
             )
         )
-        channel = _channel_from_addresses(
-            thread_url=drafted.thread_url,
+        thread = drafted.thread_url or _thread_url_for_lead(convs, conn, key)
+        channel = _card_channel(
+            thread_url=thread,
             source_label=r["source_label"] or "",
+            email=email,
+            email_is_li_relay=email_is_li_relay,
         )
-        if email and not _is_system_email(email) and not email_is_li_relay:
-            channel = "email"
         next_action = _next_action_clarify(
             channel=channel,
             recruiter_name=recruiter or drafted.recruiter_name,
@@ -794,7 +804,7 @@ def build_clarify_queue(
                 "subject": subj,
                 "company": r["company"] or drafted.company_guess,
                 "title": r["title"] or drafted.title_guess,
-                "threadUrl": drafted.thread_url or _thread_url_for_lead(convs),
+                "threadUrl": thread,
                 "draftReply": draft_body,
                 "messageBody": clean_message_body_for_display(body),
                 "ageDays": age_days_fn(r["first_seen"], now),
@@ -845,11 +855,10 @@ def build_clarify_queue(
         body = unanswered["body_text"] or ""
         changed = terms_changed(code, f"{unanswered['summary'] or ''}\n{body}")
         recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
-        channel = _channel_from_addresses(
-            thread_url=_thread_url_for_lead(convs), source_label=r["source_label"] or ""
+        thread = _thread_url_for_lead(convs, conn, key)
+        channel = _card_channel(
+            thread_url=thread, source_label=r["source_label"] or "", email=email, email_is_li_relay=email_is_li_relay
         )
-        if email and not _is_system_email(email) and not email_is_li_relay:
-            channel = "email"
         who = recruiter or "the recruiter"
         lead_in = (
             "may have changed the terms you declined on — read it, then Reopen if it's now a fit"
@@ -871,7 +880,7 @@ def build_clarify_queue(
                 "subject": unanswered["summary"] or r["title"] or "",
                 "company": r["company"] or "",
                 "title": r["title"] or "",
-                "threadUrl": _thread_url_for_lead(convs),
+                "threadUrl": thread,
                 "draftReply": draft_post_decline_reply(
                     recruiter_name=recruiter, company=r["company"] or "", title=r["title"] or ""
                 ),
@@ -926,18 +935,8 @@ def _phone_digits(phone: str) -> str:
     return digits[-10:] if len(digits) >= 10 else ""
 
 
-_ROLE_MAILBOX_RE = re.compile(
-    r"(?:^|[._-])(press|media|careers?|jobs?|hr|info|support|help|privacy|legal|accommodations?|"
-    r"talent|recruiting|recruitment|hiring|apply|admin|contact|hello|sales|team)@",
-    re.I,
-)
-
-
 def _usable_email(email: str) -> bool:
-    email = (email or "").strip().lower()
-    return bool(email) and "@" in email and email not in GENERIC_RELAY_ADDRESSES and not re.search(
-        r"linkedin\.com$|no-?reply|notifications?@|mailer-daemon|spexture\.com$", email
-    ) and not _ROLE_MAILBOX_RE.search(email)
+    return is_person_email(email)
 
 
 def _resolve_recipient(conn, job_key: str) -> dict:
@@ -1016,25 +1015,32 @@ def _recruiter_contact(conn, job_key: str) -> tuple[str, str, str, bool]:
     ).fetchall()
     fallback_name, fallback_li, fallback_phone = "", "", ""
     for r in row:
+        raw_email = (r["email"] or "").strip()
         name = (r["name"] or "").strip()
-        email = (r["email"] or "").strip()
+        if "@" in name:
+            name = ""
+        email = raw_email if is_person_email(raw_email) else ""
+        name = name or name_from_email(email)
         phone = (r["phone"] or "").strip()
         try:
             li_reply = (r["linkedin_reply_to"] or "").strip()
         except (IndexError, KeyError):
             li_reply = ""
-        if email and _is_system_email(email):
-            if li_reply and not fallback_li:
-                fallback_name, fallback_li, fallback_phone = name or email, li_reply, phone
-            continue
+        if "@" not in li_reply:
+            li_reply = ""
         if email:
-            return name or email, email, phone, False
+            return name, email, phone, False
         if li_reply and not fallback_li:
             fallback_name, fallback_li, fallback_phone = name, li_reply, phone
-        if name and not email and not li_reply:
+            continue
+        if name and not raw_email:
             return name, "", phone, False
+        if not fallback_name and name:
+            fallback_name, fallback_phone = name, phone
     if fallback_li:
-        return fallback_name or fallback_li, fallback_li, fallback_phone, True
+        return fallback_name, fallback_li, fallback_phone, True
+    if fallback_name:
+        return fallback_name, "", fallback_phone, False
     return "", "", "", False
 
 
@@ -1160,13 +1166,30 @@ def _attach_duplicate_count(item: dict, dup_keys: dict[str, list[str]]) -> None:
         item["duplicateKeys"] = keys
 
 
-def _thread_url_for_lead(convs: list) -> str:
+def _thread_url_for_lead(convs: list, conn=None, job_key: str = "") -> str:
+    """The lead's LinkedIn conversation link, from its messages or, failing
+    that, a contact field it was saved in (REQUIREMENTS ROUTE-4)."""
     for c in convs:
-        blob = f"{c['body_text'] or ''}\n{c['summary'] or ''}"
-        m = re.search(r"(https://www\.linkedin\.com/messaging/thread/\S+)", blob, re.I)
-        if m:
-            return m.group(1).rstrip(").,]")
+        url = extract_linkedin_thread_url(f"{c['body_text'] or ''}\n{c['summary'] or ''}")
+        if url:
+            return url
+    if conn is not None and job_key:
+        for r in conn.execute(
+            "SELECT email, linkedin_url, linkedin_reply_to FROM job_contacts WHERE job_key = ?", (job_key,)
+        ):
+            for value in (r["linkedin_reply_to"], r["email"], r["linkedin_url"]):
+                url = extract_linkedin_thread_url(value or "")
+                if url:
+                    return url
     return ""
+
+
+def _card_channel(*, thread_url: str, source_label: str, email: str, email_is_li_relay: bool) -> str:
+    """One rule for every stage: a real person's email makes it an email card;
+    otherwise a LinkedIn thread link (or a LinkedIn source) makes it LinkedIn."""
+    if email and is_person_email(email) and not email_is_li_relay:
+        return "email"
+    return _channel_from_addresses(thread_url=thread_url, source_label=source_label)
 
 
 def build_send_resume_queue(
@@ -1220,10 +1243,11 @@ def build_send_resume_queue(
         # Gate: never ask Shawn to send before he has reviewed → pursued → package.
         if not disk_ready:
             return False
-        channel = _channel_from_addresses(source_label=source_label or "")
-        if email and not _is_system_email(email) and not email_is_li_relay:
-            channel = "email"
         convs = list(list_job_conversations(conn, key))
+        thread = _thread_url_for_lead(convs, conn, key)
+        channel = _card_channel(
+            thread_url=thread, source_label=source_label or "", email=email, email_is_li_relay=email_is_li_relay
+        )
         draft = draft_resume_send_message(
             recruiter_name=recruiter, company=company, title=title
         )
@@ -1249,7 +1273,7 @@ def build_send_resume_queue(
                 "ageDays": age_days,
                 "folderPath": folder_abs,
                 "applyUrl": apply_url,
-                "threadUrl": _thread_url_for_lead(convs),
+                "threadUrl": thread,
                 "gmailUrl": recruiting_gmail_message_url(
                     _gmail_api_id_for_conversations(convs)
                 ),
@@ -1395,9 +1419,10 @@ def build_wait_schedule_queue(
         waiting_days = age_days_fn(r["awaiting_response_since"], now)
         follow_up_due = waiting_days >= threshold
         recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
-        channel = _channel_from_addresses(source_label=r["source_label"] or "")
-        if email and not _is_system_email(email) and not email_is_li_relay:
-            channel = "email"
+        thread = _thread_url_for_lead(convs, conn, key)
+        channel = _card_channel(
+            thread_url=thread, source_label=r["source_label"] or "", email=email, email_is_li_relay=email_is_li_relay
+        )
         next_action = _next_action_wait(
             waiting_days=waiting_days, threshold=threshold, recruiter_name=recruiter
         )
@@ -1430,7 +1455,7 @@ def build_wait_schedule_queue(
                 "followUpDue": follow_up_due,
                 "followUpThresholdDays": threshold,
                 "draftReply": draft,
-                "threadUrl": _thread_url_for_lead(convs),
+                "threadUrl": thread,
                 "gmailUrl": recruiting_gmail_message_url(
                     _gmail_api_id_for_conversations(convs)
                 ),
@@ -1515,9 +1540,10 @@ def build_stale_active_queue(
             continue
         convs = list(list_job_conversations(conn, key))
         recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
-        channel = _channel_from_addresses(source_label=r["source_label"] or "")
-        if email and not _is_system_email(email) and not email_is_li_relay:
-            channel = "email"
+        thread = _thread_url_for_lead(convs, conn, key)
+        channel = _card_channel(
+            thread_url=thread, source_label=r["source_label"] or "", email=email, email_is_li_relay=email_is_li_relay
+        )
         status_text = (r["status"] or "").replace("_", " ")
         who = recruiter or "the recruiter"
         if reopened:
@@ -1556,7 +1582,7 @@ def build_stale_active_queue(
                 title=r["title"] or "",
                 waiting_days=silent_days,
             ),
-            "threadUrl": _thread_url_for_lead(convs),
+            "threadUrl": thread,
             "gmailUrl": recruiting_gmail_message_url(_gmail_api_id_for_conversations(convs)),
             "markSentUrl": f"mps://mark?key={quote(key, safe='')}&channel={channel}",
             "actionHint": next_action,

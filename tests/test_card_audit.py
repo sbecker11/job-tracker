@@ -16,9 +16,13 @@ def _checks(cards: list[dict], conn: sqlite3.Connection | None = None) -> set[st
 def _conn(rows: list[tuple[str, str, str, str]]) -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.execute("CREATE TABLE job_conversations (job_key TEXT, direction TEXT, occurred_at TEXT, body_text TEXT, summary TEXT)")
+    conn.execute(
+        "CREATE TABLE job_conversations (job_key TEXT, direction TEXT, occurred_at TEXT, body_text TEXT, "
+        "summary TEXT, message_id TEXT)"
+    )
     conn.executemany(
-        "INSERT INTO job_conversations (job_key, direction, occurred_at, body_text) VALUES (?, ?, ?, ?)", rows
+        "INSERT INTO job_conversations (job_key, direction, occurred_at, body_text, summary) VALUES (?, ?, ?, ?, ?)",
+        [(*r, "Lead Python role") for r in rows],
     )
     return conn
 
@@ -43,7 +47,17 @@ def test_missing_thread_and_nameless_greeting():
 def test_email_as_name_and_bad_email():
     card = {"id": "a", "recruiterName": "aman@pinnacle99inc.com", "recruiterEmail": "linkedin.com/in/someone"}
     assert {"email_as_name", "bad_email"} <= _checks([card])
-    assert "email_as_name" not in _checks([{"id": "b", "recruiterName": "jobs@my.theladders.com"}])
+    assert "email_as_name" in _checks([{"id": "b", "recruiterName": "jobs@my.theladders.com"}])
+
+
+def test_two_different_messages_in_one_minute_are_not_duplicates():
+    conn = _conn(
+        [
+            ("k", "inbound", "2026-10-20T16:52:26+00:00", "Ed: happy to share the JD, which is attached here for you"),
+            ("k", "inbound", "2026-10-20T16:52:26+00:00", "Ed: also, the hiring manager wants a call on Friday afternoon"),
+        ]
+    )
+    assert "duplicate_inbound" not in _checks([{"id": "a", "normalizedKey": "k"}], conn)
 
 
 def test_text_to_office_line():

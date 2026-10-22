@@ -1323,6 +1323,9 @@ def add_job_contact(conn: sqlite3.Connection, contact: JobContact) -> int | None
     email = (contact.email or "").strip().lower()
     if is_own_address(email):
         return None
+    if not is_linkedin_thread_reply_address(email):
+        contact.name, email, _ = clean_contact_fields(contact.name or "", email, "")
+        contact.email = email
     li_reply = (contact.linkedin_reply_to or "").strip().lower()
     if is_linkedin_thread_reply_address(email):
         li_reply = li_reply or email
@@ -1394,6 +1397,24 @@ def add_job_contact(conn: sqlite3.Connection, contact: JobContact) -> int | None
     return cursor.lastrowid
 
 
+_LINKEDIN_URL_RE = re.compile(r"(?i)^(?:https?://)?(?:www\.)?linkedin\.com/\S+$")
+
+
+def clean_contact_fields(name: str, email: str, linkedin_url: str) -> tuple[str, str, str]:
+    """(name, email, linkedin_url) with each value in its own field
+    (REQUIREMENTS CON-1, CON-2): an email address is never a name, and a
+    LinkedIn link typed into the email box moves to `linkedin_url`; anything
+    else that isn't an address is dropped from `email`."""
+    name, email, linkedin_url = (name or "").strip(), (email or "").strip(), (linkedin_url or "").strip()
+    if "@" in name:
+        name = ""
+    if email and not _EMAIL_FORMAT_RE.match(email):
+        if _LINKEDIN_URL_RE.match(email) and not linkedin_url:
+            linkedin_url = email if email.lower().startswith("http") else f"https://www.{email.removeprefix('www.')}"
+        email = ""
+    return name, email.lower(), linkedin_url
+
+
 def save_lead_contact(
     conn: sqlite3.Connection,
     job_key: str,
@@ -1407,8 +1428,8 @@ def save_lead_contact(
     """Record a contact Shawn found by hand (Manage lead → Search for sender →
     Save contact). Updates the job's contact with the same email — or, failing
     that, the same name — filling in only the fields given; otherwise inserts."""
-    name, phone, linkedin_url = name.strip(), phone.strip(), linkedin_url.strip()
-    email = email.strip().lower()
+    name, email, linkedin_url = clean_contact_fields(name, email, linkedin_url)
+    phone = phone.strip()
     existing = None
     if email:
         existing = conn.execute(
@@ -1569,30 +1590,35 @@ def find_duplicate_inbound(conn: sqlite3.Connection, conversation: JobConversati
         ).fetchone()
         if row is not None:
             return row["id"]
-    subject = _comparable_text(conversation.summary)
-    when = _parse_iso(conversation.occurred_at)
-    if not subject or when is None:
-        return None
-    body = _comparable_text(conversation.body_text)
     for row in conn.execute(
         "SELECT id, summary, body_text, occurred_at FROM job_conversations "
         "WHERE job_key = ? AND direction = 'inbound' ORDER BY id DESC",
         (conversation.job_key,),
     ):
-        if _comparable_text(row["summary"]) != subject:
-            continue
-        other_when = _parse_iso(row["occurred_at"])
-        if other_when is None or abs(other_when - when) > _SAME_EMAIL_WINDOW:
-            continue
-        other_body = _comparable_text(row["body_text"])
-        if body == other_body or (
-            body
-            and other_body
-            and SequenceMatcher(None, body, other_body, autojunk=False).ratio()
-            >= _DUPLICATE_INBOUND_SIMILARITY
+        if is_same_inbound_message(
+            (conversation.summary, conversation.body_text, conversation.occurred_at),
+            (row["summary"], row["body_text"], row["occurred_at"]),
         ):
             return row["id"]
     return None
+
+
+def is_same_inbound_message(
+    a: tuple[str | None, str | None, str | None], b: tuple[str | None, str | None, str | None]
+) -> bool:
+    """Two (subject, body, occurred_at) rows are one email read twice: same
+    subject within `_SAME_EMAIL_WINDOW`, and identical or ≥ 85 %-similar bodies."""
+    subject = _comparable_text(a[0])
+    if not subject or subject != _comparable_text(b[0]):
+        return False
+    ta, tb = _parse_iso(a[2]), _parse_iso(b[2])
+    if ta is None or tb is None or abs(ta - tb) > _SAME_EMAIL_WINDOW:
+        return False
+    body, other_body = _comparable_text(a[1]), _comparable_text(b[1])
+    return body == other_body or (
+        bool(body and other_body)
+        and SequenceMatcher(None, body, other_body, autojunk=False).ratio() >= _DUPLICATE_INBOUND_SIMILARITY
+    )
 
 
 def set_awaiting_response(
@@ -1926,6 +1952,42 @@ def is_own_sent_message(from_address: str, subject: str) -> bool:
     """Shawn's own reply/new message — not a forward. Forwards ("Fwd:", "FW:")
     are how he feeds job alerts in, so they're triaged on their content."""
     return is_own_address(from_address) and not _FORWARD_SUBJECT_RE.match(subject or "")
+
+
+_EMAIL_FORMAT_RE = re.compile(r"^[\w.+'-]+@[\w-]+(?:\.[\w-]+)+$")
+_NOT_A_PERSON_RE = re.compile(
+    r"(?i)(?:^|[._-])(press|media|careers?|jobs?|hr|info|support|help|privacy|legal|accommodations?|"
+    r"talent|recruiting|recruitment|hiring|apply|admin|contact|hello|sales|team|alerts?|"
+    r"notifications?|updates|no-?reply|donotreply|mailer-daemon)@|"
+    r"no-?reply|@(?:[\w-]+\.)*linkedin\.com$|@(alerts\.)?talent\.com$|@(mail\.)?greenhouse(-mail)?\.io$|"
+    r"@ashbyhq\.com$"
+)
+
+
+def is_person_email(email: str) -> bool:
+    """A real address for a person you can write to (REQUIREMENTS CON-2):
+    well-formed, and not a relay, job board, role mailbox, ATS sender, or
+    Shawn's own."""
+    e = (email or "").strip().lower()
+    return (
+        bool(_EMAIL_FORMAT_RE.match(e))
+        and e not in GENERIC_RELAY_ADDRESSES
+        and not is_own_address(e)
+        and not _NOT_A_PERSON_RE.search(e)
+    )
+
+
+def name_from_email(email: str) -> str:
+    """'Aman Mishra' from aman.mishra@…, 'Tanmay' from tanmay.v@…; '' when the
+    local part isn't clearly first[.last] (vinayv@…), so a name is never
+    guessed (REQUIREMENTS CON-1)."""
+    if not is_person_email(email):
+        return ""
+    parts = [p for p in re.split(r"[._-]", email.split("@", 1)[0]) if p]
+    if len(parts) < 2 or not all(p.isalpha() for p in parts) or len(parts[0]) < 2:
+        return ""
+    parts = [p for p in parts if len(p) > 1][:2]
+    return " ".join(p.capitalize() for p in parts)
 
 
 def is_linkedin_thread_reply_address(email: str) -> bool:

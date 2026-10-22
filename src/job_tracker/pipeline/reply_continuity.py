@@ -113,6 +113,26 @@ def _candidate_email_subject(body: str) -> str:
     return ""
 
 
+_PLACEHOLDER_COMPANY_RE = re.compile(r"(?i)^(undisclosed|unknown|tbd|confidential|direct|client|stub|agency)\b")
+
+
+def body_names_company(body: str, company: str) -> bool:
+    """True when a search hit names the lead's full company name (outside
+    LinkedIn's footer; one word isn't enough — "Cox" matched a recruiter
+    named Ashleigh Cox). Required for hits from company + title searches, where a role
+    title alone matched other companies' InMails ("Sr Lead Software Engineer"
+    at Cox → a CVS Health thread); hits found by the recruiter's name or
+    email don't need it. Placeholder companies ("Undisclosed", "Direct
+    client …") can't be checked and pass."""
+    name = _PAREN_RE.sub(" ", company or "")
+    name = re.sub(r"(?i)[,.]|\b(inc|llc|ltd|corp|corporation|co|company)\b", " ", name)
+    words = name.split()
+    if not words or _PLACEHOLDER_COMPANY_RE.match(company.strip()):
+        return True
+    phrase = r"\W+".join(re.escape(w) for w in words)
+    return bool(re.search(rf"(?i)\b{phrase}\b", _strip_linkedin_footer(body or "")))
+
+
 def body_matches_lead_subject(body: str, subject: str, *, min_hits: int = 1) -> bool:
     """True when distinctive lead subject tokens appear in the *email Subject*.
 
@@ -233,8 +253,13 @@ def resolve_reply_continuity(
         recruiter_email=recruiter_email,
         newer_than_days=newer_than_days,
     )
+    person = _clean_person_name(recruiter_name)
+    identity_terms = [t for t in (person, (recruiter_email or "").strip()) if t]
+    if person and len(person.split()) >= 2:
+        identity_terms.append(f"{person.split()[0]} {person.split()[-1]}")
     tried: set[str] = set()
     for q in queries:
+        by_identity = any(t and t in q for t in identity_terms)
         try:
             ids = search_gmail(q, 5)
         except Exception:
@@ -249,6 +274,8 @@ def resolve_reply_continuity(
             except Exception:
                 body = ""
             if subject and not body_matches_lead_subject(body, subject):
+                continue
+            if not by_identity and not body_names_company(body, company):
                 continue
             thread = extract_linkedin_thread_url(body) or out["threadUrl"]
             gmail_url = out["gmailUrl"] or recruiting_gmail_message_url(mid)
