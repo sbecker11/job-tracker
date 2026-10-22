@@ -78,30 +78,51 @@ def enforced_html(enforced: str) -> str:
     return _TEST_FILE_RE.sub(lambda m: f'<a href="../tests/{m.group(1)}">{m.group(1)}</a>', s)
 
 
+# Dark is the default and neither theme uses a pure-white background
+# (workspace rule ui-dark-default).
 _CSS = """
-:root { --ok:#1a7f37; --gap:#9a6700; --broken:#cf222e; --decide:#8250df; --other:#57606a; }
+:root, [data-theme=dark] {
+  color-scheme: dark;
+  --bg:#16181d; --surface:#1e2128; --raised:#252932; --text:#c4c8ce; --muted:#8a919b;
+  --border:#343a44; --code:#2a2f38; --link:#82aee0; --dim:#6b727c; --badge-text:#16181d;
+  --ok:#6fae7f; --gap:#c9a35a; --broken:#d47a76; --decide:#a993d6; --other:#8a919b;
+}
+[data-theme=light] {
+  color-scheme: light;
+  --bg:#e6e1d8; --surface:#efeae1; --raised:#e9e4da; --text:#2e2c29; --muted:#625d55;
+  --border:#c8c0b3; --code:#e0dacf; --link:#2f5a92; --dim:#8c867c; --badge-text:#f3efe7;
+  --ok:#3d7a4c; --gap:#8a6420; --broken:#a8433f; --decide:#6a52a8; --other:#6b665e;
+}
 * { box-sizing: border-box; }
-body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; color: #1f2328; background: #f6f8fa; }
-header { position: sticky; top: 0; background: #fff; border-bottom: 1px solid #d0d7de; padding: 12px 24px; z-index: 1; }
-h1 { font-size: 18px; margin: 0 0 8px; }
+body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; color: var(--text); background: var(--bg); }
+a { color: var(--link); }
+header { position: sticky; top: 0; background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px; z-index: 1; }
+.title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+h1 { font-size: 18px; margin: 0; }
 .controls { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
-input[type=search] { padding: 6px 10px; border: 1px solid #d0d7de; border-radius: 6px; width: 320px; font: inherit; }
-.chip { border: 1px solid #d0d7de; border-radius: 999px; padding: 3px 10px; background: #fff; cursor: pointer; font: inherit; }
-.chip[aria-pressed=true] { background: #1f2328; color: #fff; border-color: #1f2328; }
+input[type=search] { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; width: 320px; font: inherit; color: var(--text); background: var(--raised); }
+.chip, #theme { border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; background: var(--raised); color: var(--text); cursor: pointer; font: inherit; }
+.chip[aria-pressed=true] { background: var(--text); color: var(--bg); border-color: var(--text); }
 main { padding: 8px 24px 48px; max-width: 1200px; }
 h2 { font-size: 15px; margin: 24px 0 8px; }
-table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #d0d7de; }
-th, td { text-align: left; vertical-align: top; padding: 6px 10px; border-top: 1px solid #d0d7de; }
-th { background: #f6f8fa; font-weight: 600; }
+table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); }
+th, td { text-align: left; vertical-align: top; padding: 6px 10px; border-top: 1px solid var(--border); }
+th { background: var(--raised); font-weight: 600; }
 td.code { white-space: nowrap; font-weight: 600; font-family: ui-monospace, Menlo, monospace; }
-td.enforced { width: 22%; color: #57606a; }
+td.enforced { width: 22%; color: var(--muted); }
 td.status { width: 22%; }
-code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; background: #eff1f3; padding: 1px 4px; border-radius: 4px; }
-.badge { display: inline-block; font-size: 11px; font-weight: 700; color: #fff; border-radius: 4px; padding: 0 6px; margin-right: 6px; }
+code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; background: var(--code); padding: 1px 4px; border-radius: 4px; }
+.badge { display: inline-block; font-size: 11px; font-weight: 700; color: var(--badge-text); border-radius: 4px; padding: 0 6px; margin-right: 6px; }
 .OK .badge { background: var(--ok); } .GAP .badge { background: var(--gap); }
 .BROKEN .badge { background: var(--broken); } .DECIDE .badge { background: var(--decide); }
-.RETIRED .badge, .OTHER .badge { background: var(--other); } tr.RETIRED td { color: #8c959f; }
+.RETIRED .badge, .OTHER .badge { background: var(--other); } tr.RETIRED td { color: var(--dim); }
 .hidden { display: none; }
+"""
+
+# Runs in <head> so the saved theme applies before first paint (no flash).
+_THEME_HEAD_JS = """
+try { document.documentElement.dataset.theme = localStorage.getItem('requirements-theme') || 'dark'; }
+catch (e) { document.documentElement.dataset.theme = 'dark'; }
 """
 
 _JS = """
@@ -125,6 +146,19 @@ for (const chip of document.querySelectorAll('.chip')) {
     apply();
   });
 }
+const themeBtn = document.getElementById('theme');
+function showTheme() {
+  const dark = document.documentElement.dataset.theme !== 'light';
+  themeBtn.textContent = dark ? 'Light theme' : 'Dark theme';
+  themeBtn.setAttribute('aria-label', dark ? 'Switch to light theme' : 'Switch to dark theme');
+}
+themeBtn.addEventListener('click', () => {
+  const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem('requirements-theme', next); } catch (e) {}
+  showTheme();
+});
+showTheme();
 """
 
 
@@ -164,9 +198,11 @@ def render(markdown: str) -> str:
         "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
         "<title>job-tracker requirements</title>"
+        f"<script>{_THEME_HEAD_JS}</script>"
         f"<style>{_CSS}</style></head><body>"
         "<!-- Generated from docs/REQUIREMENTS.md by scripts/render_requirements.py. Do not edit. -->"
-        "<header><h1>job-tracker requirements</h1><div class=\"controls\">"
+        "<header><div class=\"title-row\"><h1>job-tracker requirements</h1>"
+        '<button id="theme" type="button">Light theme</button></div><div class="controls">'
         '<input id="q" type="search" placeholder="Search rules, files, tests…">'
         f"{''.join(chips)}</div></header>"
         f"<main>{''.join(body)}</main>"
