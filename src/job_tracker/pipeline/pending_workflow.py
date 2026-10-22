@@ -1388,8 +1388,7 @@ def build_send_resume_queue(
 def build_wait_schedule_queue(
     *,
     conn,
-    clarify_keys: set[str],
-    send_keys: set[str],
+    exclude_keys: set[str],
     age_days_fn: Callable[[str | None, datetime], int],
     now: datetime,
 ) -> list[dict]:
@@ -1413,7 +1412,7 @@ def build_wait_schedule_queue(
         """
     ):
         key = r["normalized_key"]
-        if key in clarify_keys or key in send_keys:
+        if key in exclude_keys:
             continue
         convs = list(list_job_conversations(conn, key))
         human_inbound = _human_inbound_conversations(convs)
@@ -1674,10 +1673,10 @@ def build_decide_apply_stage(
     needs_decision_forced: list[dict],
     awaiting_llm_review: list[dict],
     jd_unresolved: list[dict],
-    send_keys: set[str],
+    exclude_keys: set[str],
     conn=None,
 ) -> dict[str, list[dict]]:
-    """Priority-B funnel buckets (exclude leads already in send-résumé)."""
+    """Priority-B funnel buckets (exclude leads already in Clarify, Send résumé or Wait)."""
 
     def _resume_requested(key: str) -> bool:
         if not conn or not key:
@@ -1692,7 +1691,7 @@ def build_decide_apply_stage(
         out = []
         for lead in rows:
             key = lead.get("normalizedKey") or ""
-            if key and key in send_keys:
+            if key and key in exclude_keys:
                 continue
             asked = _resume_requested(key)
             if bucket == "needsDecision" or bucket == "needsDecisionForced":
@@ -1883,10 +1882,10 @@ def build_workflow_payload(
     )
     send_keys = {i["normalizedKey"] for i in send_resume if i.get("normalizedKey")}
 
+    # CARD-1 stage precedence: Clarify > Send résumé > Wait > Decide/apply.
     wait_schedule = build_wait_schedule_queue(
         conn=conn,
-        clarify_keys=clarify_keys,
-        send_keys=send_keys,
+        exclude_keys=clarify_keys | send_keys,
         age_days_fn=age_days_fn,
         now=now,
     )
@@ -1911,6 +1910,7 @@ def build_workflow_payload(
             now=now,
         )
     )
+    wait_keys = {i["normalizedKey"] for i in wait_schedule if i.get("normalizedKey")}
 
     decide_apply = build_decide_apply_stage(
         ready_to_apply=data.get("ready_to_apply") or [],
@@ -1918,7 +1918,7 @@ def build_workflow_payload(
         needs_decision_forced=data.get("needs_decision_forced") or [],
         awaiting_llm_review=data.get("awaiting_llm_review") or [],
         jd_unresolved=data.get("jd_unresolved") or [],
-        send_keys=send_keys,
+        exclude_keys=clarify_keys | send_keys | wait_keys,
         conn=conn,
     )
 

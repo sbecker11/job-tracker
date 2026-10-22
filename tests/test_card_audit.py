@@ -95,3 +95,11 @@ def test_card_listed_in_two_stages_is_checked_once():
     card = {"id": "a", "recruiterName": "x@y.com"}
     issues = audit_cards({"stages": {"clarify": [card], "wait_schedule": [card]}})
     assert len(issues) == 1
+
+
+def test_lead_in_two_stages_is_flagged_including_decide_buckets():
+    lead = {"normalizedKey": "acme::engineer", "company": "Acme", "title": "Engineer"}
+    payload = {"stages": {"clarify": [lead], "decideApply": {"needsDecision": [dict(lead)]}}}
+    issues = [i for i in audit_cards(payload) if i.check == "two_stages"]
+    assert len(issues) == 1 and issues[0].detail == "clarify, decideApply"
+    assert not any(i.check == "two_stages" for i in audit_cards({"stages": {"clarify": [lead]}}))

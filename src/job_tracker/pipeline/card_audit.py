@@ -23,6 +23,7 @@ CHECKS: dict[str, str] = {
     "reasks_answered": "Draft asks something the recruiter already answered",
     "first_touch_on_followup": "Draft thanks them for reaching out, but you've already replied",
     "duplicate_inbound": "Same inbound message logged more than once",
+    "two_stages": "Same lead shown in more than one stage",
 }
 
 _EMAIL_RE = re.compile(r"^[\w.+'-]+@[\w-]+(?:\.[\w-]+)+$")
@@ -77,6 +78,15 @@ def iter_cards(payload: dict):
             yield item
 
 
+def _stage_cards(payload: dict):
+    for stage, items in (payload.get("stages") or {}).items():
+        buckets = items.values() if isinstance(items, dict) else [items]
+        for bucket in buckets:
+            for item in bucket if isinstance(bucket, list) else []:
+                if isinstance(item, dict):
+                    yield stage, item
+
+
 def _office_number(item: dict) -> bool:
     phone = _digits(item.get("recruiterPhone") or "")
     body = item.get("messageBody") or ""
@@ -117,6 +127,17 @@ def audit_cards(payload: dict, conn: sqlite3.Connection | None = None) -> list[C
 
     def flag(check: str, item: dict, detail: str = "") -> None:
         issues.append(CardIssue(check, _card_label(item), detail))
+
+    stages_by_key: dict[str, list[str]] = {}
+    first_card: dict[str, dict] = {}
+    for stage, item in _stage_cards(payload):
+        key = item.get("normalizedKey") or ""
+        if key:
+            stages_by_key.setdefault(key, []).append(stage)
+            first_card.setdefault(key, item)
+    for key, stages in stages_by_key.items():
+        if len(stages) > 1:
+            flag("two_stages", first_card[key], ", ".join(stages))
 
     for item in iter_cards(payload):
         body = item.get("messageBody") or ""

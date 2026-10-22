@@ -157,7 +157,7 @@ Craft and naming: `~/CLAUDE.md` §4, §5, §10, §12.
 
 | ID | Rule | Enforced | Status |
 |---|---|---|---|
-| CARD-1 | Each lead or unmatched conversation appears as **one** card, in exactly one stage. The backend guarantees it (not the page's de-duplication). | — | **BROKEN** — Decide doesn't exclude Clarify keys; Wait doesn't exclude Decide |
+| CARD-1 | Each lead or unmatched conversation appears as **one** card, in exactly one stage. The backend guarantees it (not the page's de-duplication). | tests: `test_pending_workflow.py`; card check `two_stages` | OK (2026-10-22). Precedence: Clarify > Send résumé > Wait > Decide/apply. Fixed 3 doubled leads (Intentsify, Artech, Data ML Engineer). |
 | CARD-2 | **Clarify** = it's Shawn's turn to reply to a human: unanswered human inbound on a lead or unmatched message, ≤ 14 days old for first-touch pitches, ≤ 30 days for replies on live threads. | test: `test_pending_workflow.py` | OK |
 | CARD-3 | **Send résumé** = résumé + cover are on disk and a person asked for the résumé (or is the direct recruiter). | test: `test_pending_workflow.py` | OK |
 | CARD-4 | **Wait** = waiting on them (`awaiting_response_since` set); follow-up becomes due at `wait_followup_days` (7). | test: `test_pending_workflow.py` | OK |
@@ -239,7 +239,7 @@ Highest impact first. Each fix ships with the test/check named in its rule.
 3. **ROUTE-1 / §12** — page re-derives channel and recipients (source of today's LinkedIn/email confusion).
 4. ~~**DRAFT-4 / DRAFT-1 / CON-1 / CON-2**~~ — done 2026-10-22; the card check is clean.
 5. ~~**PKG-2**~~ — done 2026-10-22.
-6. **CARD-1 / CARD-8** — one card per lead, one meaning per field. (TURN-3 done 2026-10-22.)
+6. **CARD-8** — one meaning per field. (CARD-1 and TURN-3 done 2026-10-22.)
 7. **LIFE-6, EVAL-7, EVAL-9, EVAL-10, LOG-4, LOG-5, MAT-5, NEXT-2, ROUTE-5 (page side), LIFE-5** — smaller fixes.
 
 ## 14. Open decisions for Shawn

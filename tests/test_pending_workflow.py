@@ -261,7 +261,7 @@ def test_digest_alert_not_in_send_resume_or_clarify(tmp_path: Path):
     assert not any(i.get("normalizedKey") == lead.normalized_key for i in clarify)
 
 
-def test_resume_ask_without_package_stays_in_decide_not_send(tmp_path: Path):
+def test_resume_ask_without_package_is_one_clarify_card_not_send(tmp_path: Path):
     """Recruiter asked for résumé, but Shawn hasn't pursued/generated yet."""
     from job_tracker.pipeline.models import JobContact
     from job_tracker.pipeline.store import add_job_contact
@@ -336,10 +336,13 @@ def test_resume_ask_without_package_stays_in_decide_not_send(tmp_path: Path):
     assert not any(
         i.get("normalizedKey") == lead.normalized_key for i in workflow["stages"]["sendResume"]
     )
-    needs = workflow["stages"]["decideApply"]["needsDecision"]
-    hit = next(i for i in needs if i.get("normalizedKey") == lead.normalized_key)
-    assert hit["resumeRequested"] is True
-    assert "pursue" in hit["nextAction"].lower() or "skip" in hit["nextAction"].lower()
+    # CARD-1: the reply owed wins; the lead is not also shown as a Decide card.
+    assert any(i.get("normalizedKey") == lead.normalized_key for i in workflow["stages"]["clarify"])
+    assert not any(
+        i.get("normalizedKey") == lead.normalized_key
+        for bucket in workflow["stages"]["decideApply"].values()
+        for i in bucket
+    )
 
 
 def test_workflow_wait_uses_awaiting_response_since(tmp_path: Path):
