@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from dataclasses import asdict, dataclass
-from job_tracker.pipeline.store import is_person_email, is_same_inbound_message
+from job_tracker.pipeline.store import is_person_email, is_same_inbound_message, is_same_sent_message
 
 CHECKS: dict[str, str] = {
     "email_on_linkedin": "LinkedIn message shown as an email card",
@@ -23,6 +23,7 @@ CHECKS: dict[str, str] = {
     "reasks_answered": "Draft asks something the recruiter already answered",
     "first_touch_on_followup": "Draft thanks them for reaching out, but you've already replied",
     "duplicate_inbound": "Same inbound message logged more than once",
+    "duplicate_outbound": "Same sent message logged more than once",
     "two_stages": "Same lead shown in more than one stage",
 }
 
@@ -122,6 +123,17 @@ def _duplicate_inbound(convs: list[sqlite3.Row]) -> str:
     return ""
 
 
+def _duplicate_outbound(convs: list[sqlite3.Row]) -> str:
+    outbound = [c for c in convs if c["direction"] == "outbound" and c["occurred_at"]]
+    for i, a in enumerate(outbound):
+        for b in outbound[i + 1 :]:
+            if is_same_sent_message(
+                (a["message_id"], a["body_text"], a["occurred_at"]), (b["message_id"], b["body_text"], b["occurred_at"])
+            ):
+                return f"two copies at {a['occurred_at'][:16]}"
+    return ""
+
+
 def audit_cards(payload: dict, conn: sqlite3.Connection | None = None) -> list[CardIssue]:
     issues: list[CardIssue] = []
 
@@ -167,6 +179,9 @@ def audit_cards(payload: dict, conn: sqlite3.Connection | None = None) -> list[C
         dup = _duplicate_inbound(convs)
         if dup:
             flag("duplicate_inbound", item, dup)
+        dup = _duplicate_outbound(convs)
+        if dup:
+            flag("duplicate_outbound", item, dup)
         if not draft or item.get("stage") != "clarify":
             continue
         if "Thanks for reaching out" in draft and any(c["direction"] == "outbound" for c in convs):

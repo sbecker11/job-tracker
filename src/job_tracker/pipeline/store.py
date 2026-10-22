@@ -1524,10 +1524,16 @@ def add_job_conversation(
     An inbound message that is already logged on this lead (same id, or the
     Gmail and IMAP copies of one email — see `find_duplicate_inbound`) is not
     inserted again; the existing row's id is returned and whose-turn is left
-    alone, so a late copy can't undo a reply sent in between."""
+    alone, so a late copy can't undo a reply sent in between. Outbound works
+    the same way (`find_duplicate_outbound`)."""
     if conversation.direction == "inbound":
         existing = find_duplicate_inbound(conn, conversation)
         if existing is not None:
+            return existing
+    if conversation.direction == "outbound":
+        existing = find_duplicate_outbound(conn, conversation)
+        if existing is not None:
+            _upgrade_marked_sent_row(conn, existing, conversation)
             return existing
     cursor = conn.execute(
         """
@@ -1573,8 +1579,12 @@ def add_job_conversation(
 _DUPLICATE_INBOUND_SIMILARITY = 0.85
 
 
+def _whole_text(text: str | None) -> str:
+    return re.sub(r"\W+", " ", (text or "").lower()).strip()
+
+
 def _comparable_text(text: str | None) -> str:
-    return re.sub(r"\W+", " ", (text or "").lower()).strip()[:2000]
+    return _whole_text(text)[:2000]
 
 
 def find_duplicate_inbound(conn: sqlite3.Connection, conversation: JobConversation) -> int | None:
@@ -1601,6 +1611,66 @@ def find_duplicate_inbound(conn: sqlite3.Connection, conversation: JobConversati
         ):
             return row["id"]
     return None
+
+
+MARKED_SENT_PREFIX = "status-sent:"
+_SAME_SEND_WINDOW = timedelta(minutes=5)
+_MARKED_SENT_WINDOW = timedelta(hours=2)
+
+
+def find_duplicate_outbound(conn: sqlite3.Connection, conversation: JobConversation) -> int | None:
+    """Id of an outbound row on the same lead that is this same sent message
+    (see `is_same_sent_message`)."""
+    new = (conversation.message_id, conversation.body_text, conversation.occurred_at)
+    for row in conn.execute(
+        "SELECT id, message_id, body_text, occurred_at FROM job_conversations "
+        "WHERE job_key = ? AND direction = 'outbound' ORDER BY id DESC",
+        (conversation.job_key,),
+    ):
+        if is_same_sent_message(new, (row["message_id"], row["body_text"], row["occurred_at"])):
+            return row["id"]
+    return None
+
+
+def is_same_sent_message(
+    a: tuple[str | None, str | None, str | None], b: tuple[str | None, str | None, str | None]
+) -> bool:
+    """Two (message_id, body, occurred_at) outbound rows are one send: the same
+    id and text (synthetic ids can repeat within a second); the same text
+    within `_SAME_SEND_WINDOW` (one send copied into two mailboxes); or a
+    "Mark sent" row (`MARKED_SENT_PREFIX` id, draft text) and the Gmail Sent
+    copy of it, whose body contains that draft plus the subject and quoted
+    thread. Two different replies quoting one thread are not the same."""
+    body, other = _comparable_text(a[1]), _comparable_text(b[1])
+    same_text = _whole_text(a[1]) == _whole_text(b[1])
+    if a[0] and a[0] == b[0] and same_text:
+        return True
+    ta, tb = _parse_iso(a[2]), _parse_iso(b[2])
+    if ta is None or tb is None or not body or not other:
+        return False
+    gap = abs(ta - tb)
+    if same_text and gap <= _SAME_SEND_WINDOW:
+        return True
+    a_marked = (a[0] or "").startswith(MARKED_SENT_PREFIX)
+    b_marked = (b[0] or "").startswith(MARKED_SENT_PREFIX)
+    if a_marked == b_marked or gap > _MARKED_SENT_WINDOW:
+        return False
+    draft, sent = (body, other) if a_marked else (other, body)
+    return draft[:200] in sent
+
+
+def _upgrade_marked_sent_row(conn: sqlite3.Connection, row_id: int, conversation: JobConversation) -> None:
+    """Give a "Mark sent" row the real Gmail id and body once the Sent copy arrives."""
+    if (conversation.message_id or "").startswith(MARKED_SENT_PREFIX) or not conversation.message_id:
+        return
+    row = conn.execute("SELECT message_id FROM job_conversations WHERE id = ?", (row_id,)).fetchone()
+    if row is None or not (row["message_id"] or "").startswith(MARKED_SENT_PREFIX):
+        return
+    conn.execute(
+        "UPDATE job_conversations SET message_id = ?, body_text = ?, thread_id = COALESCE(?, thread_id) WHERE id = ?",
+        (conversation.message_id, conversation.body_text, conversation.thread_id, row_id),
+    )
+    conn.commit()
 
 
 def is_same_inbound_message(

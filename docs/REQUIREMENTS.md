@@ -210,7 +210,7 @@ work-authorization, no availability; asking for their band is fine).
 | LOG-1 | After sending, one click (**Message sent** / **Reply sent**) logs the exact text as an outbound conversation with the channel actually used, and starts the wait clock. The **via** selector defaults to the route's channel and can be changed. | test: `test_set_lead_status.py` | OK |
 | LOG-2 | Texts sent through SendText are logged by the helper itself; no extra click. | — | OK |
 | LOG-3 | LinkedIn replies can't be seen by the pipeline (LinkedIn never emails back what Shawn sends), so the page always offers a way to record them; a LinkedIn data export importer can backfill later. | test: `test_record_unmatched_reply.py` | OK (importer: GAP) |
-| LOG-4 | A sent message is logged exactly once, even when the scan later sees the Gmail Sent copy (dedupe the `status-sent:` row against the real sent message). | check: `duplicate_inbound` (extend to outbound) | **BROKEN** — Artech has 3 outbound copies of one reply |
+| LOG-4 | A sent message is logged exactly once, even when the scan later sees the Gmail Sent copy (dedupe the `status-sent:` row against the real sent message). | test: `test_duplicate_outbound.py`; check: `duplicate_outbound` | OK (2026-10-22; `store.is_same_sent_message`; 13 existing copies removed) |
 | LOG-5 | The page's "done" acknowledgement is recorded only after the helper confirms, not at click time. | — | **BROKEN** — RecordReply ack at click |
 
 ## 12. One owner per decision
@@ -240,7 +240,7 @@ Highest impact first. Each fix ships with the test/check named in its rule.
 4. ~~**DRAFT-4 / DRAFT-1 / CON-1 / CON-2**~~ — done 2026-10-22; the card check is clean.
 5. ~~**PKG-2**~~ — done 2026-10-22.
 6. ~~**CARD-1 / CARD-8 / TURN-3**~~ — done 2026-10-22.
-7. **EVAL-9, LOG-4, LOG-5, MAT-5, NEXT-2, ROUTE-5 (page side), LIFE-5** — smaller fixes.
+7. **EVAL-9, LOG-5, MAT-5, NEXT-2, ROUTE-5 (page side), LIFE-5** — smaller fixes.
 
 ## 14. Open decisions for Shawn
 

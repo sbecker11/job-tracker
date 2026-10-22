@@ -16,6 +16,7 @@ from pathlib import Path
 
 from job_tracker.pipeline.models import LEAD_STAGES, JobConversation
 from job_tracker.pipeline.store import (
+    MARKED_SENT_PREFIX,
     DEFAULT_DB_PATH,
     add_job_conversation,
     advance_status,
@@ -99,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
             conn,
             JobConversation(
                 job_key=args.key,
-                message_id=f"status-sent:{args.key}:{when}",
+                message_id=f"{MARKED_SENT_PREFIX}{args.key}:{when}",
                 channel=args.sent_channel,
                 direction="outbound",
                 summary=f"Sent with status {args.status} (pending-actions)",
