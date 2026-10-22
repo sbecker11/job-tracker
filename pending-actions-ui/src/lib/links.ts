@@ -112,16 +112,32 @@ function cleanField(value: string | undefined): string {
 }
 
 const OWN_EMAIL_RE = /spexture\.com$|^shawnbecker\.recruiting@|^scbboston@/i
-const SYSTEM_EMAIL_RE = /linkedin\.com$|no-?reply|notifications?@|mailer-daemon|donotreply/i
+/** Same list as `_NOT_A_PERSON_RE` in pipeline/store.py (REQUIREMENTS ROUTE-5) —
+ * role mailboxes, relays, job boards and ATS senders are never a send route. */
+const NOT_A_PERSON_RE = new RegExp(
+  '(?:^|[._-])(press|media|careers?|jobs?|hr|info|support|help|privacy|legal|accommodations?|' +
+    'talent|recruiting|recruitment|hiring|apply|admin|contact|hello|sales|team|alerts?|' +
+    'notifications?|updates|no-?reply|donotreply|mailer-daemon)@|' +
+    'no[._-]?reply|marketing|@(?:[\\w-]+\\.)*linkedin\\.com$|@(alerts\\.)?talent\\.com$|@(mail\\.)?greenhouse(-mail)?\\.io$|' +
+    '@ashbyhq\\.com$|@googlegroups\\.com$',
+  'i',
+)
 const OWN_PHONE_DIGITS = '8578910896'
 
+/** True for an address a person reads — not a role mailbox, relay, job board,
+ * ATS sender, or Shawn's own. */
+export function isPersonEmail(email: string): boolean {
+  const e = email.trim().toLowerCase()
+  return /^[\w.+-]+@[\w-]+(?:\.[\w-]+)+$/.test(e) && !OWN_EMAIL_RE.test(e) && !NOT_A_PERSON_RE.test(e)
+}
+
 /** Email / phone / LinkedIn profile found in a recruiter's message (usually the
- * signature), skipping Shawn's own details and system addresses. */
+ * signature), skipping Shawn's own details and non-person addresses. */
 export function extractSenderDetails(text: string): { email: string; phone: string; linkedin: string } {
   const email =
-    (text.match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g) || []).find(
-      (e) => !OWN_EMAIL_RE.test(e) && !SYSTEM_EMAIL_RE.test(e),
-    ) || ''
+    (text.match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g) || [])
+      .map((e) => e.replace(/[.,;]+$/, ''))
+      .find(isPersonEmail) || ''
   const phone =
     (text.match(/(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b/g) || []).find(
       (p) => !p.replace(/\D/g, '').endsWith(OWN_PHONE_DIGITS),
