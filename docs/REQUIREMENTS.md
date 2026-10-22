@@ -164,7 +164,7 @@ Craft and naming: `~/CLAUDE.md` §4, §5, §10, §12.
 | CARD-5 | **Decide/apply** = scored leads needing Shawn's verdict or an ATS application. | test: `test_render_pending_actions.py` | OK |
 | CARD-6 | Age limits, deliberately different (decided 2026-10-22): first-touch Clarify cards drop after 14 days; leads auto-skip after 21 quiet days (LIFE-2); replies on live threads stay in Clarify up to 30 days; leads with no wait clock count as probably dead after 30 quiet days, waiting leads after 45. All five live in `config/framework.yaml`. | — | GAP — values are code constants today |
 | CARD-7 | One "today" order across stages (`annotate_today_order`): replies owed first, then requested résumés, then due follow-ups, then ready-to-apply, then other decisions, then quiet waits, then probably-dead. Within a tier the backend's order is final; the page doesn't re-sort. | test: `test_pending_workflow.py` | **BROKEN** — renderer and page disagree on Decide order |
-| CARD-8 | `replyDue`, `unansweredDays` mean the same thing on every card: days since the oldest unanswered human inbound. | — | **BROKEN** — 4 meanings |
+| CARD-8 | `replyDue`, `unansweredDays` mean the same thing on every card: days since the oldest unanswered human inbound. | test: `test_timestamp_order.py` (`_unanswered_days`) | OK (2026-10-22). The 30-day cut-off still uses the newest unanswered message, so an old thread with a fresh reply stays visible. |
 
 ### 10b. How to reach the recruiter (send routes)
 
@@ -239,7 +239,7 @@ Highest impact first. Each fix ships with the test/check named in its rule.
 3. **ROUTE-1 / §12** — page re-derives channel and recipients (source of today's LinkedIn/email confusion).
 4. ~~**DRAFT-4 / DRAFT-1 / CON-1 / CON-2**~~ — done 2026-10-22; the card check is clean.
 5. ~~**PKG-2**~~ — done 2026-10-22.
-6. **CARD-8** — one meaning per field. (CARD-1 and TURN-3 done 2026-10-22.)
+6. ~~**CARD-1 / CARD-8 / TURN-3**~~ — done 2026-10-22.
 7. **LIFE-6, EVAL-7, EVAL-9, EVAL-10, LOG-4, LOG-5, MAT-5, NEXT-2, ROUTE-5 (page side), LIFE-5** — smaller fixes.
 
 ## 14. Open decisions for Shawn

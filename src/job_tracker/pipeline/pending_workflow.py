@@ -177,6 +177,20 @@ def _sort_time(ts: str | None) -> datetime:
     return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
 
 
+def _unanswered_days(convs: list, age_days_fn: Callable[[str | None, datetime], int], now: datetime) -> int:
+    """CARD-8: days since the oldest human inbound after Shawn's last outbound."""
+    outbound = [_sort_time(c["occurred_at"]) for c in convs if (c["direction"] or "") == "outbound"]
+    last_out = max(outbound) if outbound else None
+    waiting = [
+        c for c in _human_inbound_conversations(convs)
+        if c["occurred_at"] and (last_out is None or _sort_time(c["occurred_at"]) > last_out)
+    ]
+    if not waiting:
+        return 0
+    oldest = min(waiting, key=lambda c: _sort_time(c["occurred_at"]))
+    return age_days_fn(oldest["occurred_at"], now)
+
+
 def _unanswered_inbound(convs: list) -> object | None:
     """Latest human inbound that arrived after Shawn's last outbound (or with no outbound)."""
     human_in = _human_inbound_conversations(convs)
@@ -562,9 +576,8 @@ def build_clarify_queue(
         if key:
             convs = list(list_job_conversations(conn, key))
             attempts = len(_human_inbound_conversations(convs)) or max(1, attempts)
-            unanswered = _unanswered_inbound(convs)
-            if unanswered is not None and unanswered["occurred_at"]:
-                unanswered_days = age_days_fn(unanswered["occurred_at"], now)
+            if _unanswered_inbound(convs) is not None:
+                unanswered_days = _unanswered_days(convs, age_days_fn, now)
         channel = _channel_from_addresses(
             thread_url=item.get("threadUrl") or "",
             source_label="linkedin_message" if item.get("kind") == "lead" else "",
@@ -690,7 +703,7 @@ def build_clarify_queue(
             channel=channel,
             recruiter_name=draft.recruiter_name or recruiter,
             reply_due=True,
-            unanswered_days=age,
+            unanswered_days=_unanswered_days(convs, age_days_fn, now),
         )
         _add(
             {
@@ -713,7 +726,7 @@ def build_clarify_queue(
                 "replyId": reply_id,
                 "contactAttempts": len(inbound),
                 "replyDue": True,
-                "unansweredDays": age,
+                "unansweredDays": _unanswered_days(convs, age_days_fn, now),
                 "actionHint": next_action,
                 "nextAction": next_action,
             }
@@ -742,9 +755,9 @@ def build_clarify_queue(
         unanswered = _unanswered_inbound(convs)
         if unanswered is None:
             continue
-        unanswered_days = age_days_fn(unanswered["occurred_at"], now)
-        if unanswered_days > _REPLY_DUE_MAX_AGE_DAYS:
+        if age_days_fn(unanswered["occurred_at"], now) > _REPLY_DUE_MAX_AGE_DAYS:
             continue
+        unanswered_days = _unanswered_days(convs, age_days_fn, now)
         recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
         body = unanswered["body_text"] or ""
         subj = unanswered["summary"] or r["title"] or ""
@@ -843,9 +856,12 @@ def build_clarify_queue(
         unanswered = _unanswered_inbound(convs)
         if unanswered is None or _sort_time(unanswered["occurred_at"]) <= _sort_time(r["declined_at"]):
             continue
-        unanswered_days = age_days_fn(unanswered["occurred_at"], now)
-        if unanswered_days > _REPLY_DUE_MAX_AGE_DAYS:
+        if age_days_fn(unanswered["occurred_at"], now) > _REPLY_DUE_MAX_AGE_DAYS:
             continue
+        declined = _sort_time(r["declined_at"])
+        unanswered_days = _unanswered_days(
+            [c for c in convs if _sort_time(c["occurred_at"]) > declined], age_days_fn, now
+        )
         code = r["decline_reason"] or "other"
         try:
             label = decline_reason(code).label
