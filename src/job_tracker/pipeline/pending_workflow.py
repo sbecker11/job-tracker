@@ -244,7 +244,10 @@ def _next_action_clarify(
     thread_url: str = "",
     gmail_url: str = "",
     screen_first: bool = False,
+    routes: list[dict] | None = None,
 ) -> str:
+    """`routes` is the card's reply plan (pipeline/reply_plan.py); when given,
+    the send step follows its first route instead of guessing from the links."""
     who = recruiter_name.strip() or "the recruiter"
     thread_url = (thread_url or "").strip()
     gmail_url = (gmail_url or "").strip()
@@ -253,15 +256,16 @@ def _next_action_clarify(
     steps: list[str] = []
     if screen_first:
         steps.append("Attach latest résumé (generic, not JD-tailored)")
-    steps.append("Copy reply")
-    if thread_url:
-        steps += ["Open LinkedIn thread", f"Paste & send to {who}"]
+    if routes is not None:
+        steps += _route_steps(routes[0] if routes else None, who)
+    elif thread_url:
+        steps += ["Copy reply", "Open LinkedIn thread", f"Paste & send to {who}"]
     elif channel == "linkedin" and gmail_url:
-        steps.append(f"Reply in Gmail to {who} (LinkedIn continuity copy)")
+        steps += ["Copy reply", f"Reply in Gmail to {who} (LinkedIn continuity copy)"]
     elif channel == "linkedin":
-        steps.append(f"Find {who}'s LinkedIn conversation, paste & send")
+        steps += ["Copy reply", f"Find {who}'s LinkedIn conversation, paste & send"]
     else:
-        steps.append(f"Reply in Gmail to {who}")
+        steps += ["Copy reply", f"Reply in Gmail to {who}"]
     steps.append("Dismiss / marked replied")
 
     if screen_first and reply_due:
@@ -272,6 +276,29 @@ def _next_action_clarify(
         prefix = ""
     numbered = " ".join(f"({i}) {step}" for i, step in enumerate(steps, 1))
     return f"YOUR ACTION: {prefix}{numbered}"
+
+
+def _route_steps(route: dict | None, who: str) -> list[str]:
+    if route is None:
+        return ["Copy reply", "No reply route on file — open Manage lead → Search for sender"]
+    kind = route.get("kind")
+    if kind == "compose":
+        return [f"Email {who} (Gmail opens with the reply filled in) and press Send"]
+    if kind == "company":
+        return ["Email the company inbox (Gmail opens with the reply filled in) and press Send"]
+    if kind == "text":
+        return [f"Text {who} (check the message, then Send)"]
+    if kind == "call":
+        return [f"Call {who} — office line, not textable; use the reply as talking points"]
+    if kind == "thread" and route.get("linkedin"):
+        return ["Copy reply", "Open LinkedIn thread", f"Paste & send to {who}"]
+    if kind == "thread":
+        return ["Copy reply", "Open the thread", f"Paste & send to {who}"]
+    if kind == "profile":
+        return ["Copy reply", f"Open {who}'s LinkedIn profile, click Message, paste & send"]
+    if kind == "notification":
+        return ["Copy reply", "Open the LinkedIn notification, click its Reply button, paste & send"]
+    return ["Copy reply", f"Reply in Gmail to {who}"]
 
 
 def draft_recruiter_followup_ack(
@@ -615,6 +642,7 @@ def build_clarify_queue(
                 "stage": "clarify",
                 "channel": channel,
                 "recruiterName": name,
+                "recruiterEmail": fr.strip() if is_person_email(fr) else "",
                 "subject": m.get("subject") or "",
                 "company": m.get("companyGuess") or "",
                 "title": m.get("titleGuess") or "",
@@ -1954,6 +1982,23 @@ def build_workflow_payload(
                 title=item.get("title") or "",
                 waiting_days=int(item.get("waitingDays") or 0),
             )
+    from job_tracker.pipeline.reply_plan import reply_plan
+
+    for item in status_items:
+        item["replyPlan"] = reply_plan(item)
+        if (
+            item.get("stage") == "clarify"
+            and not item.get("postDecline")
+            and str(item.get("nextAction") or "").startswith("YOUR ACTION:")
+        ):
+            item["nextAction"] = _next_action_clarify(
+                channel=item["replyPlan"]["channel"],
+                recruiter_name=item.get("recruiterName") or "",
+                reply_due=bool(item.get("replyDue")),
+                unanswered_days=int(item.get("unansweredDays") or 0),
+                screen_first=bool(item.get("screenFirst")),
+                routes=item["replyPlan"]["routes"],
+            )
     annotate_today_order(
         clarify=clarify,
         send_resume=send_resume,
@@ -1965,6 +2010,7 @@ def build_workflow_payload(
     for item in archived_leads:
         _attach_folder_links(item, conn=conn, output_root=root)
         _attach_duplicate_count(item, dup_keys)
+        item["replyPlan"] = reply_plan(item)
 
     decide_count = sum(len(v) for v in decide_apply.values())
     counts = {

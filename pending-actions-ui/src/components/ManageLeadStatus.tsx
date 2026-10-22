@@ -181,7 +181,7 @@ export function ManageLeadForm({
   const letterText = letterEdit ?? generatedLetter
   const text = declining ? letterText : replying ? replyText : followupText
   const setText = declining ? setLetterEdit : replying ? setReplyText : setFollowupText
-  const composing = (declining && message?.hasRecruiter) || followingUp || replying
+  const composing = (declining && message?.plan.hasRecruiter) || followingUp || replying
   const messageMode = declining || followingUp || replying
 
   const reset = () => {
@@ -217,7 +217,7 @@ export function ManageLeadForm({
             : { status: followingUp ? 'following_up' : currentStatus || 'new' },
         )
       : ''
-  const channel = sentVia || route?.channel || message?.channel || 'other'
+  const channel = sentVia || route?.channel || message?.plan.channel || 'other'
   const sentLink =
     declining && reason ? (
       <a
@@ -448,7 +448,7 @@ export function ManageLeadForm({
                 {r.button}
               </a>
             ))}
-            {phone && (
+            {phone && !routes.some((r) => r.how === 'call') && (
               <a className="btn link" href={callUrl(phone)} title="Call instead — the message works as talking points">
                 Call {message.sender.name?.split(/\s+/)[0] || phone}
               </a>
@@ -506,7 +506,8 @@ function CopyField({ label, value }: { label: string; value: string }) {
  * pre-filled (or no route at all) is still a straight copy/paste. */
 function SendToBox({ route, message }: { route?: SendRoute; message: MessageTarget }) {
   const name = (message.sender.name || '').trim()
-  const viaNote = message.via && route?.to === message.composeTo ? ` (found via ${message.via})` : ''
+  const { via, email } = message.plan.recipient
+  const viaNote = via && route?.to === email ? ` (found via ${via})` : ''
   return (
     <div className="send-to">
       <p className="send-to-title">
@@ -514,8 +515,8 @@ function SendToBox({ route, message }: { route?: SendRoute; message: MessageTarg
       </p>
       {name && <CopyField label="Name" value={name} />}
       {route && route.to !== name && <CopyField label={route.how === 'text' ? 'Phone' : 'To'} value={route.to} />}
-      {(!route || route.channel === 'email') && message.subject && (
-        <CopyField label="Subject" value={message.subject} />
+      {(!route || route.channel === 'email') && message.plan.subject && (
+        <CopyField label="Subject" value={message.plan.subject} />
       )}
     </div>
   )

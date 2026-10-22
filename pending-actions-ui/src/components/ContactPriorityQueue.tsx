@@ -5,8 +5,8 @@ import { DuplicateBadge } from './DuplicateBadge'
 import type { DeclineReason } from '../types'
 import { LEAD_STATUS_OPTIONS, ManageLeadForm, type MessageTarget } from './ManageLeadStatus'
 import {
+  EMPTY_REPLY_PLAN,
   formatDecidedAt,
-  gmailComposeUrl,
   helperQuery,
   leadAnchorHref,
   leadAnchorId,
@@ -72,49 +72,44 @@ function revealFolderUrl(folderPath: string | undefined): string | null {
   return `revealfolder://reveal?path=${encodeURIComponent(folderPath)}`
 }
 
-/** Opens Gmail compose in the browser (Chrome), pre-filled from this lead, instead of mailto:. */
-function mailtoUrl(item: ContactPriorityItem, text = item.draftReply || ''): string | null {
-  if (!item.recruiterEmail) return null
-  const subject = [item.company, item.title].filter(Boolean).join(' ')
-  return gmailComposeUrl(item.recruiterEmail, `RE: ${subject}`, text)
+/** The card's routes as buttons, in plan order; links that can't be prefilled copy the message first. */
+function RouteButtons({ item, text }: { item: ContactPriorityItem; text: string }) {
+  const routes = sendRoutes(messageTarget(item)).filter((r) => !r.sendsAndLogs)
+  if (!routes.length) return <span className="btn disabled">No reply route — see Manage lead</span>
+  return (
+    <>
+      {routes.map((r) => (
+        <a
+          key={`${r.how}:${r.to}`}
+          className="btn link"
+          href={r.href(text)}
+          target="_blank"
+          rel="noreferrer"
+          title={r.step}
+          onClick={() => {
+            if (!r.prefilled && text) void copyText(text)
+          }}
+        >
+          {r.button}
+        </a>
+      ))}
+    </>
+  )
 }
 
 function messageTarget(item: ContactPriorityItem): MessageTarget {
-  const subject = [item.company, item.title].filter(Boolean).join(' ')
-  const realEmail =
-    (item.recruiterEmail && !item.emailIsLinkedInRelay ? item.recruiterEmail : undefined) || item.resolvedEmail
+  const plan = item.replyPlan ?? EMPTY_REPLY_PLAN
   return {
-    channel:
-      item.channel === 'linkedin' || item.emailIsLinkedInRelay ? 'linkedin' : realEmail ? 'email' : 'other',
-    threadUrl: item.threadUrl || item.resolvedThreadUrl,
-    composeTo: realEmail,
-    via: item.resolvedVia,
-    gmailUrl: item.gmailUrl,
-    linkedinUrl: item.recruiterLinkedinUrl || item.resolvedLinkedinUrl,
-    companyEmail: item.companyEmail,
-    companyContactName: item.companyContactName,
-    recruiterOwned: item.hasRecruiter,
+    plan,
     sender: {
       messageText: item.messageBody,
-      name: item.recruiterName,
-      email: realEmail,
-      phone: item.recruiterPhone,
+      name: plan.recipient.name || item.recruiterName,
+      email: plan.recipient.email,
+      phone: plan.recipient.phone,
       company: item.company,
       title: item.title,
     },
-    subject: `RE: ${subject}`,
-    hasRecruiter: Boolean(item.recruiterName || item.recruiterEmail || item.threadUrl),
   }
-}
-
-/** LinkedIn message whose only "email" is LinkedIn's notification (replies go to LinkedIn's relay). */
-function linkedinNotice(item: ContactPriorityItem): boolean {
-  const t = messageTarget(item)
-  return t.channel === 'linkedin' && !t.composeTo
-}
-
-function mailtoLabel(item: ContactPriorityItem): string {
-  return item.emailIsLinkedInRelay ? 'LinkedIn reply' : 'Recruiter email'
 }
 
 /** First dialable number in a free-text phone field ("551-325-2207 (mobile) / …"). */
@@ -482,10 +477,10 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                       }
                     />
                   )}
-                  {item.channel && (
+                  {item.replyPlan && item.replyPlan.channel !== 'other' && (
                     <ChannelBadge
-                      channel={item.channel}
-                      href={item.channel === 'linkedin' && item.threadUrl ? item.threadUrl : item.gmailUrl}
+                      channel={item.replyPlan.channel}
+                      href={item.replyPlan.recipient.threadUrl || item.gmailUrl}
                     />
                   )}
                   {item.stage === 'send_resume' && (
@@ -587,11 +582,8 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                   ) : (
                     <span>{item.recruiterPhone}</span>
                   ))}
-                {item.recruiterEmail && (
-                  <span title={item.recruiterEmail}>
-                    {mailtoLabel(item)}
-                    {item.emailIsLinkedInRelay ? '' : ` · ${item.recruiterEmail}`}
-                  </span>
+                {item.replyPlan?.recipient.email && (
+                  <span title={item.replyPlan.recipient.email}>Email · {item.replyPlan.recipient.email}</span>
                 )}
                 <span>
                   {item.contactAttempts
@@ -695,44 +687,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
             {showDetail && item.stage === 'clarify' && (
               <div className="priority-detail">
                 <div className="actions">
-                  {item.threadUrl ? (
-                    <a
-                      className="btn link"
-                      href={item.threadUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      onClick={() => {
-                        if (draftOf(item)) void copyText(draftOf(item))
-                      }}
-                      title="Opens the thread with the reply copied — paste it and press Send"
-                    >
-                      {/linkedin\.com/i.test(item.threadUrl) ? 'Reply on LinkedIn' : 'Open thread'}
-                    </a>
-                  ) : null}
-                  {mailtoUrl(item, draftOf(item)) && (
-                    <a
-                      className="btn link"
-                      href={mailtoUrl(item, draftOf(item))!}
-                      target="_blank"
-                      rel="noreferrer"
-                      title={item.recruiterEmail}
-                    >
-                      {mailtoLabel(item)}
-                    </a>
-                  )}
-                  {item.gmailUrl && linkedinNotice(item) ? (
-                    !item.threadUrl && (
-                      <a className="btn link" href={item.gmailUrl} target="_blank" rel="noreferrer">
-                        Open LinkedIn notification
-                      </a>
-                    )
-                  ) : item.gmailUrl ? (
-                    <a className="btn link" href={item.gmailUrl} target="_blank" rel="noreferrer">
-                      Reply in Gmail
-                    </a>
-                  ) : !item.threadUrl && !mailtoUrl(item, draftOf(item)) ? (
-                    <span className="btn disabled">Reply in Gmail</span>
-                  ) : null}
+                  <RouteButtons item={item} text={draftOf(item)} />
                   {dismissUrl(item) && (
                     <a
                       className="btn link muted"
@@ -802,27 +757,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                           {copiedId === item.id ? 'Copied' : 'Copy message'}
                         </button>
                       )}
-                      {mailtoUrl(item, draftOf(item)) && (
-                        <a
-                          className="btn link"
-                          href={mailtoUrl(item, draftOf(item))!}
-                          target="_blank"
-                          rel="noreferrer"
-                          title={item.recruiterEmail}
-                        >
-                          {mailtoLabel(item)}
-                        </a>
-                      )}
-                      {item.threadUrl && (
-                        <a
-                          className="btn link"
-                          href={item.threadUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Open LinkedIn thread
-                        </a>
-                      )}
+                      <RouteButtons item={item} text={draftOf(item)} />
                     </div>
                     {item.draftReply && (
                       <textarea

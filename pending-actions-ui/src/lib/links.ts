@@ -182,28 +182,49 @@ export function senderSearchLinks(sender: SenderInfo): { label: string; href: st
   return links
 }
 
+/** One way to reach the recipient, as decided server-side (pipeline/reply_plan.py). */
+export interface ReplyRoute {
+  kind: 'compose' | 'thread' | 'profile' | 'notification' | 'gmail_thread' | 'company' | 'text' | 'call'
+  channel: 'email' | 'linkedin' | 'other'
+  to: string
+  /** thread: the link is a LinkedIn conversation. */
+  linkedin?: boolean
+  /** company: the inbox's contact name, if saved. */
+  name?: string
+}
+
+/** The card's reply plan (REQUIREMENTS ROUTE-1): the page renders it and never
+ * re-derives channel, recipient or routes. */
+export interface ReplyPlan {
+  channel: 'linkedin' | 'email' | 'sms' | 'other'
+  recipient: {
+    name: string
+    email: string
+    phone: string
+    threadUrl: string
+    linkedinUrl: string
+    via: string
+  }
+  subject: string
+  hasRecruiter: boolean
+  recruiterOwned: boolean
+  routes: ReplyRoute[]
+}
+
+export const EMPTY_REPLY_PLAN: ReplyPlan = {
+  channel: 'other',
+  recipient: { name: '', email: '', phone: '', threadUrl: '', linkedinUrl: '', via: '' },
+  subject: '',
+  hasRecruiter: false,
+  recruiterOwned: false,
+  routes: [],
+}
+
 /** How to reach the recruiter for a message sent from Manage Lead. */
 export interface MessageTarget {
-  channel: 'linkedin' | 'email' | 'other'
-  threadUrl?: string
-  /** Real recruiter inbox (not a LinkedIn relay) for Gmail compose. */
-  composeTo?: string
-  /** Recruiter's last email, opened in Gmail (reply from there). */
-  gmailUrl?: string
-  /** Recruiter's LinkedIn profile (Save contact). */
-  linkedinUrl?: string
-  /** Company inbox (Save contact → Company) — offered only when no recruiter owns the lead. */
-  companyEmail?: string
-  companyContactName?: string
-  /** A recruiter / agency contact owns this lead (server-side). */
-  recruiterOwned?: boolean
+  plan: ReplyPlan
   /** What's known about the sender, for "Search for sender" and route labels. */
   sender: SenderInfo
-  subject: string
-  /** False when there's no recruiter at all — Decline can only skip. */
-  hasRecruiter: boolean
-  /** Where an address was found when it isn't on the lead itself ("their signature"). */
-  via?: string
 }
 
 export interface SendRoute {
@@ -231,127 +252,127 @@ function firstName(name: string): string {
   return n.split(/\s+/)[0]
 }
 
-/** Every way to reach the sender, best first: recruiter email (Gmail draft with
- * the message filled in), LinkedIn thread, LinkedIn profile, the recruiter's
- * email thread, the company inbox (only when no recruiter owns the lead, so an
- * agency's submission is never bypassed), then a text to their phone. */
+/** Buttons and wording for the plan's routes, in the plan's order. */
 export function sendRoutes(t: MessageTarget): SendRoute[] {
-  const found = extractSenderDetails(t.sender.messageText || '')
-  if (!t.composeTo && found.email) t = { ...t, composeTo: found.email }
-  if (!t.linkedinUrl && found.linkedin) t = { ...t, linkedinUrl: found.linkedin }
-  const name = (t.sender.name || '').trim()
+  const { plan } = t
+  const name = (plan.recipient.name || t.sender.name || '').trim()
   const first = firstName(name)
   const company = cleanField(t.sender.company)
   const title = cleanField(t.sender.title)
   const forPart =
     company && title ? ` for ${company} — ${title}` : company ? ` for ${company}` : title ? ` for ${title}` : ''
   const who = name || 'the recruiter'
-  const routes: SendRoute[] = []
-  if (t.composeTo) {
-    const to = t.composeTo
-    const button = `Email ${first || to}`
-    routes.push({
-      channel: 'email',
-      label: `Send message to ${name && name.toLowerCase() !== to.toLowerCase() ? `${name} <${to}>` : to}${forPart}`,
-      button,
-      how: 'email',
-      to,
-      step: `Click "${button}". Gmail opens with To, Subject and the message filled in. Press Send.`,
-      prefilled: true,
-      href: (text) => gmailComposeUrl(to, t.subject, text),
-    })
-  }
-  if (t.threadUrl) {
-    const url = t.threadUrl
-    const li = /linkedin\.com/i.test(url)
-    const button = li ? 'Reply on LinkedIn' : 'Reply in the thread'
-    routes.push({
-      channel: li ? 'linkedin' : t.channel,
-      label: `Send message in the ${li ? 'LinkedIn ' : ''}thread with ${who}${forPart}`,
-      button,
-      how: li ? 'LinkedIn thread' : 'thread',
-      to: url,
-      step: `Click "${button}". The thread opens and the message is copied. Paste it and press Send.`,
-      prefilled: false,
-      href: () => url,
-    })
-  }
-  if (t.linkedinUrl) {
-    const url = t.linkedinUrl
-    const button = `Message ${first || 'them'} on LinkedIn`
-    routes.push({
-      channel: 'linkedin',
-      label: `Send message to ${who} on LinkedIn${forPart}`,
-      button,
-      how: 'LinkedIn profile',
-      to: url,
-      step: `Click "${button}". Their profile opens and the message is copied. Click Message, paste it and press Send.`,
-      prefilled: false,
-      href: () => url,
-    })
-  }
-  // A LinkedIn lead's "email" is LinkedIn's notification — replying to it goes
-  // to LinkedIn's relay, not the recruiter.
-  const linkedinNotice = t.channel === 'linkedin' && !t.composeTo
-  if (t.gmailUrl && linkedinNotice && !routes.length) {
-    const url = t.gmailUrl
-    const button = 'Open LinkedIn notification'
-    routes.push({
-      channel: 'linkedin',
-      label: `Answer ${who} on LinkedIn${forPart}`,
-      button,
-      how: 'LinkedIn (via the notification email)',
-      to: url,
-      step: `Click "${button}". LinkedIn's email opens and the message is copied. Click its Reply button to open the LinkedIn conversation, paste it and press Send.`,
-      prefilled: false,
-      href: () => url,
-    })
-  }
-  if (t.gmailUrl && !linkedinNotice) {
-    const url = t.gmailUrl
-    const button = 'Reply in Gmail'
-    routes.push({
-      channel: 'email',
-      label: `Reply in the email thread with ${who}${forPart}`,
-      button,
-      how: 'email thread',
-      to: url,
-      step: `Click "${button}". The email thread opens and the message is copied. Click Reply, paste it and press Send.`,
-      prefilled: false,
-      href: () => url,
-    })
-  }
-  if (t.companyEmail && !t.recruiterOwned) {
-    const to = t.companyEmail
-    const org = (t.companyContactName || company || to).trim()
-    const button = `Email ${company || to}`
-    routes.push({
-      channel: 'email',
-      label: `Send message to ${org} <${to}> about ${title || 'the role'}`,
-      button,
-      how: 'email',
-      to,
-      step: `Click "${button}". Gmail opens with To, Subject and the message filled in. Press Send.`,
-      prefilled: true,
-      href: (text) => gmailComposeUrl(to, t.subject, text),
-    })
-  }
-  const phone = (t.sender.phone || found.phone || '').trim()
-  if (phone) {
-    const button = `Text ${first || phone}`
-    routes.push({
-      channel: 'other',
-      label: `Text ${who} at ${phone}${forPart}`,
-      button,
-      how: 'text',
-      to: phone,
-      step: `Click "${button}". Check the message in the window that opens and click Send — it goes out from Messages and is logged on the lead.`,
-      prefilled: true,
-      sendsAndLogs: true,
-      href: () => smsUrl(phone),
-    })
-  }
-  return routes
+  return plan.routes.map((r): SendRoute => {
+    const to = r.to
+    switch (r.kind) {
+      case 'compose': {
+        const button = `Email ${first || to}`
+        return {
+          channel: 'email',
+          label: `Send message to ${name && name.toLowerCase() !== to.toLowerCase() ? `${name} <${to}>` : to}${forPart}`,
+          button,
+          how: 'email',
+          to,
+          step: `Click "${button}". Gmail opens with To, Subject and the message filled in. Press Send.`,
+          prefilled: true,
+          href: (text) => gmailComposeUrl(to, plan.subject, text),
+        }
+      }
+      case 'thread': {
+        const button = r.linkedin ? 'Reply on LinkedIn' : 'Reply in the thread'
+        return {
+          channel: r.channel,
+          label: `Send message in the ${r.linkedin ? 'LinkedIn ' : ''}thread with ${who}${forPart}`,
+          button,
+          how: r.linkedin ? 'LinkedIn thread' : 'thread',
+          to,
+          step: `Click "${button}". The thread opens and the message is copied. Paste it and press Send.`,
+          prefilled: false,
+          href: () => to,
+        }
+      }
+      case 'profile': {
+        const button = `Message ${first || 'them'} on LinkedIn`
+        return {
+          channel: 'linkedin',
+          label: `Send message to ${who} on LinkedIn${forPart}`,
+          button,
+          how: 'LinkedIn profile',
+          to,
+          step: `Click "${button}". Their profile opens and the message is copied. Click Message, paste it and press Send.`,
+          prefilled: false,
+          href: () => to,
+        }
+      }
+      case 'notification': {
+        const button = 'Open LinkedIn notification'
+        return {
+          channel: 'linkedin',
+          label: `Answer ${who} on LinkedIn${forPart}`,
+          button,
+          how: 'LinkedIn (via the notification email)',
+          to,
+          step: `Click "${button}". LinkedIn's email opens and the message is copied. Click its Reply button to open the LinkedIn conversation, paste it and press Send.`,
+          prefilled: false,
+          href: () => to,
+        }
+      }
+      case 'gmail_thread': {
+        const button = 'Reply in Gmail'
+        return {
+          channel: 'email',
+          label: `Reply in the email thread with ${who}${forPart}`,
+          button,
+          how: 'email thread',
+          to,
+          step: `Click "${button}". The email thread opens and the message is copied. Click Reply, paste it and press Send.`,
+          prefilled: false,
+          href: () => to,
+        }
+      }
+      case 'company': {
+        const org = (r.name || company || to).trim()
+        const button = `Email ${company || to}`
+        return {
+          channel: 'email',
+          label: `Send message to ${org} <${to}> about ${title || 'the role'}`,
+          button,
+          how: 'email',
+          to,
+          step: `Click "${button}". Gmail opens with To, Subject and the message filled in. Press Send.`,
+          prefilled: true,
+          href: (text) => gmailComposeUrl(to, plan.subject, text),
+        }
+      }
+      case 'text': {
+        const button = `Text ${first || to}`
+        return {
+          channel: 'other',
+          label: `Text ${who} at ${to}${forPart}`,
+          button,
+          how: 'text',
+          to,
+          step: `Click "${button}". Check the message in the window that opens and click Send — it goes out from Messages and is logged on the lead.`,
+          prefilled: true,
+          sendsAndLogs: true,
+          href: () => smsUrl(to),
+        }
+      }
+      case 'call': {
+        const button = `Call ${first || to}`
+        return {
+          channel: 'other',
+          label: `Call ${who} at ${to} (office line — not textable)${forPart}`,
+          button,
+          how: 'call',
+          to,
+          step: `Click "${button}" and use the message as talking points.`,
+          prefilled: false,
+          href: () => callUrl(to),
+        }
+      }
+    }
+  })
 }
 
 /** SendText helper: confirm window → Messages → logged via set-lead-status (or decline-lead). */

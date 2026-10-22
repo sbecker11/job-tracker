@@ -1,4 +1,4 @@
-import { leadAnchorId } from './lib/links'
+import { leadAnchorId, type ReplyPlan } from './lib/links'
 import type {
   ArchivedLead,
   Channel,
@@ -114,6 +114,7 @@ export interface ContactPriorityItem {
   resolvedThreadUrl?: string
   resolvedLinkedinUrl?: string
   resolvedVia?: string
+  replyPlan?: ReplyPlan
   postDecline?: boolean
   declineReasonLabel?: string
   termsChanged?: boolean
@@ -302,6 +303,7 @@ function todayFields(
   | 'resolvedThreadUrl'
   | 'resolvedLinkedinUrl'
   | 'resolvedVia'
+  | 'replyPlan'
 > {
   return {
     todayTier: src.todayTier,
@@ -317,6 +319,7 @@ function todayFields(
     resolvedThreadUrl: src.resolvedThreadUrl,
     resolvedLinkedinUrl: src.resolvedLinkedinUrl,
     resolvedVia: src.resolvedVia,
+    replyPlan: src.replyPlan,
   }
 }
 
@@ -450,6 +453,7 @@ function fromArchived(lead: ArchivedLead): ContactPriorityItem {
     duplicateOfKey: lead.duplicateOfKey,
     duplicateOfCompany: lead.duplicateOfCompany,
     duplicateOfTitle: lead.duplicateOfTitle,
+    replyPlan: lead.replyPlan,
   }
 }
 

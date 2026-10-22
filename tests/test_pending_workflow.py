@@ -124,6 +124,9 @@ def test_workflow_email_unmatched_lands_in_clarify(tmp_path: Path):
     assert "W2" in hit["draftReply"] or "1099" in hit["draftReply"]
     assert hit["nextAction"].startswith("YOUR ACTION:")
     assert "Gmail" in hit["nextAction"]
+    assert hit["replyPlan"]["channel"] == "email"
+    for stage in ("clarify", "sendResume", "waitSchedule"):
+        assert all("replyPlan" in i for i in workflow["stages"][stage])
 
 
 def test_linkedin_imap_and_gmail_copies_collapse_to_one_clarify_card(tmp_path: Path):

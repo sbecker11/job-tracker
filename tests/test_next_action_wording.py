@@ -56,6 +56,26 @@ def test_steps_are_numbered_without_gaps():
         assert nums == list(range(1, len(nums) + 1)), (kw, nums)
 
 
+def test_plan_routes_drive_the_send_step():
+    compose = _next_action_clarify(
+        channel="email", recruiter_name="Pat", gmail_url="https://mail.google.com/x",
+        routes=[{"kind": "compose", "to": "pat@agency.example"}, {"kind": "gmail_thread", "to": "x"}],
+    )
+    assert "Email Pat (Gmail opens with the reply filled in)" in compose
+    assert "Copy reply" not in compose
+
+    thread = _next_action_clarify(
+        channel="linkedin", recruiter_name="Pat", routes=[{"kind": "thread", "to": "x", "linkedin": True}]
+    )
+    assert "(1) Copy reply (2) Open LinkedIn thread (3) Paste & send to Pat (4) Dismiss" in thread
+
+    none = _next_action_clarify(channel="other", routes=[])
+    assert "No reply route on file" in none
+    for text in (compose, thread, none):
+        nums = _numbers(text)
+        assert nums == list(range(1, len(nums) + 1))
+
+
 def test_reply_due_prefix():
     text = _next_action_clarify(channel="email", reply_due=True, unanswered_days=4)
     assert text.startswith("YOUR ACTION: Recruiter followed up (4d unanswered) — reply now. (1)")

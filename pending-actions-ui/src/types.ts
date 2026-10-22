@@ -1,3 +1,5 @@
+import type { ReplyPlan } from './lib/links'
+
 export type PipelineStageId = 'clarify' | 'send_resume' | 'wait_schedule' | 'decide_apply'
 
 /** One `run_step` call's outcome from the latest recruiting-automation
@@ -42,6 +44,8 @@ export interface TodayFields {
   resolvedThreadUrl?: string
   resolvedLinkedinUrl?: string
   resolvedVia?: string
+  /** Channel, recipient and routes for this card (pipeline/reply_plan.py). */
+  replyPlan?: ReplyPlan
 }
 
 /** One "no thank you" reason (job_tracker.pipeline.decline.DECLINE_REASONS). */
@@ -194,6 +198,7 @@ export interface DecideLead extends TodayFields {
  * unavailable/hired) — off the active funnel, but still browsable for its
  * message history via commCount + View communications. */
 export interface ArchivedLead {
+  replyPlan?: ReplyPlan
   normalizedKey: string
   company: string
   title: string
