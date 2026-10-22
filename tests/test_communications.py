@@ -661,6 +661,29 @@ def test_scan_communications_outbound_unmatched_is_skipped_not_parked(mock_gmail
     conn.close()
 
 
+def test_scan_communications_unmatched_outbound_links_on_a_later_run(mock_gmail, seeded_db: Path):
+    """MAT-5: an unmatched Sent message isn't marked seen, so a later run
+    logs it once its thread becomes known."""
+    raw = _raw_message("sent-late", from_addr="me@example.com", subject="Re: role", thread_id="t-late")
+    mock_gmail(_FakeGmailService([], {"sent-late": raw}, sent_ids=["sent-late"]))
+
+    assert scan_main(["--db", str(seeded_db), "--include-sent"]) == 0
+    conn = connect(seeded_db)
+    assert conn.execute("SELECT COUNT(*) FROM job_conversations").fetchone()[0] == 0
+    key = _key(seeded_db, "Clevanoo LLC", "Senior Full Stack AI/ML Engineer")
+    add_job_conversation(conn, JobConversation(job_key=key, direction="inbound", summary="pitch", thread_id="t-late"))
+    conn.close()
+
+    assert scan_main(["--db", str(seeded_db), "--include-sent"]) == 0
+    conn = connect(seeded_db)
+    row = conn.execute(
+        "SELECT job_key, direction FROM job_conversations WHERE message_id = 'sent-late'"
+    ).fetchone()
+    assert row is not None
+    assert (row["job_key"], row["direction"]) == (key, "outbound")
+    conn.close()
+
+
 def test_scan_communications_dry_run_writes_nothing(mock_gmail, seeded_db: Path):
     raw = _raw_message("msg-4", from_addr="hit-reply@linkedin.com", subject="A reply")
     mock_gmail(_FakeGmailService(["msg-4"], {"msg-4": raw}))

@@ -83,7 +83,7 @@ is updated first.
 | MAT-2 | Relay addresses never match by email (tier 2). One canonical relay list lives in `store.GENERIC_RELAY_ADDRESSES`; `@reply.linkedin.com` matches only via a contact's `linkedin_reply_to`. An address on ≥ 3 leads is a broadcaster and doesn't match. Shared platform domains (`ashbyhq.com`, `greenhouse-mail.io`, `linkedin.com`, the job boards) never match, even on one lead; a company's own no-reply sender still does. | test: `test_communications.py`, `test_linkedin_reply_to.py`, `test_platform_sender_match.py` | OK (but the list is copied in 3 files — §12) |
 | MAT-3 | When a message on an agency/TBD lead names exactly one other live lead's company and title, it belongs to that lead. | — | GAP |
 | MAT-4 | Gmail and IMAP copies of the same thread must resolve to the same lead (thread ids differ across mailboxes, so match by Message-Id / References too). | — | GAP |
-| MAT-5 | Unmatched inbound goes to `unmatched_messages` (Gmail label `JobTracker/NeedsFollowup`). Unmatched outbound is logged once it can be matched later, not dropped. | — | **BROKEN** — unmatched outbound is silently skipped |
+| MAT-5 | Unmatched inbound goes to `unmatched_messages` (Gmail label `JobTracker/NeedsFollowup`). Unmatched outbound is logged once it can be matched later, not dropped. | test: `test_communications.py` | OK — 2026-10-22: unmatched outbound isn't marked seen, so each run retries it until it matches or ages out of the 14-day `--newer-than` window |
 | MAT-6 | A reply Shawn records for an unmatched message (`record-unmatched-reply`) creates or reuses a stub lead, resolves every copy, logs the reply outbound and starts the wait clock. | test: `test_record_unmatched_reply.py` | OK |
 
 ## 5. Contacts

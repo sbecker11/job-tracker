@@ -21,10 +21,11 @@ Scope, deliberately conservative:
     nothing to match or archive beyond a first name).
   - Outbound (`--include-sent`, opt-in): Sent-folder messages that match
     Tier 1 (thread id or recipient already known) ONLY. An unmatched
-    outbound message is silently skipped rather than parked in the
-    unmatched queue — Sent folders carry plenty of non-recruiting mail, and
-    parking every unrecognized outgoing email would flood the review queue
-    with noise. Inbound unmatched mail IS parked, since the sender
+    outbound message is not parked in the unmatched queue — Sent folders
+    carry plenty of non-recruiting mail, and parking every unrecognized
+    outgoing email would flood the review queue with noise. It is also not
+    marked seen, so every run retries it and logs it as soon as its thread
+    or recipient is known, until it ages out of `--newer-than`. Inbound unmatched mail IS parked, since the sender
     addresses above are unambiguously recruiting-related by construction.
 
 Writes to Gmail too, as of 2026-07-19 — see "Gmail labeling" below. Before
@@ -419,7 +420,7 @@ def _scan_one(
         )
         result["action"] = "parked (unmatched)"
     else:
-        result["action"] = "skipped (unmatched outbound)"
+        result["action"] = "deferred (unmatched outbound; retried next run)"
 
     # Gmail labeling (2026-07-19) — see module docstring. Inbound only:
     # Sent-folder messages are never labeled, and `label_ids` is None
