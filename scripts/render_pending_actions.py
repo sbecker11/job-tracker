@@ -35,6 +35,7 @@ _SRC = _REPO_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+from job_tracker.pipeline.card_audit import audit_cards, issues_json, summarize  # noqa: E402
 from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT, _safe_filename  # noqa: E402
 from job_tracker.pipeline.pending_workflow import (  # noqa: E402
     _recruiter_contact,
@@ -2480,6 +2481,11 @@ def main(argv: list[str] | None = None) -> int:
             workflow = _write_workflow_json(
                 data, conn=conn, now=now, paths=paths, output_root=args.output_root
             )
+            issues = audit_cards(workflow, conn)
+            (args.output_json.parent / "card-audit.json").write_text(
+                json.dumps(issues_json(issues), indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+            )
+            print(summarize(issues))
     finally:
         conn.close()
 

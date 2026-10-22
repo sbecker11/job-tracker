@@ -2,6 +2,12 @@
 
 **Humans:** [`README.md`](README.md) · [`PRIMER.md`](PRIMER.md) · umbrella [`docs/WORKSPACE.md`](docs/WORKSPACE.md).
 
+**Before changing behavior, read [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md)** —
+the numbered rules for intake, matching, contacts, evaluation, lifecycle,
+Pending Actions cards, send routes, drafts and logging. Code that disagrees
+with a rule is a bug; rules marked DECIDE need Shawn's call. Each decision has
+one owner (its §12) — call it, don't copy it.
+
 Job-search **processing** pipeline: Gmail → classify → ATS JD resolve → score →
 store → (on pursue) résumé/cover-letter packages.
 
