@@ -137,7 +137,7 @@ package_generated → applied → following_up → interviewing → offered → 
 | LIFE-2 | Auto-skip `new`/`pursued` leads whose last communication is > 21 days old, or that require Eastern time/hours (§3). Each skip writes a reason note. | test: `test_auto_skip_leads.py` | OK |
 | LIFE-3 | Declining sets `skipped` with a reason from `DECLINE_REASONS`, logs the letter (if sent) outbound, and stops the wait clock. A later recruiter reply that changes the declined term resurfaces the lead. | test: `test_decline.py` | OK |
 | LIFE-4 | Application-received → `applied`; interview invite → `interviewing`; rejection → `rejected` (recorded from any status). Off-ramp and `reopened` leads never auto-advance. | test: `test_post_application.py` | OK |
-| LIFE-5 | Generating a package on a lead moves it to `package_generated` — or the tool refuses/warns when the lead is skipped. | — | **BROKEN** — `apply_package --force` leaves it silently skipped |
+| LIFE-5 | Generating a package on a lead moves it to `package_generated` — or the tool refuses/warns when the lead is skipped. | test: `test_apply_package_status.py` | OK — `--force` moves an off-ramp lead with a note; without it the tool warns (2026-10-22) |
 | LIFE-6 | Every status value used anywhere is in `LEAD_STAGES`. | test: `test_lead_stage_values.py` (SQL status literals) | OK (2026-10-22; removed `duplicate` ×2 and `withdrawn`) |
 | LIFE-7 | `scan_rejection_backlog` imports and runs. | test: `test_cli_imports.py` | OK (2026-10-22) |
 

@@ -24,12 +24,37 @@ from job_tracker.pipeline.llm_apply import (
     render_jd_review,
 )
 from job_tracker.pipeline.store import (
+    _OFF_RAMP_STATUSES,
     DEFAULT_DB_PATH,
     advance_status,
+    append_lead_note,
     connect,
+    get_lead_status,
     get_sibling_titles,
     update_llm_evaluation,
 )
+
+
+def _record_package(conn, key: str, *, force: bool) -> None:
+    """Move the lead to package_generated (REQUIREMENTS LIFE-5). A lead on an
+    off-ramp (skipped, rejected, …) moves only under --force, with a note;
+    otherwise it stays put and the tool says so."""
+    current = get_lead_status(conn, key)
+    if advance_status(conn, key, "package_generated"):
+        return
+    if current not in _OFF_RAMP_STATUSES:
+        return
+    if force:
+        advance_status(conn, key, "package_generated", force=True)
+        append_lead_note(conn, key, f"Package generated with --force; status moved from {current} to package_generated.")
+        conn.commit()
+        print(f"\n(lead was '{current}' — moved to package_generated because of --force)")
+    else:
+        print(
+            f"\nWarning: lead is '{current}', so it stays {current} and won't show as ready to apply. "
+            "Re-run with --force, or set the status with set_lead_status.py.",
+            file=sys.stderr,
+        )
 
 
 def _find_lead(conn, company: str, title: str) -> dict | None:
@@ -165,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         # Bellese) were found with complete packages on disk but a stale
         # status because this call was missing.
         if result.resume_path is not None:
-            advance_status(conn, lead["normalized_key"], "package_generated")
+            _record_package(conn, lead["normalized_key"], force=args.force)
         conn.close()
 
     if args.comparison_jsonl:
