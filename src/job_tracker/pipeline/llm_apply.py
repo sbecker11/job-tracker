@@ -1376,7 +1376,7 @@ def render_cover_letter(
     candidate = _safe_filename(CANDIDATE_NAME)
     out_path = _job_folder(
         out_dir, company=company, title=title, multi_lead=multi_lead, sibling_titles=sibling_titles
-    ) / _safe_filename(f"{candidate}_coverLetter_{company}_{title}.docx")
+    ) / _safe_filename(f"{candidate}_Cover_Letter_{company}_{title}.docx")
     doc.save(str(out_path))
     return out_path
 

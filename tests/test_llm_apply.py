@@ -598,6 +598,7 @@ def test_render_cover_letter_includes_phone_and_salutation(tmp_path):
     cover_letter = {"salutation": "Dear Hiring Team,", "paragraphs": ["Body paragraph."]}
     path = llm_apply.render_cover_letter(cover_letter, company="Acme", title="Engineer", out_dir=tmp_path)
     assert path.parent == tmp_path / "Acme" / "Engineer"
+    assert path.name == "Shawn_Becker_Cover_Letter_Acme_Engineer.docx"
     doc = Document(path)
     full_text = "\n".join(p.text for p in doc.paragraphs)
     assert llm_apply.CANDIDATE_PHONE in full_text
