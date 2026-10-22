@@ -33,7 +33,7 @@ from job_tracker.pipeline.store import (
     get_lead_status,
     is_message_processed,
 )
-from job_tracker.scoring.models import JobConversation
+from job_tracker.pipeline.models import JobConversation
 
 # Include archived SKIP mail and unlabeled recruiter_job — rejections often
 # archive as SKIP before a lead match ran (2026-07-31 gap).
