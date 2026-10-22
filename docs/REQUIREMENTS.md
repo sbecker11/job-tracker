@@ -72,7 +72,7 @@ is updated first.
 | ING-3 | **Channel is set at intake** from the sender: any `linkedin.com` sender or LinkedIn thread link → `linkedin`; call/phone/text logs → `sms`; else `email`. Later stages read the stored channel; they don't re-derive it. | check: `email_on_linkedin` | **BROKEN** — intake always writes `email`; LinkedIn is inferred later in ~7 places |
 | ING-4 | Message ids: Gmail hex id; IMAP `imap:<Message-Id>` (or `imap-uid:<folder>:<uid>`); synthetic `status-sent:`, `package-sent:`, `dismissed:`, `reply-recorded:`. | test: `test_imap_reader.py` | OK |
 | ING-5 | `occurred_at` is the message's own send time (Date header), not the scan time. | — | **BROKEN** — scan time is used |
-| ING-6 | Shawn's own addresses are never saved as a contact (`add_job_contact` returns None) and never match a lead (`find_job_by_contact_email`). | test: `test_own_address.py` | OK (2026-10-22; 19 older own-address contacts still to clean — §13) |
+| ING-6 | Shawn's own addresses are never saved as a contact (`add_job_contact` returns None) and never match a lead (`find_job_by_contact_email`). | test: `test_own_address.py` | OK (2026-10-22; older own-address contacts cleaned the same day) |
 | ING-7 | Unmatched copies of one conversation collapse: same LinkedIn thread id, or same sender + normalized subject within 3 h. A copy of an already-resolved/dismissed message inherits that outcome. | test: `test_unmatched_dedupe.py` | OK |
 
 ## 4. Matching messages to leads
@@ -198,7 +198,7 @@ work-authorization, no availability; asking for their band is fine).
 | DRAFT-3 | **Screen-first track** when the recruiter wants a résumé or call before sharing a JD: offer the generic latest résumé and a call (§12). | test: `test_qualifying_reply.py` | OK |
 | DRAFT-4 | **Reply on a live thread** reads the whole conversation: no first-touch "Thanks for reaching out", and never re-asks a question the recruiter already answered (remote, engagement type, rate, end client, stack). | check: `first_touch_on_followup`, `reasks_answered` | **BROKEN** — 4 live cards |
 | DRAFT-5 | Every short-form message (qualifying, follow-up, decline, résumé-send) ends with `qualifying_reply.SIGNATURE`: "Best, Shawn" + `shawn.becker@spexture.com`. (Decided 2026-10-22.) | — | **BROKEN** — decline and follow-up drafts end "Best,\nShawn" |
-| DRAFT-6 | Location wording in every message: "100% remote, or within ~15 minutes of Lehi". (Decided 2026-10-22; `~/CLAUDE.md` §12 still says "hybrid in/near SLC is fine" — pending Shawn's update there.) | — | **BROKEN** — screen-first note says hybrid near SLC |
+| DRAFT-6 | Location wording in every message: "100% remote, or within ~15 minutes of Lehi". (Decided 2026-10-22; `~/CLAUDE.md` §12 updated the same day.) | `qualifying_reply._draft_screen_first_body` | OK |
 | DRAFT-7 | Every draft is editable on the page before sending, and the edited text is what gets copied and logged. | — | OK (`f02ec2a`) |
 | DRAFT-8 | A C2C-only mention still triggers the "not set up for C2C" clarifier. | — | **BROKEN** — C2C counts as "engagement known" |
 
@@ -233,7 +233,7 @@ drifted — the root cause of most repeat bugs. Target owners:
 
 Highest impact first. Each fix ships with the test/check named in its rule.
 
-1. **ING-1 / ING-6 data cleanup** — code fixed 2026-10-22; 113 older inbound rows on 20 leads are Shawn's own replies (flip to outbound or drop the duplicate) or his forwards misfiled onto one lead (detach and re-triage); 19 own-address contacts to remove; two leads named "Spexture" to review.
+1. ~~**ING-1 / ING-6 data cleanup**~~ — done 2026-10-22: 19 own-address contacts removed, 21 duplicate inbound copies deleted, 16 replies flipped to outbound, 74 misfiled forwards detached (not re-triaged; they were old alerts). The two "Spexture" leads were already skipped and are left as is.
 2. **EVAL-5** — "1099 only" fails as C2C; "go" fires Golang; `java` matches JavaScript.
 3. **ROUTE-1 / §12** — page re-derives channel and recipients (source of today's LinkedIn/email confusion).
 4. **DRAFT-4 / DRAFT-1 / CON-1 / CON-2** — follow-up drafts written as first touch; nameless greetings; URLs stored as email.

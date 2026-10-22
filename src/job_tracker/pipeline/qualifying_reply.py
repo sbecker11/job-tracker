@@ -10,7 +10,7 @@ Two first-touch tracks:
   they will share a JD (or even the end client). Send the generic latest
   résumé — never a JD-tailored package and never the indexed master file —
   offer to talk, and only name standing structural constraints (no C2C;
-  remote-first from Lehi). JD evaluation (§11) waits until they actually
+  100% remote or within ~15 minutes of Lehi). JD evaluation (§11) waits until they actually
   send a description.
 
 Never auto-sends.
@@ -402,7 +402,7 @@ def _draft_screen_first_body(*, greeting: str, interest: str, gaps: PitchGaps) -
         )
     if gaps.needs_remote:
         notes.append(
-            "I'm remote-first from Lehi, UT; hybrid in or near Salt Lake City is fine, onsite-only elsewhere isn't."
+            "I'm looking for 100% remote, or onsite/hybrid within about 15 minutes of Lehi, UT."
         )
     notes_block = ""
     if notes:
