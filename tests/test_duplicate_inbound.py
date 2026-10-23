@@ -27,7 +27,9 @@ def _inbound(message_id: str, body: str, when: str, summary: str = SUBJECT) -> J
 
 
 def _count(conn) -> int:
-    return conn.execute("SELECT count(*) FROM job_conversations WHERE job_key = ?", (KEY,)).fetchone()[0]
+    return conn.execute(
+        "SELECT count(*) FROM job_conversations WHERE job_key = ? AND direction = 'inbound'", (KEY,)
+    ).fetchone()[0]
 
 
 def test_gmail_and_imap_copies_are_logged_once(tmp_path: Path):

@@ -1511,6 +1511,50 @@ def list_all_contacts(
     return list(conn.execute(sql, tuple(params)))
 
 
+_LINKEDIN_REPLIED_RE = re.compile(r"^\s*Message replied\b", re.I)
+INFERRED_REPLY_PREFIX = "inferred-reply:"
+
+
+def _log_inferred_linkedin_reply(conn: sqlite3.Connection, conversation: JobConversation) -> None:
+    """REQUIREMENTS TURN-6: LinkedIn sends "Message replied: …" only when someone
+    answers a message Shawn sent, but never emails Shawn's own message. When
+    nothing outbound is logged since their previous message, log that Shawn
+    replied (text unknown) a minute before this one, so whose-turn is right.
+    Back-to-back notices are the recruiter writing twice, not two replies."""
+    if not _LINKEDIN_REPLIED_RE.match(conversation.summary or ""):
+        return
+    when = _parse_iso((conversation.occurred_at or "").replace("Z", "+00:00"))
+    if when is None:
+        return
+    earlier = []
+    for r in conn.execute(
+        "SELECT direction, occurred_at, summary FROM job_conversations WHERE job_key = ? "
+        "AND direction IN ('inbound', 'outbound')",
+        (conversation.job_key,),
+    ):
+        at = _parse_iso((r["occurred_at"] or "").replace("Z", "+00:00"))
+        if at is not None and at <= when:
+            earlier.append((at, r["direction"], r["summary"] or ""))
+    if earlier:
+        _, direction, summary = max(earlier)
+        if direction == "outbound" or _LINKEDIN_REPLIED_RE.match(summary):
+            return
+    sent_at = (when - timedelta(minutes=1)).isoformat()
+    conn.execute(
+        """
+        INSERT INTO job_conversations (job_key, contact_id, message_id, channel, direction, summary, occurred_at, body_text)
+        VALUES (?, ?, ?, 'linkedin', 'outbound', ?, ?, '')
+        """,
+        (
+            conversation.job_key,
+            conversation.contact_id,
+            f"{INFERRED_REPLY_PREFIX}{conversation.message_id}",
+            "You replied on LinkedIn (inferred from LinkedIn's \"Message replied\" notice; text not captured)",
+            sent_at,
+        ),
+    )
+
+
 def add_job_conversation(
     conn: sqlite3.Connection, conversation: JobConversation, *, awaiting_response: bool | None = None
 ) -> int:
@@ -1533,6 +1577,7 @@ def add_job_conversation(
         existing = find_duplicate_inbound(conn, conversation)
         if existing is not None:
             return existing
+        _log_inferred_linkedin_reply(conn, conversation)
     if conversation.direction == "outbound":
         existing = find_duplicate_outbound(conn, conversation)
         if existing is not None:

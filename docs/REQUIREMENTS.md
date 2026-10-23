@@ -104,6 +104,7 @@ is updated first.
 | TURN-1 | Outbound sets `awaiting_response_since` to its time; inbound from the other party clears it; `other` leaves it. Explicit overrides allowed (e.g. voicemail left). | test: `test_store.py`, `test_log_contact.py` | OK |
 | TURN-2 | Automated mail (digests, auto-acks, job alerts) never counts as the recruiter replying. | test: `test_pending_workflow.py` (digest) | OK |
 | TURN-3 | Timestamps are compared as parsed datetimes, never as strings. | test: `test_timestamp_order.py` | OK (2026-10-22; 27 stored rows use `-06:00`, which sorted wrong as strings). SQL `ORDER BY` for display is unchanged. |
+| TURN-6 | A LinkedIn "Message replied: …" notice means the recruiter answered a message Shawn sent, and LinkedIn never emails Shawn's own sent messages. If no outbound row comes after their previous message, log an inferred outbound reply (no text, message id `inferred-reply:<id>`) one minute before the notice, so Shawn doesn't have to click Reply sent or paste the thread. Back-to-back notices infer only one reply. | `store._log_inferred_linkedin_reply`; test: `test_inferred_linkedin_reply.py` | OK (2026-10-22; new mail only — existing leads not backfilled) |
 
 ## 7. Evaluation (scoring and review)
 

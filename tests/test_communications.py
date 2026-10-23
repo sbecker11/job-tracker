@@ -521,7 +521,9 @@ def test_scan_communications_links_via_thread_id(mock_gmail, seeded_db: Path, ca
     assert rc == 0
 
     conn = connect(seeded_db)
-    convos = conn.execute("SELECT * FROM job_conversations WHERE job_key = ?", (key,)).fetchall()
+    convos = conn.execute(
+        "SELECT * FROM job_conversations WHERE job_key = ? AND direction = 'inbound'", (key,)
+    ).fetchall()
     assert len(convos) == 2  # the seeded one + the newly linked one
     assert any(c["message_id"] == "msg-1" for c in convos)
     conn.close()
