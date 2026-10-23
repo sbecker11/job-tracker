@@ -88,6 +88,11 @@ dealbreakers:
       # CLAUDE.md says are still worth considering.
       - "(\\b3\\b|\\b4\\b|\\b5\\b|three|four|five)\\+?\\s*days?\\s*(a|per|/)\\s*week[^.]{0,60}(on-?site|in-office|in office)"
       - "(on-?site|in-office|in office)[^.]{0,60}(\\b3\\b|\\b4\\b|\\b5\\b|three|four|five)\\+?\\s*days?\\s*(a|per|/)\\s*week"
+      # Added 2026-10-22 after "Location: Milford, OH OR Santa Clara, CA -
+      # Onsite" (Diverse Lynx) slipped through: vendor pitches tag the
+      # location line instead of the title. Utah locations are excluded —
+      # onsite near Lehi is fine.
+      - "location\\s*:(?![^\\n]{0,80}\\b(UT|Utah|Lehi|Salt Lake|Provo|Orem|Draper|Sandy|American Fork|Pleasant Grove|South Jordan)\\b)[^\\n]{0,80}[-–(]\\s*on-?site\\b(?!\\s*/\\s*(remote|hybrid))"
     min_hits: 1
     verdict: "Dealbreaker — onsite-only, not in/near Lehi, UT"
   - id: eastern_time_required

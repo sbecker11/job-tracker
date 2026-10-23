@@ -155,6 +155,53 @@ def terms_changed(code: str, reply_text: str) -> bool:
     return bool(reason.terms_changed_re.search(reply_text or ""))
 
 
+# Dealbreakers a short recruiter pitch can settle on its own (REQUIREMENTS
+# CARD-9). The stack ones (Go, Django, .NET, ...) depend on how central the
+# stack is, which a pitch is too thin to show, so they wait for the full JD
+# review. C2C-only gets the clarifier instead (DRAFT-8): a W2 option often exists.
+_PITCH_DEALBREAKERS = {
+    "onsite_only": ("location", ""),
+    "eastern_time_required": (
+        "other",
+        "I'm based in Utah and work Mountain time hours, so a role that requires Eastern time "
+        "isn't a fit.",
+    ),
+}
+
+
+@dataclass(frozen=True)
+class PitchDealbreaker:
+    label: str
+    letter: str
+
+
+def pitch_dealbreaker(
+    body: str, *, subject: str = "", recruiter_name: str = "", title: str = "", framework: dict | None = None
+) -> PitchDealbreaker | None:
+    """A §3 dealbreaker the pitch itself states, with the decline letter for it."""
+    from job_tracker.scoring.scorer import DEFAULT_FRAMEWORK_PATH, load_framework
+
+    framework = framework if framework is not None else load_framework(DEFAULT_FRAMEWORK_PATH)
+    text = f"{subject}\n{body}"
+    utah = bool(_UTAH_RE.search(text))
+    by_id = {d.get("id"): d for d in framework.get("dealbreakers") or []}
+    for dealbreaker_id, (code, note) in _PITCH_DEALBREAKERS.items():
+        entry = by_id.get(dealbreaker_id)
+        if entry is None or (dealbreaker_id == "onsite_only" and utah):
+            continue
+        # Raw text, not the JD sweep's hard/soft split: that split drops short
+        # heading-shaped lines, and "Location: Austin, TX (Onsite)" is one.
+        if any(re.search(p, text, re.I) for p in entry.get("keywords") or []):
+            letter = draft_decline_letter(code, recruiter_name=recruiter_name, title=title, note=note)
+            return PitchDealbreaker(label=entry["label"], letter=letter)
+    return None
+
+
+_UTAH_RE = re.compile(
+    r"\b(UT|Utah|Lehi|Salt Lake|SLC|Provo|Orem|Draper|Sandy|American Fork|Pleasant Grove|South Jordan)\b"
+)
+
+
 def draft_post_decline_reply(*, recruiter_name: str = "", company: str = "", title: str = "") -> str:
     who = first_name(recruiter_name)
     _, title = clean_role_fields("", title)

@@ -247,9 +247,11 @@ def _next_action_clarify(
     gmail_url: str = "",
     screen_first: bool = False,
     routes: list[dict] | None = None,
+    dealbreaker: str = "",
 ) -> str:
     """`routes` is the card's reply plan (pipeline/reply_plan.py); when given,
-    the send step follows its first route instead of guessing from the links."""
+    the send step follows its first route instead of guessing from the links.
+    `dealbreaker` (a §3 label) means the card's draft is a decline letter."""
     who = recruiter_name.strip() or "the recruiter"
     thread_url = (thread_url or "").strip()
     gmail_url = (gmail_url or "").strip()
@@ -270,7 +272,9 @@ def _next_action_clarify(
         steps += ["Copy reply", f"Reply in Gmail to {who}"]
     steps.append("Dismiss / marked replied")
 
-    if screen_first and reply_due:
+    if dealbreaker:
+        prefix = f"Dealbreaker in the pitch ({dealbreaker}) — send the decline below, then dismiss. "
+    elif screen_first and reply_due:
         prefix = f"Recruiter wants résumé + call before a JD{age} — reply now. "
     elif reply_due:
         prefix = f"Recruiter followed up{age} — reply now. "
@@ -500,6 +504,8 @@ def build_clarify_queue(
     conn,
 ) -> list[dict]:
     """Priority-A: replyable recruiter outreach needing a clarifying reply."""
+    from job_tracker.pipeline.decline import pitch_dealbreaker
+
     queue: list[dict] = []
     seen_reply_ids: set[str] = set()
     seen_keys: set[str] = set()
@@ -624,23 +630,31 @@ def build_clarify_queue(
         if fr.strip().lower() in {"hit-reply@linkedin.com", "inmail-hit-reply@linkedin.com"}:
             continue
         body = m.get("body") or ""
-        gaps = detect_pitch_gaps(body, subject=m.get("subject") or "")
-        if not any(
-            (gaps.needs_jd, gaps.needs_end_client, gaps.needs_engagement, gaps.needs_remote, gaps.needs_rate_band)
-        ):
-            continue
+        blocker = pitch_dealbreaker(
+            body, subject=m.get("subject") or "", recruiter_name=name, title=m.get("titleGuess") or ""
+        )
+        if blocker is not None:
+            draft = blocker.letter
+        else:
+            gaps = detect_pitch_gaps(body, subject=m.get("subject") or "")
+            if not any(
+                (gaps.needs_jd, gaps.needs_end_client, gaps.needs_engagement, gaps.needs_remote, gaps.needs_rate_band)
+            ):
+                continue
         reply_id = f"mid:{mid}" if mid else f"fallback:{(name or '').lower()}|{(m.get('subject') or '').lower()}"
         channel = _channel_from_addresses(from_address=fr, thread_url=thread)
         next_action = _next_action_clarify(
             channel=channel,
             recruiter_name=name,
-            reply_due=True,
+            reply_due=blocker is None,
             unanswered_days=m.get("ageDays") or 0,
             thread_url=thread,
+            dealbreaker=blocker.label if blocker else "",
         )
         _add(
             {
                 "kind": "unmatched",
+                "dealbreaker": blocker.label if blocker else "",
                 "stage": "clarify",
                 "channel": channel,
                 "recruiterName": name,
@@ -1613,6 +1627,7 @@ TODAY_TIERS = {
     4: "Apply",
     5: "Decide",
     6: "Waiting on them",
+    8: "Decline — dealbreaker in the pitch",
     9: "Probably dead — check in or close",
 }
 
@@ -1649,6 +1664,9 @@ def annotate_today_order(
         ranked.append(((tier, *sub), item))
 
     for item in clarify:
+        if item.get("dealbreaker"):
+            _add(item, 8, (-int(item.get("ageDays") or 0),))
+            continue
         _add(item, 1, (0 if item.get("replyDue") else 1, -int(item.get("unansweredDays") or 0)))
     for item in send_resume:
         if item.get("resumeRequested"):
@@ -1987,6 +2005,7 @@ def build_workflow_payload(
                 unanswered_days=int(item.get("unansweredDays") or 0),
                 screen_first=bool(item.get("screenFirst")),
                 routes=item["replyPlan"]["routes"],
+                dealbreaker=item.get("dealbreaker") or "",
             )
     annotate_today_order(
         clarify=clarify,

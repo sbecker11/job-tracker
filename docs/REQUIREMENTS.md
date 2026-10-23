@@ -123,6 +123,7 @@ Machine copy: `config/framework.yaml` (kept in sync by `verify_framework_sync`).
 | EVAL-9 | A rejection from the same company+role within 90 days forces `pass` in every evaluation path, including the LLM sweep. | tests: `test_triage.py`, `test_process_awaiting_llm_review.py` | OK (2026-10-22; the sweep skips the lead with a note before any LLM call) |
 | EVAL-10 | Cost reporting uses current model prices. | — | OK (2026-10-22). Anthropic made $2/$10 Sonnet 5's standard price, so the numbers were right; the stale comment is fixed and there is now one price table (`llm_extract`). |
 | EVAL-11 | Every Anthropic API call (job-tracker and comms-migration) appends one line to `<workspace>/var/llm-calls.jsonl`; `spend_report` totals it per month and source so it can be checked against Anthropic's bills (`~/CLAUDE.md` §14). (Added 2026-10-22.) | tests: `test_llm_call_log.py`, comms `test_llm_classify.py` | OK |
+| EVAL-12 | Onsite-only (§3) also covers the vendor-pitch form `Location: <city, state> - Onsite` / `(Onsite)`. A Utah location (Lehi, Salt Lake, Provo, Orem, Draper, Sandy, American Fork, Pleasant Grove, South Jordan, UT/Utah) is not a hit, and neither is `Onsite/Remote` or `Onsite/Hybrid`. (Added 2026-10-22 after a Diverse Lynx "Milford, OH OR Santa Clara, CA - Onsite" pitch ranked #1 in Today.) | `framework.yaml` `onsite_only`; test: `test_pitch_dealbreaker.py` | OK — 2026-10-22; against stored JDs the new pattern hits 5 leads, all real out-of-state onsite roles, all already skipped. GAP: the JD sweep (`scorer._split_hard_soft`) treats a short line like `Location: Austin, TX (Onsite)` as a heading and skips it; the pitch check reads raw text, so only scoring is affected |
 
 ## 8. Lead lifecycle
 
@@ -164,8 +165,11 @@ Craft and naming: `~/CLAUDE.md` §4, §5, §10, §12.
 | CARD-4 | **Wait** = waiting on them (`awaiting_response_since` set); follow-up becomes due at `wait_followup_days` (7). | test: `test_pending_workflow.py` | OK |
 | CARD-5 | **Decide/apply** = scored leads needing Shawn's verdict or an ATS application. | test: `test_render_pending_actions.py` | OK |
 | CARD-6 | Age limits, deliberately different (decided 2026-10-22): first-touch Clarify cards drop after 14 days; leads auto-skip after 21 quiet days (LIFE-2); replies on live threads stay in Clarify up to 30 days; leads with no wait clock count as probably dead after 30 quiet days, waiting leads after 45. All five live in `config/framework.yaml`. | — | GAP — values are code constants today |
-| CARD-7 | One "today" order across stages (`annotate_today_order`): replies owed first, then requested résumés, then due follow-ups, then ready-to-apply, then other decisions, then quiet waits, then probably-dead. Within a tier the backend's order is final; the page doesn't re-sort. | test: `test_pending_workflow.py` | **BROKEN** — renderer and page disagree on Decide order |
+| CARD-7 | One "today" order across stages (`annotate_today_order`): replies owed first, then requested résumés, then due follow-ups, then ready-to-apply, then other decisions, then quiet waits, then pitches to decline (CARD-10), then probably-dead. Within a tier the backend's order is final; the page doesn't re-sort. | test: `test_pending_workflow.py` | **BROKEN** — renderer and page disagree on Decide order |
 | CARD-8 | `replyDue`, `unansweredDays` mean the same thing on every card: days since the oldest unanswered human inbound. | test: `test_timestamp_order.py` (`_unanswered_days`) | OK (2026-10-22). The 30-day cut-off still uses the newest unanswered message, so an old thread with a fresh reply stays visible. |
+| CARD-9 | A pitch that itself states a structural dealbreaker — onsite-only outside Utah (EVAL-12) or Eastern time required (LIFE-2) — never gets a clarifying draft that asks about it. Its card's draft is the decline letter (`decline.pitch_dealbreaker`: reason `location`, or an Eastern-time note), and the card names the dealbreaker. Stack dealbreakers (Go, Django, PHP, Angular, .NET) wait for the JD review; C2C-only keeps the clarifier (DRAFT-8). | test: `test_pitch_dealbreaker.py` | OK — 2026-10-22, unmatched email cards. GAP: a matched lead's first-touch card still relies on its score |
+| CARD-10 | A dealbreaker card is not a reply owed: Today ranks it in tier 8 "Decline — dealbreaker in the pitch" (after Waiting on them, before Probably dead), oldest first, never tier 1. | test: `test_pitch_dealbreaker.py` | OK — 2026-10-22 |
+| CARD-11 | Declining an unmatched pitch also closes it as a lead: a stub lead `<Agency> (end-client TBD)` / `<title>` with the recruiter as contact, status `skipped`, the dealbreaker as the reason, and the email attached, so a later message on that thread matches the skipped lead instead of opening a new card. | manual today: `resolve_communication.py --create`, then `set-lead-status --status skipped --reason …` | GAP — the unmatched card only offers Dismiss; needs a "Decline & skip" action that does all of this in one step (done by hand for Diverse Lynx 2026-10-22) |
 
 ### 10b. How to reach the recruiter (send routes)
 
@@ -237,11 +241,13 @@ Highest impact first. Each fix ships with the test/check named in its rule.
 
 1. ~~**ING-1 / ING-6 data cleanup**~~ — done 2026-10-22: 19 own-address contacts removed, 21 duplicate inbound copies deleted, 16 replies flipped to outbound, 74 misfiled forwards detached (not re-triaged; they were old alerts). The two "Spexture" leads were already skipped and are left as is.
 2. ~~**EVAL-5**~~ — done 2026-10-22. Rescoring stored JDs under the new rules flips 14 skipped leads from pass to pursue (old misfire: English "go"); none were reopened.
-3. **ROUTE-1 / §12** — page re-derives channel and recipients (source of today's LinkedIn/email confusion).
+3. ~~**ROUTE-1 / §12**~~ — done 2026-10-22: the page uses the backend reply plan.
 4. ~~**DRAFT-4 / DRAFT-1 / CON-1 / CON-2**~~ — done 2026-10-22; the card check is clean.
 5. ~~**PKG-2**~~ — done 2026-10-22.
 6. ~~**CARD-1 / CARD-8 / TURN-3**~~ — done 2026-10-22.
-7. **LOG-5, MAT-5, NEXT-2, ROUTE-5 (page side), LIFE-5** — smaller fixes.
+7. ~~**LOG-5, MAT-5, NEXT-2, ROUTE-5 (page side), LIFE-5**~~ — done 2026-10-22.
+8. ~~**MAT-4, CON-5, CON-6**~~ — done 2026-10-22.
+9. **CARD-11** — a "Decline & skip" action on unmatched cards (stub lead + skip + logged letter in one step).
 
 ## 14. Open decisions for Shawn
 
