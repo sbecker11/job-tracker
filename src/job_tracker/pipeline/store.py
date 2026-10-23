@@ -1515,44 +1515,65 @@ _LINKEDIN_REPLIED_RE = re.compile(r"^\s*Message replied\b", re.I)
 INFERRED_REPLY_PREFIX = "inferred-reply:"
 
 
-def _log_inferred_linkedin_reply(conn: sqlite3.Connection, conversation: JobConversation) -> None:
+def inferred_reply_due(
+    conn: sqlite3.Connection, job_key: str, summary: str, occurred_at: str, *, exclude_id: int | None = None
+) -> datetime | None:
     """REQUIREMENTS TURN-6: LinkedIn sends "Message replied: …" only when someone
-    answers a message Shawn sent, but never emails Shawn's own message. When
-    nothing outbound is logged since their previous message, log that Shawn
-    replied (text unknown) a minute before this one, so whose-turn is right.
-    Back-to-back notices are the recruiter writing twice, not two replies."""
-    if not _LINKEDIN_REPLIED_RE.match(conversation.summary or ""):
-        return
-    when = _parse_iso((conversation.occurred_at or "").replace("Z", "+00:00"))
+    answers a message Shawn sent, but never emails Shawn's own message. Returns
+    the notice's time when nothing outbound is logged since their previous
+    message, else None. Back-to-back notices are the recruiter writing twice,
+    not two replies. `exclude_id`: the notice's own row, when already stored."""
+    if not _LINKEDIN_REPLIED_RE.match(summary or ""):
+        return None
+    when = _parse_iso((occurred_at or "").replace("Z", "+00:00"))
     if when is None:
-        return
+        return None
     earlier = []
     for r in conn.execute(
-        "SELECT direction, occurred_at, summary FROM job_conversations WHERE job_key = ? "
+        "SELECT id, direction, occurred_at, summary FROM job_conversations WHERE job_key = ? "
         "AND direction IN ('inbound', 'outbound')",
-        (conversation.job_key,),
+        (job_key,),
     ):
+        if r["id"] == exclude_id:
+            continue
         at = _parse_iso((r["occurred_at"] or "").replace("Z", "+00:00"))
         if at is not None and at <= when:
             earlier.append((at, r["direction"], r["summary"] or ""))
     if earlier:
-        _, direction, summary = max(earlier)
-        if direction == "outbound" or _LINKEDIN_REPLIED_RE.match(summary):
-            return
-    sent_at = (when - timedelta(minutes=1)).isoformat()
+        _, direction, prior = max(earlier)
+        if direction == "outbound" or _LINKEDIN_REPLIED_RE.match(prior):
+            return None
+    return when
+
+
+def insert_inferred_reply(
+    conn: sqlite3.Connection, *, job_key: str, contact_id: int | None, message_id: str, notice_at: datetime
+) -> None:
     conn.execute(
         """
         INSERT INTO job_conversations (job_key, contact_id, message_id, channel, direction, summary, occurred_at, body_text)
         VALUES (?, ?, ?, 'linkedin', 'outbound', ?, ?, '')
         """,
         (
-            conversation.job_key,
-            conversation.contact_id,
-            f"{INFERRED_REPLY_PREFIX}{conversation.message_id}",
+            job_key,
+            contact_id,
+            f"{INFERRED_REPLY_PREFIX}{message_id}",
             "You replied on LinkedIn (inferred from LinkedIn's \"Message replied\" notice; text not captured)",
-            sent_at,
+            (notice_at - timedelta(minutes=1)).isoformat(),
         ),
     )
+
+
+def _log_inferred_linkedin_reply(conn: sqlite3.Connection, conversation: JobConversation) -> None:
+    when = inferred_reply_due(conn, conversation.job_key, conversation.summary, conversation.occurred_at)
+    if when is not None:
+        insert_inferred_reply(
+            conn,
+            job_key=conversation.job_key,
+            contact_id=conversation.contact_id,
+            message_id=conversation.message_id,
+            notice_at=when,
+        )
 
 
 def add_job_conversation(
