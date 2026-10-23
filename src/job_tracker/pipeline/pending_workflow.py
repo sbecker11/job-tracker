@@ -19,6 +19,7 @@ from job_tracker.pipeline.qualifying_reply import (
     detect_pitch_gaps,
     draft_qualifying_reply,
     extract_linkedin_thread_url,
+    is_candidate_marketing,
 )
 from job_tracker.pipeline.reply_continuity import (
     RECRUITING_GMAIL_USER,
@@ -630,6 +631,8 @@ def build_clarify_queue(
         if fr.strip().lower() in {"hit-reply@linkedin.com", "inmail-hit-reply@linkedin.com"}:
             continue
         body = m.get("body") or ""
+        if is_candidate_marketing(body, subject=m.get("subject") or ""):
+            continue
         blocker = pitch_dealbreaker(
             body, subject=m.get("subject") or "", recruiter_name=name, title=m.get("titleGuess") or ""
         )

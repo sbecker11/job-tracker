@@ -75,6 +75,10 @@ _SUBJECT_ROLE_NOUN_RE = re.compile(
 _SUBJECT_TRAILING_NOISE_RE = re.compile(
     r"(?i)\s+(?:job\s+)?(?:opportunity|opening|position|role)\s*$"
 )
+_SUBJECT_LEADING_NOISE_RE = re.compile(
+    r"(?i)^(?:(?:(?:100%\s*)?remote|hybrid|onsite|urgent(?:ly)?(?:\s+hiring)?|hiring|immediate\s+need)\s*[/:|\-–]+\s*)+"
+    r"|^(?i:(?:job\s+)?(?:role|opening|opportunity|position|requirement)\s+(?:for|of)\s+(?:an?\s+)?)"
+)
 _LINKEDIN_FOOTER_MARKERS = ("This email was intended", "Learn why we included", "Unsubscribe:")
 
 # Signals that engagement type / location / client are already answered.
@@ -134,6 +138,26 @@ _SCREEN_CALL_BEFORE_JD_RE = re.compile(
     r"i can share (who the client is|the client|more) when we"
     r")"
 )
+_CANDIDATE_MARKETING_RES = tuple(
+    re.compile(p, re.I)
+    for p in (
+        r"\brelevant (?:to|for) your (?:team|hiring|company|org)",
+        r"\bsend (?:you |over )?(?:the|his|her|their|this) (?:profile|resume|résumé|cv)\b",
+        r"\bif you(?:'|’)?re (?:adding|hiring|growing|building out)\b",
+        r"\b(?:he|she|they)(?:'|’)?(?:s|re) (?:particularly |especially |really )?(?:strong|available|open to)\b",
+        r"\b\d+\s*(?:-|–|to)?\s*\d*\+?\s*YOE\b",
+        r"\b(?:engineer|candidate|profile)s? from (?:the|my|our) network\b",
+        r"\bprofile (?:at|of) this level\b",
+    )
+)
+
+
+def is_candidate_marketing(body: str, *, subject: str = "") -> bool:
+    """REQUIREMENTS CARD-12: a recruiter offering Shawn candidates for *his*
+    team (Shawn as hiring manager), not offering him a role. Two signals
+    required so a normal pitch that mentions "your team" once isn't dropped."""
+    text = f"{subject}\n{body}"
+    return sum(1 for rx in _CANDIDATE_MARKETING_RES if rx.search(text)) >= 2
 
 
 @dataclass
@@ -192,6 +216,9 @@ def _title_from_subject(subject: str) -> str:
     cleaned = re.sub(r"(?i)^\s*(?:re|fwd?)\s*:\s*", "", subject or "").strip()
     head = _SUBJECT_SPLIT_RE.split(cleaned, maxsplit=1)[0].strip(" -–—|,")
     head = _SUBJECT_TRAILING_NOISE_RE.sub("", head).strip()
+    for _ in range(2):
+        head = _SUBJECT_LEADING_NOISE_RE.sub("", head).strip()
+    head = re.sub(r"\s{2,}", " ", head)
     if not _SUBJECT_ROLE_NOUN_RE.search(head) or len(head) > 80:
         return ""
     return head
