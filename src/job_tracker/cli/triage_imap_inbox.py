@@ -77,22 +77,19 @@ from job_tracker.pipeline.comms_match import match_message_to_job
 from job_tracker.pipeline.llm_apply import DEFAULT_MODEL, DEFAULT_OUTPUT_ROOT
 from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_EXTRACT_MODEL
 from job_tracker.pipeline.llm_interview import extract_interview_details_llm
-from job_tracker.pipeline.models import JobContact, JobConversation, UnmatchedMessage
+from job_tracker.pipeline.contact_intake import record_message_contact
+from job_tracker.pipeline.models import JobConversation, UnmatchedMessage
 from job_tracker.pipeline.post_application import (
     PostApplicationLabel,
     apply_post_application_signal,
     classify_post_application,
 )
-from job_tracker.pipeline.signature import parse_signature
 from job_tracker.pipeline.store import (
     DEFAULT_DB_PATH,
     DEFAULT_REJECTION_COOLDOWN_DAYS,
-    GENERIC_RELAY_ADDRESSES,
-    add_job_contact,
     add_job_conversation,
     advance_status,
     connect as db_connect,
-    contact_addresses_from_inbound,
     find_matching_job,
     is_communication_seen,
     is_own_sent_message,
@@ -190,27 +187,7 @@ def _link_existing_conversation(
         print("  (dry run — no IMAP move applied, no conversation stored)")
         return
 
-    detected = parse_signature(message.combined_text)
-    contact_email, linkedin_reply_to = contact_addresses_from_inbound(
-        from_address=message.from_address,
-        reply_to=getattr(message, "reply_to", "") or "",
-        signature_email=(detected.email if detected else ""),
-    )
-
-    contact_id = None
-    if contact_email or linkedin_reply_to or (detected and (detected.name or detected.phone)):
-        contact_id = add_job_contact(
-            conn,
-            JobContact(
-                job_key=outcome.job_key,
-                name=detected.name if detected else "",
-                email=contact_email,
-                phone=detected.phone if detected else "",
-                linkedin_reply_to=linkedin_reply_to,
-                role="recruiter",
-                source_message_id=message.id,
-            ),
-        )
+    contact_id = record_message_contact(conn, outcome.job_key, message)
 
     # Post-application signal detection (2026-07-22) — see
     # pipeline/post_application.py's module docstring.
@@ -241,6 +218,19 @@ def _link_existing_conversation(
         ),
     )
     _file_message(imap_conn, uid, source_folder=source_folder, to_folder=_LINKED_FOLDER, file_mail=file_mail)
+
+
+def _single_role_thread_fields(message, result) -> dict:
+    """Thread id, Message-Id and body for a new lead's first conversation, so
+    a reply on that thread finds it (MAT-4). Left off for a digest that names
+    several roles: one thread can't point at all of them."""
+    if len(result.roles) != 1:
+        return {}
+    return {
+        "thread_id": message.thread_id,
+        "rfc_message_id": message.rfc_message_id,
+        "body_text": message.combined_text,
+    }
 
 
 def _handle_linkedin_reply(
@@ -284,26 +274,7 @@ def _handle_linkedin_reply(
             action = "linked (+ jd_text updated)"
 
     if job_key is not None:
-        detected = parse_signature(message.combined_text)
-        contact_email, linkedin_reply_to = contact_addresses_from_inbound(
-            from_address=message.from_address,
-            reply_to=getattr(message, "reply_to", "") or "",
-            signature_email=(detected.email if detected else ""),
-        )
-        contact_id = None
-        if contact_email or linkedin_reply_to or (detected and (detected.name or detected.phone)):
-            contact_id = add_job_contact(
-                conn,
-                JobContact(
-                    job_key=job_key,
-                    name=detected.name if detected else "",
-                    email=contact_email,
-                    phone=detected.phone if detected else "",
-                    linkedin_reply_to=linkedin_reply_to,
-                    role="recruiter",
-                    source_message_id=message.id,
-                ),
-            )
+        contact_id = record_message_contact(conn, job_key, message)
 
         # Post-application signal detection (2026-07-22) — see
         # pipeline/post_application.py's module docstring.
@@ -696,9 +667,8 @@ def main(argv: list[str] | None = None) -> int:
                         f"linking this contact there instead of a new job"
                     )
 
-                contact_id = add_job_contact(
-                    conn,
-                    JobContact(job_key=job_key, email=result.from_address, role="recruiter", source_message_id=message.id),
+                contact_id = record_message_contact(
+                    conn, job_key, message, read_signature=len(result.roles) == 1
                 )
                 add_job_conversation(
                     conn,
@@ -708,6 +678,7 @@ def main(argv: list[str] | None = None) -> int:
                         message_id=message.id,
                         direction="inbound",
                         summary=result.subject,
+                        **_single_role_thread_fields(message, result),
                     ),
                 )
 

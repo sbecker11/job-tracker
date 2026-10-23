@@ -94,7 +94,7 @@ is updated first.
 | CON-2 | A contact's **email** is a real, person-reachable address: not a relay, role mailbox, job board, Shawn's own, or a URL. A `@reply.linkedin.com` address goes to `linkedin_reply_to`, never `email`. | check: `bad_email`; test: `test_contact_fields.py` | OK (2026-10-22; one rule, `store.is_person_email`, used by the page builder and the card check; LinkedIn links typed as email move to `linkedin_url`) |
 | CON-3 | Phones keep their label. A number labelled office / main / desk / fax is callable but not textable. | test: `test_reply_plan.py`; check: `text_to_office_line` | OK — 2026-10-22: the reply plan offers Call, not Text, for an office-labelled number |
 | CON-4 | Contacts dedupe within a lead by email, then `linkedin_reply_to`, then name; a repeat only fills missing fields. | test: `test_store.py` | OK |
-| CON-5 | One contact-building function is used by every intake path (signature parse, Reply-To, relay filtering). | — | **BROKEN** — three copies; `triage_recruiter_inbox`'s skips Reply-To and relay filtering |
+| CON-5 | One contact-building function is used by every intake path (signature parse, Reply-To, relay filtering). | test: `test_contact_intake.py` | OK — 2026-10-22: `pipeline/contact_intake.record_message_contact` is used by Gmail triage, IMAP triage and the communications scan, including the new-lead path, which used to save the raw From address (relay senders included). A digest that names several roles skips the signature |
 | CON-6 | "The recruiter" for a lead is chosen one way everywhere: role `recruiter` first, then the most recently active human contact. | — | **BROKEN** — five different picks (§12) |
 
 ## 6. Turn tracking (whose move)

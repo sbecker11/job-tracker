@@ -106,21 +106,18 @@ from job_tracker.pipeline.comms_match import match_message_to_job
 from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT, _job_folder, _safe_filename
 from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_EXTRACT_MODEL
 from job_tracker.pipeline.llm_interview import extract_interview_details_llm
-from job_tracker.pipeline.models import JobContact, JobConversation, JobDocument, JobLead, UnmatchedMessage
+from job_tracker.pipeline.contact_intake import record_message_contact
+from job_tracker.pipeline.models import JobConversation, JobDocument, JobLead, UnmatchedMessage
 from job_tracker.pipeline.post_application import (
     PostApplicationLabel,
     apply_post_application_signal,
     classify_post_application,
 )
-from job_tracker.pipeline.signature import parse_signature
 from job_tracker.pipeline.store import (
     DEFAULT_DB_PATH,
-    GENERIC_RELAY_ADDRESSES,
-    add_job_contact,
     add_job_conversation,
     add_job_document,
     connect,
-    contact_addresses_from_inbound,
     get_sibling_titles,
     is_communication_seen,
     record_message_processed,
@@ -312,39 +309,7 @@ def _scan_one(
             result["action"] = "linked (+ jd_text updated)"
 
     if job_key is not None:
-        contact_id = None
-        other_address = message.from_address if direction == "inbound" else message.to_address
-        # Real recruiter name/email/phone often sit in the message body
-        # itself (LinkedIn's sender-block template, or the recruiter's own
-        # typed sign-off) even though the `From:` header is always a
-        # generic relay address for InMail — see pipeline/signature.py.
-        # Inbound only: an outbound (Sent-folder) message is Shawn's own
-        # writing, and parsing it here could mistake his own sign-off for
-        # the recruiter's.
-        detected = parse_signature(message.combined_text) if direction == "inbound" else None
-        contact_email = ""
-        linkedin_reply_to = ""
-        if direction == "inbound":
-            contact_email, linkedin_reply_to = contact_addresses_from_inbound(
-                from_address=message.from_address,
-                reply_to=getattr(message, "reply_to", "") or "",
-                signature_email=(detected.email if detected else ""),
-            )
-        elif other_address and other_address.strip().lower() not in GENERIC_RELAY_ADDRESSES:
-            contact_email = other_address
-        if contact_email or linkedin_reply_to or (detected and (detected.name or detected.phone)):
-            contact_id = add_job_contact(
-                conn,
-                JobContact(
-                    job_key=job_key,
-                    name=detected.name if detected else "",
-                    email=contact_email,
-                    phone=detected.phone if detected else "",
-                    linkedin_reply_to=linkedin_reply_to,
-                    role="recruiter",
-                    source_message_id=message_id,
-                ),
-            )
+        contact_id = record_message_contact(conn, job_key, message, direction=direction, message_id=message_id)
 
         # Post-application signal detection (2026-07-22): a message matched
         # to an existing lead may itself be a rejection, an application-

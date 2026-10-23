@@ -107,18 +107,16 @@ from job_tracker.pipeline.comms_match import match_message_to_job
 from job_tracker.pipeline.llm_apply import DEFAULT_MODEL, DEFAULT_OUTPUT_ROOT
 from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_EXTRACT_MODEL
 from job_tracker.pipeline.llm_interview import extract_interview_details_llm
-from job_tracker.pipeline.models import JobContact, JobConversation
+from job_tracker.pipeline.contact_intake import record_message_contact
+from job_tracker.pipeline.models import JobConversation
 from job_tracker.pipeline.post_application import (
     PostApplicationLabel,
     apply_post_application_signal,
     classify_post_application,
 )
-from job_tracker.pipeline.signature import parse_signature
 from job_tracker.pipeline.store import (
     DEFAULT_DB_PATH,
     DEFAULT_REJECTION_COOLDOWN_DAYS,
-    GENERIC_RELAY_ADDRESSES,
-    add_job_contact,
     add_job_conversation,
     advance_status,
     connect,
@@ -192,26 +190,7 @@ def _link_existing_conversation(
     # signature block even though `From:` is frequently a generic relay
     # address — see pipeline/signature.py. Never record a generic relay
     # address as *the* contact (poisons future thread/contact matching).
-    detected = parse_signature(message.combined_text)
-    contact_email = ""
-    if detected and detected.email:
-        contact_email = detected.email
-    elif message.from_address.strip().lower() not in GENERIC_RELAY_ADDRESSES:
-        contact_email = message.from_address
-
-    contact_id = None
-    if contact_email or (detected and (detected.name or detected.phone)):
-        contact_id = add_job_contact(
-            conn,
-            JobContact(
-                job_key=outcome.job_key,
-                name=detected.name if detected else "",
-                email=contact_email,
-                phone=detected.phone if detected else "",
-                role="recruiter",
-                source_message_id=message.id,
-            ),
-        )
+    contact_id = record_message_contact(conn, outcome.job_key, message)
     # Post-application signal detection (2026-07-22): this reply may itself
     # be a rejection, an application-received confirmation, or an interview
     # invite for the lead it's linked to — see pipeline/post_application.py.
@@ -243,6 +222,19 @@ def _link_existing_conversation(
     )
     if linked_label_id is not None:
         gmail_writer.label_and_archive(service, message.id, linked_label_id, archive=True)
+
+
+def _single_role_thread_fields(message, result) -> dict:
+    """Thread id, Message-Id and body for a new lead's first conversation, so
+    a reply on that thread finds it (MAT-4). Left off for a digest that names
+    several roles: one thread can't point at all of them."""
+    if len(result.roles) != 1:
+        return {}
+    return {
+        "thread_id": message.thread_id,
+        "rfc_message_id": message.rfc_message_id,
+        "body_text": message.combined_text,
+    }
 
 
 def _print_result(result, *, dry_run: bool) -> None:
@@ -653,14 +645,8 @@ def main(argv: list[str] | None = None) -> int:
                         f"linking this contact there instead of a new job"
                     )
 
-                contact_id = add_job_contact(
-                    conn,
-                    JobContact(
-                        job_key=job_key,
-                        email=result.from_address,
-                        role="recruiter",
-                        source_message_id=message_id,
-                    ),
+                contact_id = record_message_contact(
+                    conn, job_key, message, message_id=message_id, read_signature=len(result.roles) == 1
                 )
                 add_job_conversation(
                     conn,
@@ -670,6 +656,7 @@ def main(argv: list[str] | None = None) -> int:
                         message_id=message_id,
                         direction="inbound",
                         summary=result.subject,
+                        **_single_role_thread_fields(message, result),
                     ),
                 )
 
