@@ -21,6 +21,7 @@ from job_tracker.pipeline.qualifying_reply import (
     extract_linkedin_thread_url,
     is_candidate_marketing,
 )
+from job_tracker.pipeline.reply_intent import draft_live_thread_reply
 from job_tracker.pipeline.reply_continuity import (
     RECRUITING_GMAIL_USER,
     enrich_item_reply_links,
@@ -809,7 +810,7 @@ def build_clarify_queue(
                 gaps.screen_first,
             )
         )
-        draft_body = (
+        draft_body = draft_live_thread_reply(body, first_name=drafted.first_name, gaps=gaps) or (
             drafted.body
             if still_needs_clarifiers and drafted.body.strip()
             else draft_recruiter_followup_ack(
