@@ -22,6 +22,7 @@ from typing import Any, Callable
 from urllib.parse import quote
 
 from job_tracker.email.imap_reader import ImapAccount, connect as imap_connect, fetch_message
+from job_tracker.pipeline.store import recruiter_contacts
 
 HOSTINGER_MAILBOX_BASE = "https://mail.hostinger.com/0/mailboxes"
 
@@ -518,10 +519,7 @@ def _collapse_db_hits_to_leads(
 
     out: list[dict[str, Any]] = []
     for key, hit in by_key.items():
-        contact = conn.execute(
-            "SELECT name, email FROM job_contacts WHERE job_key = ? ORDER BY id LIMIT 1",
-            (key,),
-        ).fetchone()
+        contact = next(iter(recruiter_contacts(conn, key)), None)
         if contact:
             if not hit.get("from_address") and contact["email"]:
                 hit["from_address"] = contact["email"]

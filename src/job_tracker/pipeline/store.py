@@ -2136,6 +2136,24 @@ def contact_addresses_from_inbound(
     return email, li_reply
 
 
+# REQUIREMENTS CON-6: "the recruiter" for a lead is the role-`recruiter`
+# contact first, then whoever was in touch most recently. Every picker uses
+# this order; SQL callers that batch many leads splice it into ORDER BY.
+RECRUITER_ORDER_SQL = (
+    "CASE WHEN COALESCE(role, '') = 'recruiter' THEN 0 ELSE 1 END, "
+    "COALESCE(NULLIF(last_contacted_at, ''), first_contacted_at, '') DESC, id DESC"
+)
+
+
+def recruiter_contacts(conn: sqlite3.Connection, job_key: str) -> list[sqlite3.Row]:
+    """A lead's human contacts (never role `company`), best recruiter first."""
+    return conn.execute(
+        f"SELECT * FROM job_contacts WHERE job_key = ? AND COALESCE(role, '') != 'company' "
+        f"ORDER BY {RECRUITER_ORDER_SQL}",
+        (job_key,),
+    ).fetchall()
+
+
 def _conversation_rfc_id(conversation: JobConversation) -> str:
     """Stored Message-Id: the explicit one, else the one inside an IMAP id."""
     if conversation.rfc_message_id:

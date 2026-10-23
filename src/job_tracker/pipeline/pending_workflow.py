@@ -27,6 +27,8 @@ from job_tracker.pipeline.reply_continuity import (
 )
 from job_tracker.pipeline.signature import parse_signature
 from job_tracker.pipeline.store import (
+    recruiter_contacts,
+    RECRUITER_ORDER_SQL,
     GENERIC_RELAY_ADDRESSES,
     is_person_email,
     list_job_conversations,
@@ -715,7 +717,7 @@ def build_clarify_queue(
                 "kind": "lead",
                 "stage": "clarify",
                 "channel": channel,
-                "recruiterName": draft.recruiter_name or recruiter,
+                "recruiterName": recruiter or draft.recruiter_name,
                 "recruiterEmail": email,
                 "recruiterPhone": phone,
                 "emailIsLinkedInRelay": email_is_li_relay,
@@ -944,8 +946,10 @@ def _send_route_fields(conn, job_key: str) -> dict:
         if role == "company" and email and "companyEmail" not in fields:
             fields["companyEmail"] = email
             fields["companyContactName"] = (r["name"] or "").strip()
-        elif role != "company" and (r["linkedin_url"] or "").strip() and "recruiterLinkedinUrl" not in fields:
+    for r in recruiter_contacts(conn, job_key):
+        if (r["linkedin_url"] or "").strip():
             fields["recruiterLinkedinUrl"] = r["linkedin_url"].strip()
+            break
     fields.update(_resolve_recipient(conn, job_key))
     return fields
 
@@ -967,13 +971,7 @@ def _resolve_recipient(conn, job_key: str) -> dict:
     email: the same person on another lead (matched by phone or name+email),
     their signature in this lead's stored inbound messages, or a saved LinkedIn
     reply thread. Read-only — Save contact is what persists a correction."""
-    contacts = [
-        dict(r)
-        for r in conn.execute(
-            "SELECT * FROM job_contacts WHERE job_key = ? AND COALESCE(role, '') != 'company' ORDER BY id DESC",
-            (job_key,),
-        ).fetchall()
-    ]
+    contacts = [dict(r) for r in recruiter_contacts(conn, job_key)]
     if any(_usable_email(c.get("email") or "") for c in contacts):
         return {}
     out: dict = {}
@@ -1028,14 +1026,7 @@ def _recruiter_contact(conn, job_key: str) -> tuple[str, str, str, bool]:
     added so Clarify/Send résumé/Wait's "search" boxes can match on phone
     the same way ArchivedLeadsPanel's already does, without a second query.
     """
-    row = conn.execute(
-        """
-        SELECT name, email, phone, linkedin_reply_to FROM job_contacts
-        WHERE job_key = ? AND COALESCE(role, '') != 'company'
-        ORDER BY CASE WHEN role = 'recruiter' THEN 0 ELSE 1 END, first_contacted_at ASC
-        """,
-        (job_key,),
-    ).fetchall()
+    row = recruiter_contacts(conn, job_key)
     fallback_name, fallback_li, fallback_phone = "", "", ""
     for r in row:
         raw_email = (r["email"] or "").strip()
@@ -1197,9 +1188,7 @@ def _thread_url_for_lead(convs: list, conn=None, job_key: str = "") -> str:
         if url:
             return url
     if conn is not None and job_key:
-        for r in conn.execute(
-            "SELECT email, linkedin_url, linkedin_reply_to FROM job_contacts WHERE job_key = ?", (job_key,)
-        ):
+        for r in recruiter_contacts(conn, job_key):
             for value in (r["linkedin_reply_to"], r["email"], r["linkedin_url"]):
                 url = extract_linkedin_thread_url(value or "")
                 if url:
@@ -1820,8 +1809,8 @@ def _list_archived_leads(conn, *, age_days_fn: Callable[[str | None, datetime], 
     # Earliest-contacted recruiter per lead (2026-08-19, for the "search
     # company or title" box's expanded scope) — one batched query rather
     # than N+1 per-lead lookups, since this list can run to 1000+ rows.
-    # `setdefault` keeps only the first row per job_key given the
-    # `ORDER BY job_key, first_contacted_at ASC`.
+    # `setdefault` keeps only the first row per job_key, which is the
+    # CON-6 recruiter given `RECRUITER_ORDER_SQL`.
     lead_keys = [r["normalized_key"] for r in rows]
     contacts: dict[str, dict] = {}
     if lead_keys:
@@ -1830,8 +1819,8 @@ def _list_archived_leads(conn, *, age_days_fn: Callable[[str | None, datetime], 
             f"""
             SELECT job_key, name, email, phone
             FROM job_contacts
-            WHERE job_key IN ({ph})
-            ORDER BY job_key, first_contacted_at ASC
+            WHERE job_key IN ({ph}) AND COALESCE(role, '') != 'company'
+            ORDER BY job_key, {RECRUITER_ORDER_SQL}
             """,
             tuple(lead_keys),
         ):

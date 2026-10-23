@@ -47,6 +47,7 @@ from job_tracker.pipeline.qualifying_reply import (  # noqa: E402
     promote_heuristic_unmatched,
 )
 from job_tracker.pipeline.store import (  # noqa: E402
+    recruiter_contacts,
     DEFAULT_DB_PATH,
     apply_url_identity,
     connect,
@@ -857,15 +858,11 @@ def _build_linkedin_reply_queue(
         if not _is_first_touch_linkedin_subject(subj):
             continue
         body = inbound["body_text"] or ""
-        known = conn.execute(
-            "SELECT name FROM job_contacts WHERE job_key = ? AND COALESCE(name, '') != '' "
-            "AND COALESCE(role, '') != 'company' ORDER BY id LIMIT 1",
-            (r["normalized_key"],),
-        ).fetchone()
+        known = next((c for c in recruiter_contacts(conn, r["normalized_key"]) if (c["name"] or "").strip()), None)
         draft = draft_qualifying_reply(
             body,
             subject=subj,
-            known_recruiter_name=known[0] if known else "",
+            known_recruiter_name=known["name"] if known else "",
             received_at=inbound["occurred_at"] or "",
         )
         # Need a real thread link or a named recruiter — skip empty stubs.

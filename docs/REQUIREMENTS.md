@@ -95,7 +95,7 @@ is updated first.
 | CON-3 | Phones keep their label. A number labelled office / main / desk / fax is callable but not textable. | test: `test_reply_plan.py`; check: `text_to_office_line` | OK — 2026-10-22: the reply plan offers Call, not Text, for an office-labelled number |
 | CON-4 | Contacts dedupe within a lead by email, then `linkedin_reply_to`, then name; a repeat only fills missing fields. | test: `test_store.py` | OK |
 | CON-5 | One contact-building function is used by every intake path (signature parse, Reply-To, relay filtering). | test: `test_contact_intake.py` | OK — 2026-10-22: `pipeline/contact_intake.record_message_contact` is used by Gmail triage, IMAP triage and the communications scan, including the new-lead path, which used to save the raw From address (relay senders included). A digest that names several roles skips the signature |
-| CON-6 | "The recruiter" for a lead is chosen one way everywhere: role `recruiter` first, then the most recently active human contact. | — | **BROKEN** — five different picks (§12) |
+| CON-6 | "The recruiter" for a lead is chosen one way everywhere: role `recruiter` first, then the most recently active human contact. | test: `test_recruiter_pick.py` | OK — 2026-10-22: `store.recruiter_contacts` (and `RECRUITER_ORDER_SQL` for the batched archived list) is the only order; the clarify card, Send to fallback, LinkedIn profile, thread link, archived rows, first-touch drafts and Find mail all use it. A stored recruiter name now wins over a name guessed from a draft |
 
 ## 6. Turn tracking (whose move)
 
@@ -222,7 +222,7 @@ drifted — the root cause of most repeat bugs. Target owners:
 | Decision | Owner (single source) | Current extra copies to remove |
 |---|---|---|
 | Channel of a conversation | intake (ING-3), stored on `job_conversations` | `_channel_from_addresses` ×7 call sites, `_next_action_clarify`, UI `messageTarget`, `links.ts`, `card_audit` |
-| Who "the recruiter" is | one store function (CON-6) | `_recruiter_contact`, renderer oldest-by-id, `_send_route_fields` newest-by-id, archived-row pick, draft-name precedence |
+| Who "the recruiter" is | one store function (CON-6) | none — done 2026-10-22 (`store.recruiter_contacts`) |
 | Is an address usable / a relay | one module (CON-2) | `_is_system_email`, `_usable_email`, `_NO_REPLY_RE`, UI `OWN_EMAIL_RE`/`SYSTEM_EMAIL_RE`, `card_audit._BOARD_RE`, LinkedIn sender sets ×3 |
 | Reply plan / send routes | backend (ROUTE-1) | UI `sendRoutes`, `messageTarget`, `mailtoUrl`, `linkedinNotice` ×2 |
 | Thread-link extraction | `extract_linkedin_thread_url` (ROUTE-4) | `_thread_url_for_lead`, `card_audit._LI_THREAD_RE` |
