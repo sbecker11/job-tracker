@@ -93,6 +93,13 @@ _REMOTE_KNOWN_RE = re.compile(
 _END_CLIENT_KNOWN_RE = re.compile(
     r"(?im)^(?:End[\s\-]?[Cc]lient|Client|Company)\s*[:\-]\s*(?!\s*(?:TBD|unknown|unnamed)\b)\S+",
 )
+# "Client is IBM", or a vendor subject "Data Architect With Adobe : 100% Remote".
+_END_CLIENT_NAMED_RE = re.compile(
+    r"\b(?i:(?:end\s+)?client\s+is)\s+(?!(?i:TBD|unknown|confidential)\b)[A-Z][\w&.-]+"
+    r"|\s(?:With|with)\s+[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*){0,2}\s*[:|(]"
+)
+# "My name is Harshit Singh, and I'm a Sr. Recruiter with ClifyX".
+_MY_NAME_IS_RE = re.compile(r"\b(?i:my name is|this is)\s+([A-Z][a-z'\-]+(?:[ \xa0]+[A-Z][a-z'\-]+){0,2})\b")
 _RATE_ASKED_OR_GIVEN_RE = re.compile(
     r"(?i)\b(rate|\$\s*\d|/hr|per\s*hour|salary|compensation\s*range)\b",
 )
@@ -169,8 +176,8 @@ def extract_linkedin_sender_name(text: str) -> str:
     if sig.name:
         return sig.name
     text = "\n" + text.replace("\r\n", "\n")
-    m = _SENDER_NAME_RE.search(text) or _INMAIL_NAME_RE.search(text)
-    return m.group(1).strip() if m else ""
+    m = _SENDER_NAME_RE.search(text) or _INMAIL_NAME_RE.search(text) or _MY_NAME_IS_RE.search(text)
+    return m.group(1).replace("\xa0", " ").strip() if m else ""
 
 
 def _strip_linkedin_footer(text: str) -> str:
@@ -275,7 +282,7 @@ def detect_pitch_gaps(text: str, *, subject: str = "", thread_replies: str = "")
     has_jd = bool(_JD_SUBSTANCE_RE.search(blob)) or skill_hits >= 4
     gaps = PitchGaps(
         needs_jd=not has_jd,
-        needs_end_client=not bool(_END_CLIENT_KNOWN_RE.search(blob)),
+        needs_end_client=not bool(_END_CLIENT_KNOWN_RE.search(blob) or _END_CLIENT_NAMED_RE.search(blob)),
         needs_engagement=not bool(_ENGAGEMENT_KNOWN_RE.search(blob)),
         needs_remote=not bool(_REMOTE_KNOWN_RE.search(blob)),
         needs_rate_band=not bool(_RATE_ASKED_OR_GIVEN_RE.search(blob)),

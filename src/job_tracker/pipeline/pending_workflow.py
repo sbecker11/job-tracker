@@ -679,7 +679,7 @@ def build_clarify_queue(
     # Stub / email leads with inbound, no outbound yet, still missing clarifiers.
     for r in conn.execute(
         """
-        SELECT normalized_key, company, title, source_label, first_seen
+        SELECT normalized_key, company, title, source_label, first_seen, jd_text
         FROM job_leads
         WHERE deleted_at IS NULL
           AND status = 'new'
@@ -701,7 +701,9 @@ def build_clarify_queue(
         if not inbound:
             continue
         latest = inbound[-1]
-        body = latest["body_text"] or ""
+        # Leads made by Gmail/IMAP triage before 2026-10-22 logged the first
+        # message without its body; the pitch text is on the lead instead.
+        body = latest["body_text"] or (r["jd_text"] if len(inbound) == 1 else "") or ""
         subj = latest["summary"] or r["title"] or ""
         recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
         draft = draft_qualifying_reply(

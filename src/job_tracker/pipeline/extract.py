@@ -87,18 +87,21 @@ _ROLE_KEYWORD = re.compile(
 _BULLET_LINE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.*\S)\s*$")
 
 _COMPANY_IS_HIRING = re.compile(r"\b([A-Z][\w&.,'-]*(?:\s+[A-Z][\w&.,'-]*){0,3})\s+is hiring\b")
-_COMPANY_TRAILING_DASH = re.compile(r"[—-]\s*([A-Z][\w&.,'-]*(?:\s+[A-Z][\w&.,'-]*){0,3})\s*$")
+_COMPANY_TRAILING_DASH = re.compile(r"(?:^|\s)[—-]\s*([A-Z][\w&.,'-]*(?:\s+[A-Z][\w&.,'-]*){0,3})\s*$")
 _COMPANY_AT = re.compile(r"\bat\s+([A-Z][\w&.,'-]*(?:\s+[A-Z][\w&.,'-]*){0,3})\b")
+# Only the lead-in phrase is case-insensitive: a global re.I would let the
+# capitalized-name group match lowercase prose ("hiring for below role").
 _COMPANY_OPEN_ROLES_AT = re.compile(
-    r"\bopen (?:roles?|positions?)\s+at\s+([A-Z][\w&.,'-]*(?:\s+[A-Z][\w&.,'-]*){0,3})\b",
-    re.I,
+    r"\b(?i:open (?:roles?|positions?)\s+at)\s+([A-Z][\w&.,'-]*(?:\s+[A-Z][\w&.,'-]*){0,3})\b"
 )
 _COMPANY_HIRING_FOR = re.compile(
-    r"\bhiring for\s+([A-Z][\w&.,'-]*(?:\s+[A-Z][\w&.,'-]*){0,3})\b", re.I
+    r"\b(?i:hiring for)\s+([A-Z][\w&.,'-]*(?:\s+[A-Z][\w&.,'-]*){0,3})\b"
 )
 _COMPANY_FROM = re.compile(
-    r"\bjobs?\s+(?:posted|alerts?)\s+from\s+([A-Z][\w&.,'-]*(?:\s+[A-Z][\w&.,'-]*){0,3})\b", re.I
+    r"\b(?i:jobs?\s+(?:posted|alerts?)\s+from)\s+([A-Z][\w&.,'-]*(?:\s+[A-Z][\w&.,'-]*){0,3})\b"
 )
+# Vendor subject lines: "Data Architect With Adobe : 100% Remote : W2 Only".
+_SUBJECT_COMPANY_WITH = re.compile(r"\s(?:With|with)\s+([A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*){0,2})\s*[:|(]")
 
 # Corporate ATS "search agent" digests (e.g. jobs2web-style): a single sender
 # company lists several of its own real openings after a "Job Matches:" marker.
@@ -341,7 +344,9 @@ def _extract_single_jd(message: EmailMessage) -> list[ExtractedRole]:
     text = message.combined_text
     ats_matches = _find_ats_matches(text)
 
-    company = _company_from_text(f"{message.subject}\n{text}")
+    m = _SUBJECT_COMPANY_WITH.search(message.subject or "")
+    company = m.group(1).strip() if m and not _is_job_board_name(m.group(1)) else None
+    company = company or _company_from_text(f"{message.subject}\n{text}")
     apply_url = ""
     source = "subject" if company else ""
 
