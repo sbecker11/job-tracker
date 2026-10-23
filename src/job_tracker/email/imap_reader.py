@@ -32,7 +32,7 @@ from email.header import decode_header
 from email.message import Message as EmailLibMessage
 from email.utils import parseaddr
 
-from job_tracker.email.models import EmailMessage
+from job_tracker.email.models import EmailMessage, normalize_rfc_id, rfc_id_list
 from job_tracker.htmltext import html_to_text
 
 DEFAULT_PORT = 993
@@ -167,6 +167,8 @@ def parse_rfc822_message(raw_bytes: bytes, *, uid: str, folder: str = "INBOX") -
         body_html=body_html.strip(),
         reply_to=reply_to or "",
         label_ids=[folder],
+        rfc_message_id=normalize_rfc_id(message_id),
+        references=rfc_id_list(msg.get("References") or "", msg.get("In-Reply-To") or ""),
     )
 
 

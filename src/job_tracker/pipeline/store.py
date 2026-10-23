@@ -16,6 +16,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from job_tracker.email.models import normalize_rfc_id
 from job_tracker.pipeline.models import (
     JobContact,
     JobConversation,
@@ -286,6 +287,8 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # pipeline/comms_match.py's Tier-1 thread-id matching.
     ("job_conversations", "thread_id", "ALTER TABLE job_conversations ADD COLUMN thread_id TEXT"),
     ("job_conversations", "body_text", "ALTER TABLE job_conversations ADD COLUMN body_text TEXT"),
+    # Cross-mailbox thread matching (2026-10-22, MAT-4) — see find_job_by_rfc_ids().
+    ("job_conversations", "rfc_message_id", "ALTER TABLE job_conversations ADD COLUMN rfc_message_id TEXT"),
     # LinkedIn reply-card dismiss from pending-actions (2026-08-04).
     ("unmatched_messages", "dismissed_at", "ALTER TABLE unmatched_messages ADD COLUMN dismissed_at TEXT"),
     # One open row per conversation (2026-10-14) — see record_unmatched_message().
@@ -1539,8 +1542,8 @@ def add_job_conversation(
         """
         INSERT INTO job_conversations (
             job_key, contact_id, message_id, channel, direction, summary, occurred_at,
-            thread_id, body_text
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            thread_id, body_text, rfc_message_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             conversation.job_key,
@@ -1552,6 +1555,7 @@ def add_job_conversation(
             conversation.occurred_at,
             conversation.thread_id,
             conversation.body_text,
+            _conversation_rfc_id(conversation),
         ),
     )
 
@@ -1597,6 +1601,15 @@ def find_duplicate_inbound(conn: sqlite3.Connection, conversation: JobConversati
         row = conn.execute(
             "SELECT id FROM job_conversations WHERE job_key = ? AND direction = 'inbound' AND message_id = ?",
             (conversation.job_key, conversation.message_id),
+        ).fetchone()
+        if row is not None:
+            return row["id"]
+    rfc_id = _conversation_rfc_id(conversation)
+    if rfc_id:
+        row = conn.execute(
+            "SELECT id FROM job_conversations WHERE job_key = ? AND direction = 'inbound' "
+            "AND (rfc_message_id = ? OR message_id = ?)",
+            (conversation.job_key, rfc_id, f"imap:{rfc_id}"),
         ).fetchone()
         if row is not None:
             return row["id"]
@@ -2121,6 +2134,44 @@ def contact_addresses_from_inbound(
             else:
                 email = other
     return email, li_reply
+
+
+def _conversation_rfc_id(conversation: JobConversation) -> str:
+    """Stored Message-Id: the explicit one, else the one inside an IMAP id."""
+    if conversation.rfc_message_id:
+        return normalize_rfc_id(conversation.rfc_message_id)
+    mid = conversation.message_id or ""
+    if mid.startswith("imap:<"):
+        return normalize_rfc_id(mid[len("imap:"):])
+    return ""
+
+
+def find_job_by_rfc_ids(conn: sqlite3.Connection, rfc_message_id: str, references: list[str]) -> str | None:
+    """The job a message belongs to by Message-Id rather than mailbox thread id.
+
+    Gmail and IMAP give one thread different thread ids, but the Message-Ids
+    match. A hit is any logged conversation that this message replies to
+    (its id is in `references`), that replies to this message (references it
+    via its own thread), or that is this very message from the other mailbox.
+    Rows logged before the rfc_message_id column existed still match through
+    their `imap:<Message-Id>` message id. Returns None when the hits point at
+    more than one job."""
+    ids = [normalize_rfc_id(x) for x in [rfc_message_id, *references]]
+    ids = [x for x in dict.fromkeys(ids) if x]
+    if not ids:
+        return None
+    marks = ",".join("?" for _ in ids)
+    imap_ids = [f"imap:{x}" for x in ids]
+    rows = conn.execute(
+        f"""
+        SELECT job_key FROM job_conversations
+        WHERE rfc_message_id IN ({marks}) OR message_id IN ({marks}) OR thread_id IN ({marks})
+        ORDER BY occurred_at DESC
+        """,
+        (*ids, *imap_ids, *imap_ids),
+    ).fetchall()
+    keys = list(dict.fromkeys(r["job_key"] for r in rows))
+    return keys[0] if len(keys) == 1 else None
 
 
 def find_job_by_thread_id(conn: sqlite3.Connection, thread_id: str) -> str | None:

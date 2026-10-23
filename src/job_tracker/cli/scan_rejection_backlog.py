@@ -151,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
                     direction="inbound",
                     summary=message.subject or "Rejection",
                     thread_id=message.thread_id,
+                    rfc_message_id=message.rfc_message_id,
                     body_text=message.combined_text,
                 ),
             )

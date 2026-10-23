@@ -31,6 +31,29 @@ class ExtractedRole:
     snippet: str = ""
 
 
+def normalize_rfc_id(value: str) -> str:
+    """One Message-Id in "<local@domain>" form; empty when there is none."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if not value.startswith("<"):
+        value = f"<{value}"
+    if not value.endswith(">"):
+        value = f"{value}>"
+    return value
+
+
+def rfc_id_list(*headers: str) -> list[str]:
+    """Message-Ids named in References / In-Reply-To headers, de-duplicated."""
+    out: list[str] = []
+    for header in headers:
+        for token in (header or "").replace(",", " ").split():
+            norm = normalize_rfc_id(token)
+            if norm and norm not in out:
+                out.append(norm)
+    return out
+
+
 @dataclass
 class EmailMessage:
     """Normalized recruiting-inbox message (Gmail reader fills this in 2a)."""
@@ -48,6 +71,11 @@ class EmailMessage:
     # Reply-To (uuid@reply.linkedin.com). Empty when the header is absent.
     reply_to: str = ""
     label_ids: list[str] = field(default_factory=list)
+    # RFC 822 Message-Id ("<...>") and the ids it replies to (References +
+    # In-Reply-To). Thread ids differ between Gmail and IMAP mailboxes; these
+    # don't, so they tie the two copies of one thread to the same lead (MAT-4).
+    rfc_message_id: str = ""
+    references: list[str] = field(default_factory=list)
 
     @property
     def combined_text(self) -> str:

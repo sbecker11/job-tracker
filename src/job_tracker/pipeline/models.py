@@ -166,6 +166,8 @@ class JobConversation:
     # email text).
     thread_id: str = ""
     body_text: str = ""
+    # The email's own RFC 822 Message-Id (see EmailMessage.rfc_message_id).
+    rfc_message_id: str = ""
 
 
 @dataclass

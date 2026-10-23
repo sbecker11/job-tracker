@@ -11,7 +11,7 @@ from email.utils import parseaddr
 from pathlib import Path
 from typing import Any
 
-from job_tracker.email.models import EmailMessage
+from job_tracker.email.models import EmailMessage, normalize_rfc_id, rfc_id_list
 from job_tracker.htmltext import html_to_text
 
 GMAIL_SCOPES = ("https://www.googleapis.com/auth/gmail.readonly",)
@@ -322,6 +322,8 @@ def parse_gmail_message(raw: dict[str, Any]) -> EmailMessage:
         body_html=body_html,
         reply_to=reply_to or "",
         label_ids=list(raw.get("labelIds") or []),
+        rfc_message_id=normalize_rfc_id(headers.get("message-id", "")),
+        references=rfc_id_list(headers.get("references", ""), headers.get("in-reply-to", "")),
     )
 
 

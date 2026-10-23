@@ -11,6 +11,9 @@ incident. Tiers, cheapest/most-certain first:
    the candidate's own workflow change: always reply within the existing
    Gmail/LinkedIn thread, and always name the company + title in outgoing
    cold-outreach bodies (see CLAUDE.md-adjacent chat history, 2026-07-17).
+1a. Message-Id / References / In-Reply-To already on exactly one job
+   (`store.find_job_by_rfc_ids`, 2026-10-22, MAT-4). Gmail and IMAP give the
+   same thread different thread ids; the Message-Ids are the same.
 1b. LinkedIn conversation link (`linkedin.com/messaging/thread/<id>`) already
    on exactly one job (2026-10-14). Every LinkedIn notification is its own
    email thread and comes from a shared relay, so Tiers 1-2 can never link
@@ -45,7 +48,7 @@ from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_EXTRAC
 from job_tracker.pipeline.llm_extract import extract_roles_llm_cached
 from job_tracker.pipeline.qualifying_reply import extract_role_heuristic
 
-MatchTier = str  # "thread_id" | "linkedin_thread" | "contact_email" | "named_end_client" | "llm_company_title" | "llm_company_only" | "llm_new_lead" | "heuristic_company_title" | "heuristic_new_lead" | "unmatched"
+MatchTier = str  # "thread_id" | "message_id_ref" | "linkedin_thread" | "contact_email" | "named_end_client" | "llm_company_title" | "llm_company_only" | "llm_new_lead" | "heuristic_company_title" | "heuristic_new_lead" | "unmatched"
 
 # Recruiter/agency umbrella leads (PCC "end-client TBD", staffing firms).
 # When a later message in that thread names a different existing company+title
@@ -208,6 +211,16 @@ def match_message_to_job(
             message,
             tier="thread_id",
             reason=f"thread_id {message.thread_id!r} already linked to this job",
+        )
+
+    job_key = store.find_job_by_rfc_ids(conn, message.rfc_message_id, message.references)
+    if job_key:
+        return _prefer_named_end_client(
+            conn,
+            job_key,
+            message,
+            tier="message_id_ref",
+            reason="Message-Id / References already linked to this job (other mailbox's copy of the thread)",
         )
 
     li_thread = store.linkedin_thread_key(message.combined_text or "")

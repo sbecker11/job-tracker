@@ -236,6 +236,7 @@ def _link_existing_conversation(
             direction="inbound",
             summary=conversation_summary,
             thread_id=message.thread_id,
+            rfc_message_id=message.rfc_message_id,
             body_text=message.combined_text,
         ),
     )
@@ -326,6 +327,7 @@ def _handle_linkedin_reply(
                 direction="inbound",
                 summary=conversation_summary,
                 thread_id=message.thread_id,
+                rfc_message_id=message.rfc_message_id,
                 body_text=message.combined_text,
             ),
         )
@@ -671,6 +673,7 @@ def main(argv: list[str] | None = None) -> int:
                             direction="inbound",
                             summary=result.subject,
                             thread_id=message.thread_id,
+                            rfc_message_id=message.rfc_message_id,
                             body_text=message.combined_text,
                         ),
                     )
