@@ -349,14 +349,22 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                 'Click "Reply sent" and confirm what you sent — the card moves to Waiting on them.',
               ]
             : null
+        const word = replyInPanel ? 'reply' : 'follow-up'
         const panelSteps =
           replyInPanel || followupInPanel
             ? [
-                replyInPanel
-                  ? 'Click "Open reply ▾" below. Review the reply; it\'s already written for you.'
-                  : 'Click "Open follow-up ▾" below. Review the follow-up; it\'s already written for you.',
-                route ? route.step : NO_ROUTE_STEP,
-                ...(route?.sendsAndLogs ? [] : ['Click "Message sent".']),
+                `Click "Open ${word} ▾" below. Check the sender and review the ${word}; it's already written for you.`,
+                `Click "Copy ${word} message".`,
+                route
+                  ? `Click "Send ${word} message". ${
+                      route.sendsAndLogs
+                        ? 'The text helper sends and logs it.'
+                        : route.prefilled
+                          ? `${route.how === 'email' ? 'Gmail' : 'It'} opens with the message filled in. Press Send.`
+                          : `The ${route.how} opens. Paste the message and press Send.`
+                    }`
+                  : NO_ROUTE_STEP,
+                ...(route?.sendsAndLogs ? [] : ['Come back and answer "Did it send?". Yes logs it.']),
               ]
             : null
         const sendTo = route
@@ -667,6 +675,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     onApplied={() => onLeadActioned?.(item.id, false)}
                     onCancel={() => setLeadPanel(null)}
                     message={messageTarget(item)}
+                    senders={item.senders}
                     followupDraft={item.followupDraft}
                     reply={
                       replyInPanel

@@ -1,3 +1,4 @@
+import type { LeadSender } from './components/ManageLeadStatus'
 import type { ReplyPlan } from './lib/links'
 
 export type PipelineStageId = 'clarify' | 'send_resume' | 'wait_schedule' | 'decide_apply'
@@ -46,6 +47,8 @@ export interface TodayFields {
   resolvedVia?: string
   /** Channel, recipient and routes for this card (pipeline/reply_plan.py). */
   replyPlan?: ReplyPlan
+  /** The lead's contacts for Manage lead's sender chooser (CARD-14). */
+  senders?: LeadSender[]
 }
 
 /** One "no thank you" reason (job_tracker.pipeline.decline.DECLINE_REASONS). */

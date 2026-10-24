@@ -974,6 +974,79 @@ def _send_route_fields(conn, job_key: str) -> dict:
     return fields
 
 
+_SENDER_MESSAGES = 3
+
+
+def _attach_senders(item: dict, conn, reply_plan_fn) -> None:
+    """REQUIREMENTS CARD-14: the lead's human contacts for Manage lead's sender
+    chooser, each with its own reply plan and latest received messages. Rows
+    logged without a contact, or under a bare LinkedIn-relay contact (no name,
+    email, phone or profile), belong to the card's recruiter. Newest first, so
+    the default sender is whoever wrote last."""
+    key = item.get("normalizedKey")
+    if not key:
+        return
+    def col(c, name: str) -> str:
+        return (c[name] or "") if name in c.keys() else ""
+
+    contacts = [
+        c
+        for c in recruiter_contacts(conn, key)
+        if not col(c, "deleted_at")
+        and any(col(c, f).strip() for f in ("name", "email", "phone", "linkedin_url"))
+    ]
+    if not contacts:
+        return
+    inbound = sorted(
+        _human_inbound_conversations(list(list_job_conversations(conn, key))),
+        key=lambda c: _sort_time(c["occurred_at"]),
+        reverse=True,
+    )
+    card_name = (item.get("recruiterName") or "").strip().lower()
+    primary = next((c for c in contacts if (c["name"] or "").strip().lower() == card_name), contacts[0])
+    ids = {c["id"] for c in contacts}
+    senders = []
+    for c in contacts:
+        is_primary = c["id"] == primary["id"]
+        mine = [m for m in inbound if m["contact_id"] == c["id"] or (is_primary and m["contact_id"] not in ids)]
+        messages = [
+            {
+                "at": m["occurred_at"] or "",
+                "summary": m["summary"] or "",
+                "body": clean_message_body_for_display(m["body_text"] or ""),
+            }
+            for m in mine[:_SENDER_MESSAGES]
+        ]
+        if is_primary:
+            plan = item.get("replyPlan")
+        else:
+            plan = reply_plan_fn(
+                {
+                    **{k: v for k, v in item.items() if not k.startswith("resolved") and k != "gmailUrl"},
+                    "recruiterName": col(c, "name"),
+                    "recruiterEmail": col(c, "email"),
+                    "recruiterPhone": col(c, "phone"),
+                    "recruiterLinkedinUrl": col(c, "linkedin_url"),
+                    "threadUrl": col(c, "linkedin_reply_to"),
+                    "emailIsLinkedInRelay": False,
+                    "messageBody": mine[0]["body_text"] if mine else "",
+                }
+            )
+        senders.append(
+            {
+                "id": c["id"],
+                "name": c["name"] or (item.get("recruiterName") if is_primary else "") or c["email"] or "(unnamed)",
+                "role": c["role"] or "",
+                "primary": is_primary,
+                "latestAt": messages[0]["at"] if messages else "",
+                "messages": messages,
+                "replyPlan": plan,
+            }
+        )
+    senders.sort(key=lambda s: _sort_time(s["latestAt"] or None), reverse=True)
+    item["senders"] = senders
+
+
 _LINKEDIN_PROFILE_RE = re.compile(r"https?://(?:[a-z]{2,3}\.)?linkedin\.com/in/[\w%-]+/?", re.I)
 
 
@@ -1999,6 +2072,7 @@ def build_workflow_payload(
 
     for item in status_items:
         item["replyPlan"] = reply_plan(item)
+        _attach_senders(item, conn, reply_plan)
         if (
             item.get("stage") == "clarify"
             and not item.get("postDecline")

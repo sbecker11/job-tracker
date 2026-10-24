@@ -10,6 +10,7 @@ import {
   sendRoutes,
   sendTextUrl,
   type MessageTarget,
+  type ReplyPlan,
   type SendRoute,
   type SenderInfo,
 } from '../lib/links'
@@ -96,6 +97,17 @@ export interface ReplyTarget {
   onSent?: () => void
 }
 
+/** One of the lead's contacts, with its own route and latest received messages (CARD-14). */
+export interface LeadSender {
+  id: number
+  name: string
+  role: string
+  primary: boolean
+  latestAt: string
+  messages: { at: string; summary: string; body: string }[]
+  replyPlan?: ReplyPlan
+}
+
 /** Lets Manage Lead offer "Decline — with message" (job_tracker.pipeline.decline). */
 export interface DeclineTarget {
   greeting: string
@@ -153,6 +165,7 @@ export function ManageLeadForm({
   reply,
   decline,
   initialStatus,
+  senders,
 }: Props & {
   normalizedKey: string
   message?: MessageTarget
@@ -161,9 +174,27 @@ export function ManageLeadForm({
   decline?: DeclineTarget
   /** Preselected status (e.g. Follow up on a card whose follow-up is due). */
   initialStatus?: string
+  /** The lead's contacts, newest writer first (CARD-14). */
+  senders?: LeadSender[]
 }) {
   const reasons = useContext(DeclineReasonsContext)
-  const canReply = Boolean(reply?.draft && message)
+  const [senderId, setSenderId] = useState<number | null>(senders?.[0]?.id ?? null)
+  const chosen = senders?.find((s) => s.id === senderId)
+  const target: MessageTarget | undefined =
+    message && chosen && !chosen.primary && chosen.replyPlan
+      ? {
+          plan: chosen.replyPlan,
+          sender: {
+            ...message.sender,
+            name: chosen.name,
+            email: chosen.replyPlan.recipient.email,
+            phone: chosen.replyPlan.recipient.phone,
+            messageText: chosen.messages[0]?.body || '',
+          },
+        }
+      : message
+  const chosenWrote = !chosen || chosen.messages.length > 0
+  const canReply = Boolean(reply?.draft && target && chosenWrote)
   const startStatus = initialStatus || (canReply ? REPLY_STATUS : '')
   const [status, setStatus] = useState(startStatus)
   const [reasonCode, setReasonCode] = useState(reasons[0]?.code || 'other')
@@ -172,27 +203,40 @@ export function ManageLeadForm({
   const [replyText, setReplyText] = useState(reply?.draft || '')
   const [letterEdit, setLetterEdit] = useState<string | null>(null)
   const [sent, setSent] = useState('')
+  const [sentAt, setSentAt] = useState('')
   const [copied, setCopied] = useState(false)
+  const [sendOpened, setSendOpened] = useState(false)
+  const [failed, setFailed] = useState(false)
   const [sentVia, setSentVia] = useState('')
-  const [opened, setOpened] = useState(false)
 
-  const canDecline = Boolean(decline && message && reasons.length)
+  const canDecline = Boolean(decline && target && reasons.length)
   const declining = canDecline && status === DECLINE_STATUS
-  const canFollowUp = Boolean(followupDraft && message)
+  const canFollowUp = Boolean(followupDraft && target)
   const followingUp = canFollowUp && status === 'following_up'
   const replying = canReply && status === REPLY_STATUS
 
+  const greetName = chosen && !chosen.primary ? firstNameOf(chosen.name) : ''
+  const regreet = (t: string) => (greetName ? t.replace(/^(Hi|Hello|Dear) [^,\n]*,/, `$1 ${greetName},`) : t)
   const reason = reasons.find((r) => r.code === reasonCode) || reasons[0]
   const isOther = reason?.code === 'other'
   const needsCustom = declining && isOther && !customReason.trim()
   const generatedLetter = decline
-    ? `${decline.greeting} ${isOther ? customReason.trim() : reason?.sentence || ''} ${decline.closing}`
+    ? `${regreet(decline.greeting)} ${isOther ? customReason.trim() : reason?.sentence || ''} ${decline.closing}`
     : ''
   const letterText = letterEdit ?? generatedLetter
   const text = declining ? letterText : replying ? replyText : followupText
   const setText = declining ? setLetterEdit : replying ? setReplyText : setFollowupText
-  const composing = (declining && message?.plan.hasRecruiter) || followingUp || replying
+  const composing = (declining && target?.plan.hasRecruiter) || followingUp || replying
   const messageMode = declining || followingUp || replying
+  const word = replying ? 'reply' : followingUp ? 'follow-up' : 'decline'
+
+  const clearSend = () => {
+    setSent('')
+    setSentAt('')
+    setCopied(false)
+    setSendOpened(false)
+    setFailed(false)
+  }
 
   const reset = () => {
     setStatus(startStatus)
@@ -201,19 +245,20 @@ export function ManageLeadForm({
     setFollowupText(followupDraft || '')
     setReplyText(reply?.draft || '')
     setLetterEdit(null)
-    setSent('')
-    setOpened(false)
+    clearSend()
   }
 
   const markSent = (which: string, after?: () => void) => () => {
     setSent(which)
+    setFailed(false)
+    setSentAt(new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))
     after?.()
   }
 
-  const routes = message ? sendRoutes(message) : []
+  const routes = target ? sendRoutes(target) : []
   const route = routes[0]
   const otherRoutes = routes.slice(1)
-  const phone = (message?.sender.phone || '').trim()
+  const phone = (target?.sender.phone || '').trim()
   const mode = declining ? 'decline' : replying ? 'reply' : 'followup'
   const afterSent = declining ? decline?.onClosed : replying ? reply?.onSent : onApplied
   const textHref =
@@ -221,50 +266,45 @@ export function ManageLeadForm({
       ? sendTextUrl(
           normalizedKey,
           route.to,
-          message?.sender.name || '',
+          target?.sender.name || '',
           text,
           declining && reason
             ? { declineReason: reason.code, declineNote: isOther ? customReason : '' }
             : { status: followingUp ? 'following_up' : currentStatus || 'new' },
         )
       : ''
-  const channel = sentVia || route?.channel || message?.plan.channel || 'other'
-  const sentLink =
-    declining && reason ? (
-      <a
-        className={`btn${sent === 'decline' ? ' muted' : opened ? ' primary' : ''}`}
-        href={declineUrl(normalizedKey, reason.code, isOther ? customReason : '', {
-          channel,
-          letter: true,
-          letterText: text,
-        })}
-        onClick={markSent('decline', decline?.onClosed)}
-        title="After you send it: log the message and close the lead as skipped with this reason"
-      >
-        {stepBadge(3)}
-        {sent === 'decline' ? 'Message sent ✓' : 'Message sent'}
-      </a>
-    ) : replying ? (
-      <a
-        className={`btn${sent === 'reply' ? ' muted' : opened ? ' primary' : ''}`}
-        href={leadStatusUrl(normalizedKey, currentStatus || 'new', '', { channel, message: text })}
-        onClick={markSent('reply', reply?.onSent)}
-        title="After you send it: log your reply (status stays the same) and start waiting on the recruiter"
-      >
-        {stepBadge(3)}
-        {sent === 'reply' ? 'Message sent ✓' : 'Message sent'}
-      </a>
-    ) : followingUp ? (
-      <a
-        className={`btn${sent === 'followup' ? ' muted' : opened ? ' primary' : ''}`}
-        href={leadStatusUrl(normalizedKey, 'following_up', '', { channel, message: text })}
-        onClick={markSent('followup', onApplied)}
-        title="After you send it: log the message, set Following up, and restart the wait clock"
-      >
-        {stepBadge(3)}
-        {sent === 'followup' ? 'Message sent ✓' : 'Message sent'}
-      </a>
-    ) : null
+  const channel = sentVia || route?.channel || target?.plan.channel || 'other'
+  const logHref =
+    declining && reason
+      ? declineUrl(normalizedKey, reason.code, isOther ? customReason : '', { channel, letter: true, letterText: text })
+      : replying
+        ? leadStatusUrl(normalizedKey, currentStatus || 'new', '', { channel, message: text })
+        : followingUp
+          ? leadStatusUrl(normalizedKey, 'following_up', '', { channel, message: text })
+          : ''
+  const isSent = Boolean(sent) && sent === mode
+
+  const received = (
+    senders?.length
+      ? senders.flatMap((s) => s.messages.map((m) => ({ ...m, from: s.name })))
+      : reply?.original?.trim()
+        ? [{ at: '', summary: '', body: reply.original, from: reply.from || 'recruiter' }]
+        : []
+  )
+    .sort((a, b) => (b.at || '').localeCompare(a.at || ''))
+    .slice(0, 3)
+
+  const chooseSender = (id: number) => {
+    const next = senders?.find((s) => s.id === id)
+    setSenderId(id)
+    clearSend()
+    const name = next && !next.primary ? firstNameOf(next.name) : firstNameOf(senders?.find((s) => s.primary)?.name || '')
+    const swap = (t: string) => (name ? t.replace(/^(Hi|Hello|Dear) [^,\n]*,/, `$1 ${name},`) : t)
+    setReplyText((t) => swap(t))
+    setFollowupText((t) => swap(t))
+    setLetterEdit((t) => (t == null ? t : swap(t)))
+    if (next && !next.messages.length && status === REPLY_STATUS) setStatus(canFollowUp ? 'following_up' : '')
+  }
 
   return (
     <div className="manage-lead-form">
@@ -274,156 +314,208 @@ export function ManageLeadForm({
           Current status: <strong>{statusLabel(currentStatus)}</strong>
         </p>
       )}
-      <div className="lead-panel-fields">
-        <label className="manage-lead-field manage-lead-action">
-          <span>Take action:</span>
-          <select
-            value={status}
-            onChange={(e) => {
-              setStatus(e.target.value)
-              setSent('')
-            }}
-          >
-            <option value="">Choose…</option>
-            {currentStatus && CLOSED_STATUSES.includes(currentStatus) && (
-              <optgroup label="Undo">
-                <option value="reopened">Reopen</option>
-              </optgroup>
-            )}
-            {(canReply || canFollowUp || canDecline) && (
-              <optgroup label="Send a message">
-                {canReply && <option value={REPLY_STATUS}>Reply — with message</option>}
-                {canFollowUp && <option value="following_up">Follow up — with message</option>}
-                {canDecline && <option value={DECLINE_STATUS}>Decline — with message</option>}
-              </optgroup>
-            )}
-            <optgroup label="Record what happened">
-              {RECORD_STATUSES.filter(
-                (v) => v !== currentStatus && !(v === 'following_up' && canFollowUp),
-              ).map((v) => (
-                <option key={v} value={v}>
-                  {statusLabel(v)}
-                </option>
-              ))}
-            </optgroup>
-          </select>
-        </label>
-        {declining && (
-          <label className="manage-lead-field">
-            <span>Reason</span>
+
+      {(received.length > 0 || (senders?.length ?? 0) > 0) && (
+        <section className="manage-lead-section">
+          <p className="manage-lead-section-title">Latest received messages</p>
+          {received.length ? (
+            received.map((m, i) => (
+              <details key={`${m.at}:${i}`} className="original-message" open={i === 0}>
+                <summary>
+                  {m.from}
+                  {m.at ? ` · ${formatWhen(m.at)}` : ''}
+                  {m.summary ? ` — ${m.summary}` : ''}
+                </summary>
+                <pre className="draft original-message-body">{m.body}</pre>
+              </details>
+            ))
+          ) : (
+            <p className="empty-hint">No messages received on this lead yet.</p>
+          )}
+          {senders && senders.length > 0 && (
+            <label className="manage-lead-field">
+              <span>Sender/contact:</span>
+              <select value={senderId ?? ''} onChange={(e) => chooseSender(Number(e.target.value))}>
+                {senders.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                    {s.role && s.role !== 'recruiter' ? ` (${s.role.replace('_', ' ')})` : ''}
+                    {s.latestAt ? ` — last wrote ${formatWhen(s.latestAt)}` : ' — no messages yet'}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </section>
+      )}
+
+      <section className="manage-lead-section">
+        <div className="lead-panel-fields">
+          <label className="manage-lead-field manage-lead-action">
+            <span>Take action:</span>
             <select
-              value={reason?.code}
+              value={status}
               onChange={(e) => {
-                setReasonCode(e.target.value)
-                setLetterEdit(null)
-                setSent('')
+                setStatus(e.target.value)
+                clearSend()
               }}
             >
-              {reasons.map((r) => (
-                <option key={r.code} value={r.code}>
-                  {r.label}
-                </option>
-              ))}
+              <option value="">Choose…</option>
+              {currentStatus && CLOSED_STATUSES.includes(currentStatus) && (
+                <optgroup label="Undo">
+                  <option value="reopened">Reopen</option>
+                </optgroup>
+              )}
+              {(canReply || canFollowUp || canDecline) && (
+                <optgroup label="Send a message">
+                  {canReply && <option value={REPLY_STATUS}>Reply — with message</option>}
+                  {canFollowUp && <option value="following_up">Follow up — with message</option>}
+                  {canDecline && <option value={DECLINE_STATUS}>Decline — with message</option>}
+                </optgroup>
+              )}
+              <optgroup label="Record what happened">
+                {RECORD_STATUSES.filter((v) => v !== currentStatus && !(v === 'following_up' && canFollowUp)).map(
+                  (v) => (
+                    <option key={v} value={v}>
+                      {statusLabel(v)}
+                    </option>
+                  ),
+                )}
+              </optgroup>
             </select>
           </label>
-        )}
-        {declining && isOther && (
-          <label className="manage-lead-field manage-lead-reason-field">
-            <span>Custom reason</span>
-            <input
-              className="manage-lead-reason"
-              type="text"
-              placeholder="Required — becomes the reason sentence in the message"
-              value={customReason}
-              onChange={(e) => {
-                setCustomReason(e.target.value)
-                setLetterEdit(null)
-                setSent('')
-              }}
-            />
-          </label>
-        )}
-        {!messageMode && !status && (
-          <span className="btn disabled" title="Choose a status first">
-            Apply
-          </span>
-        )}
-        {!messageMode && status && (
-          <a
-            className={`btn${sent ? ' muted' : ''}`}
-            href={leadStatusUrl(normalizedKey, status, '')}
-            onClick={markSent('apply', onApplied)}
-          >
-            {sent ? (onApplied ? 'Applied ✓' : 'Applied ✓ — Regenerate to see it') : 'Apply'}
-          </a>
-        )}
-        {!messageMode && (
-          <button
-            type="button"
-            className="btn link muted"
-            onClick={() => {
-              reset()
-              onCancel?.()
-            }}
-          >
-            Cancel
-          </button>
-        )}
-      </div>
-
-      {composing && message && !needsCustom && (
-        <div className="followup-preview">
-          {replying && reply?.original?.trim() && (
-            <details className="original-message" open>
-              <summary>Their message — from {reply.from || 'recruiter'}</summary>
-              <pre className="draft original-message-body">{reply.original}</pre>
-            </details>
-          )}
-          <label className="manage-lead-field">
-            <span>{replying ? 'Your reply' : 'Message'} — edit before sending if you like</span>
-            <textarea
-              className="draft followup-edit"
-              rows={8}
-              value={text}
-              onChange={(e) => {
-                setText(e.target.value)
-                setSent('')
-                setOpened(false)
-              }}
-            />
-          </label>
-          <div className="actions">
-            {route?.sendsAndLogs && textHref && (
-              <a
-                className={`btn primary${sent === mode ? ' muted' : ''}`}
-                href={textHref}
-                onClick={markSent(mode, afterSent)}
-                title={route.step}
-              >
-                {stepBadge(2)}
-                {sent === mode ? `${route.button} ✓` : route.button}
-              </a>
-            )}
-            {route && !route.sendsAndLogs && text.trim() && (
-              <a
-                className={opened ? 'btn' : 'btn primary'}
-                href={route.href(text)}
-                target="_blank"
-                rel="noreferrer"
-                onClick={() => {
-                  setSentVia('')
-                  setOpened(true)
-                  if (!route.prefilled) void copyText(text)
+          {declining && (
+            <label className="manage-lead-field">
+              <span>Reason</span>
+              <select
+                value={reason?.code}
+                onChange={(e) => {
+                  setReasonCode(e.target.value)
+                  setLetterEdit(null)
+                  clearSend()
                 }}
-                title={route.step}
+              >
+                {reasons.map((r) => (
+                  <option key={r.code} value={r.code}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {declining && isOther && (
+            <label className="manage-lead-field manage-lead-reason-field">
+              <span>Custom reason</span>
+              <input
+                className="manage-lead-reason"
+                type="text"
+                placeholder="Required — becomes the reason sentence in the message"
+                value={customReason}
+                onChange={(e) => {
+                  setCustomReason(e.target.value)
+                  setLetterEdit(null)
+                  clearSend()
+                }}
+              />
+            </label>
+          )}
+          {!messageMode && !status && (
+            <span className="btn disabled" title="Choose a status first">
+              Apply
+            </span>
+          )}
+          {!messageMode && status && (
+            <a
+              className={`btn${sent ? ' muted' : ''}`}
+              href={leadStatusUrl(normalizedKey, status, '')}
+              onClick={markSent('apply', onApplied)}
+            >
+              {sent ? (onApplied ? 'Applied ✓' : 'Applied ✓ — Regenerate to see it') : 'Apply'}
+            </a>
+          )}
+          {!messageMode && (
+            <button
+              type="button"
+              className="btn link muted"
+              onClick={() => {
+                reset()
+                onCancel?.()
+              }}
+            >
+              Cancel
+            </button>
+          )}
+        </div>
+
+        {composing && target && !needsCustom && (
+          <div className="followup-preview">
+            <label className="manage-lead-field">
+              <span>Your {word} message — edit before sending if you like</span>
+              <textarea
+                className="draft followup-edit"
+                rows={8}
+                value={text}
+                onChange={(e) => {
+                  setText(e.target.value)
+                  clearSend()
+                }}
+              />
+            </label>
+            <div className="actions">
+              <button
+                type="button"
+                className={copied ? 'btn' : 'btn primary'}
+                disabled={!text.trim()}
+                onClick={async () => {
+                  await copyText(text)
+                  setCopied(true)
+                }}
               >
                 {stepBadge(2)}
-                {opened ? `${route.button} ✓` : route.button}
-              </a>
-            )}
-            {text.trim() && !route?.sendsAndLogs && sentLink && (
-              <>
-                {sentLink}
+                {copied ? `Copied ${word} message ✓` : `Copy ${word} message`}
+              </button>
+              {route ? (
+                copied ? (
+                  <a
+                    className={sendOpened || isSent ? 'btn' : 'btn primary'}
+                    href={route.sendsAndLogs ? textHref : route.href(text)}
+                    target={route.sendsAndLogs ? undefined : '_blank'}
+                    rel="noreferrer"
+                    title={route.step}
+                    onClick={
+                      route.sendsAndLogs
+                        ? markSent(mode, afterSent)
+                        : () => {
+                            setSentVia('')
+                            setSendOpened(true)
+                            setFailed(false)
+                          }
+                    }
+                  >
+                    {stepBadge(3)}
+                    Send {word} message
+                  </a>
+                ) : (
+                  <span className="btn disabled" title="Copy the message first">
+                    {stepBadge(3)}
+                    Send {word} message
+                  </span>
+                )
+              ) : (
+                <span className="btn disabled">No way to send found — see More options</span>
+              )}
+              {route && <span className="send-how">{route.prefilled ? `opens ${route.how}, filled in` : `opens ${route.how}`}</span>}
+            </div>
+            {sendOpened && !isSent && !route?.sendsAndLogs && (
+              <div className="actions send-confirm">
+                <span>Did it send?</span>
+                <a className="btn primary" href={logHref} onClick={markSent(mode, afterSent)} title="Log the message">
+                  {stepBadge(4)}
+                  Yes, it sent
+                </a>
+                <button type="button" className="btn" onClick={() => setFailed(true)}>
+                  No
+                </button>
                 <label className="sent-via" title="Which app you actually sent it from — logged with the message">
                   via{' '}
                   <select value={channel} onChange={(e) => setSentVia(e.target.value)}>
@@ -434,63 +526,73 @@ export function ManageLeadForm({
                     ))}
                   </select>
                 </label>
-              </>
+              </div>
             )}
-          </div>
-          <SendToBox route={route} message={message} />
-          <div className="actions secondary-actions">
-            <button
-              type="button"
-              className="btn link"
-              disabled={!text.trim()}
-              onClick={async () => {
-                await copyText(text)
-                setCopied(true)
-                setTimeout(() => setCopied(false), 1500)
-              }}
-            >
-              {copied ? 'Copied' : 'Copy message'}
-            </button>
-            {otherRoutes.map((r) => (
-              <a
-                key={r.button}
-                className="btn link"
-                href={r.href(text)}
-                target="_blank"
-                rel="noreferrer"
-                onClick={() => {
-                  setSentVia(r.channel)
-                  setOpened(true)
-                  if (!r.prefilled) void copyText(text)
-                }}
-              >
-                {r.button}
-              </a>
-            ))}
-            {phone && !routes.some((r) => r.how === 'call') && (
-              <a className="btn link" href={callUrl(phone)} title="Call instead — the message works as talking points">
-                Call {message.sender.name?.split(/\s+/)[0] || phone}
-              </a>
+            {(isSent || failed) && (
+              <p className={`send-status ${isSent ? 'ok' : 'failed'}`}>
+                {isSent
+                  ? `Sent ✓ — logged${sentAt ? ` at ${sentAt}` : ''}.`
+                  : 'Not sent. Fix the message or pick another way under More options, then copy and send again.'}
+              </p>
             )}
-            <SenderSearch sender={message.sender} normalizedKey={normalizedKey} onSaved={onApplied} />
+            <details className="more-options">
+              <summary className="btn link">More options</summary>
+              <SendToBox route={route} message={target} />
+              <div className="actions secondary-actions">
+                {otherRoutes.map((r) => (
+                  <a
+                    key={r.button}
+                    className="btn link"
+                    href={r.href(text)}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={() => {
+                      setSentVia(r.channel)
+                      setSendOpened(true)
+                      if (!r.prefilled) void copyText(text)
+                    }}
+                  >
+                    {r.button}
+                  </a>
+                ))}
+                {phone && !routes.some((r) => r.how === 'call') && (
+                  <a className="btn link" href={callUrl(phone)} title="Call instead — the message works as talking points">
+                    Call {target.sender.name?.split(/\s+/)[0] || phone}
+                  </a>
+                )}
+                <SenderSearch sender={target.sender} normalizedKey={normalizedKey} onSaved={onApplied} />
+              </div>
+            </details>
           </div>
-        </div>
-      )}
+        )}
 
-      {declining && reason && !needsCustom && (
-        <div className="actions">
-          <a
-            className={`btn link muted${sent === 'skip' ? ' done' : ''}`}
-            href={declineUrl(normalizedKey, reason.code, isOther ? customReason : '', { letter: false })}
-            onClick={markSent('skip', decline?.onClosed)}
-            title="Close the lead as skipped with this reason, without logging a message"
-          >
-            {sent === 'skip' ? 'Skipped ✓' : 'Skip without message'}
-          </a>
-        </div>
-      )}
+        {declining && reason && !needsCustom && (
+          <div className="actions">
+            <a
+              className={`btn link muted${sent === 'skip' ? ' done' : ''}`}
+              href={declineUrl(normalizedKey, reason.code, isOther ? customReason : '', { letter: false })}
+              onClick={markSent('skip', decline?.onClosed)}
+              title="Close the lead as skipped with this reason, without logging a message"
+            >
+              {sent === 'skip' ? 'Skipped ✓' : 'Skip without message'}
+            </a>
+          </div>
+        )}
+      </section>
     </div>
   )
+}
+
+function firstNameOf(name: string): string {
+  const n = (name || '').trim()
+  return n && !n.includes('@') ? n.split(/\s+/)[0] : ''
+}
+
+function formatWhen(at: string): string {
+  const d = new Date(at)
+  return Number.isNaN(d.getTime())
+    ? at
+    : d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 }
 
 const SENT_VIA: [string, string][] = [

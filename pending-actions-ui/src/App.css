@@ -1610,6 +1610,50 @@ th.num {
   font-weight: 600;
 }
 
+.manage-lead-section {
+  border-top: 1px solid var(--border, #2c313a);
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
+}
+
+.manage-lead-section-title {
+  margin: 0 0 0.35rem;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.manage-lead-section .original-message {
+  margin-bottom: 0.4rem;
+}
+
+.send-how {
+  font-size: 0.8rem;
+  color: var(--muted, #8a8f98);
+  align-self: center;
+}
+
+.send-confirm {
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.send-status {
+  margin: 0.4rem 0;
+  font-size: 0.85rem;
+}
+
+.send-status.ok {
+  color: #8fcf9a;
+}
+
+.send-status.failed {
+  color: #e0a070;
+}
+
+.more-options {
+  margin-top: 0.5rem;
+}
+
 .step-badge {
   display: inline-flex;
   align-items: center;

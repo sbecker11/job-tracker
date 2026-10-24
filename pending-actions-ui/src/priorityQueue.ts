@@ -1,3 +1,4 @@
+import type { LeadSender } from './components/ManageLeadStatus'
 import { leadAnchorId, type ReplyPlan } from './lib/links'
 import type {
   ArchivedLead,
@@ -115,6 +116,8 @@ export interface ContactPriorityItem {
   resolvedLinkedinUrl?: string
   resolvedVia?: string
   replyPlan?: ReplyPlan
+  /** The lead's contacts for Manage lead's sender chooser, newest writer first (CARD-14). */
+  senders?: LeadSender[]
   postDecline?: boolean
   declineReasonLabel?: string
   termsChanged?: boolean
@@ -304,6 +307,7 @@ function todayFields(
   | 'resolvedLinkedinUrl'
   | 'resolvedVia'
   | 'replyPlan'
+  | 'senders'
 > {
   return {
     todayTier: src.todayTier,
@@ -320,6 +324,7 @@ function todayFields(
     resolvedLinkedinUrl: src.resolvedLinkedinUrl,
     resolvedVia: src.resolvedVia,
     replyPlan: src.replyPlan,
+    senders: src.senders,
   }
 }
 
