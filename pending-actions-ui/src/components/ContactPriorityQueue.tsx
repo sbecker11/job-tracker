@@ -353,8 +353,8 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
           replyInPanel || followupInPanel
             ? [
                 replyInPanel
-                  ? "Review the reply. It's already written for you."
-                  : "Review the follow-up. It's already written for you.",
+                  ? 'Click "Open reply ▾" below. Review the reply; it\'s already written for you.'
+                  : 'Click "Open follow-up ▾" below. Review the follow-up; it\'s already written for you.',
                 route ? route.step : NO_ROUTE_STEP,
                 ...(route?.sendsAndLogs ? [] : ['Click "Message sent".']),
               ]
@@ -640,10 +640,12 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                 {item.normalizedKey && (
                   <button
                     type="button"
-                    className="btn link muted"
+                    className={replyInPanel || followupInPanel ? 'btn primary' : 'btn link muted'}
                     onClick={() => toggleLeadPanel(item.id, 'manage')}
                   >
-                    {panelKind === 'manage' ? 'Manage lead ▲' : 'Manage lead ▾'}
+                    {`${replyInPanel ? 'Open reply' : followupInPanel ? 'Open follow-up' : 'Manage lead'} ${
+                      panelKind === 'manage' ? '▲' : '▾'
+                    }`}
                   </button>
                 )}
               </div>
