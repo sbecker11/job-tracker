@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "regen": "cd .. && .venv/bin/python scripts/render_pending_actions.py --no-rescore"
+    "regen": "cd .. && .venv/bin/python scripts/render_pending_actions.py --no-rescore",
+    "test": "vitest run"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.14.10",
@@ -23,6 +24,7 @@
     "@vitejs/plugin-react": "^6.0.4",
     "oxlint": "^1.75.0",
     "typescript": "~6.0.2",
-    "vite": "^8.2.0"
+    "vite": "^8.2.0",
+    "vitest": "^5.0.5"
   }
 }

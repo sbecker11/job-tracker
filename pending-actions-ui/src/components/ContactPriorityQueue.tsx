@@ -354,7 +354,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
           replyInPanel || followupInPanel
             ? [
                 `Click "Open ${word} ▾" below. Check the sender and review the ${word}; it's already written for you.`,
-                `Click "Copy ${word} message".`,
+                `Click "Copy ${word} message". It checks the message first; apply or skip any suggestions.`,
                 route
                   ? `Click "Send ${word} message". ${
                       route.sendsAndLogs

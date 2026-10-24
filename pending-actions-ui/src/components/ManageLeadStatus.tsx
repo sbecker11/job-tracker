@@ -1,5 +1,6 @@
 import { useContext, useState } from 'react'
 import { DeclineReasonsContext } from '../lib/declineReasons'
+import { checkMessage, type QualityIssue } from '../lib/replyQuality'
 import {
   callUrl,
   declineUrl,
@@ -208,6 +209,7 @@ export function ManageLeadForm({
   const [sendOpened, setSendOpened] = useState(false)
   const [failed, setFailed] = useState(false)
   const [sentVia, setSentVia] = useState('')
+  const [review, setReview] = useState<QualityIssue[] | null>(null)
 
   const canDecline = Boolean(decline && target && reasons.length)
   const declining = canDecline && status === DECLINE_STATUS
@@ -231,6 +233,7 @@ export function ManageLeadForm({
   const word = replying ? 'reply' : followingUp ? 'follow-up' : 'decline'
 
   const clearSend = () => {
+    setReview(null)
     setSent('')
     setSentAt('')
     setCopied(false)
@@ -283,6 +286,28 @@ export function ManageLeadForm({
           ? leadStatusUrl(normalizedKey, 'following_up', '', { channel, message: text })
           : ''
   const isSent = Boolean(sent) && sent === mode
+  const qualityCtx = {
+    theirMessage: (chosen ? chosen.messages[0]?.body : reply?.original) || '',
+    firstName: firstNameOf(target?.sender.name || ''),
+    kind: (replying ? 'reply' : followingUp ? 'follow-up' : 'decline') as 'reply' | 'follow-up' | 'decline',
+  }
+  const doCopy = async (body: string) => {
+    await copyText(body)
+    setCopied(true)
+  }
+  const checkThenCopy = async () => {
+    const issues = checkMessage(text, qualityCtx)
+    setReview(issues)
+    if (!issues.length) await doCopy(text)
+  }
+  const applyFix = (issue: QualityIssue) => {
+    if (!issue.fix) return
+    const next = issue.fix(text)
+    setText(next)
+    setCopied(false)
+    setSendOpened(false)
+    setReview(checkMessage(next, qualityCtx))
+  }
 
   const received = (
     senders?.length
@@ -466,10 +491,8 @@ export function ManageLeadForm({
                 type="button"
                 className={copied ? 'btn' : 'btn primary'}
                 disabled={!text.trim()}
-                onClick={async () => {
-                  await copyText(text)
-                  setCopied(true)
-                }}
+                title="Checks the message first, then copies it"
+                onClick={() => void checkThenCopy()}
               >
                 {stepBadge(2)}
                 {copied ? `Copied ${word} message ✓` : `Copy ${word} message`}
@@ -506,6 +529,35 @@ export function ManageLeadForm({
               )}
               {route && <span className="send-how">{route.prefilled ? `opens ${route.how}, filled in` : `opens ${route.how}`}</span>}
             </div>
+            {review && review.length === 0 && copied && <p className="quality-ok">Quality check passed ✓ — copied.</p>}
+            {review && review.length > 0 && (
+              <div className="quality-review" role="status">
+                <p className="quality-title">
+                  Quality check — {review.length} {review.length === 1 ? 'suggestion' : 'suggestions'} before you copy
+                </p>
+                <ul>
+                  {review.map((i) => (
+                    <li key={i.id} className={`quality-item ${i.level}`}>
+                      <span className="quality-level">{i.level === 'rule' ? 'House rule' : 'Suggestion'}</span>{' '}
+                      {i.message} <span className="quality-suggestion">{i.suggestion}</span>
+                      {i.fix && (
+                        <button type="button" className="btn link" onClick={() => applyFix(i)}>
+                          Apply fix
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                <div className="actions">
+                  <button type="button" className="btn primary" onClick={() => void checkThenCopy()}>
+                    Check again &amp; copy
+                  </button>
+                  <button type="button" className={copied ? 'btn muted' : 'btn'} onClick={() => void doCopy(text)}>
+                    {copied ? 'Copied anyway ✓' : 'Copy anyway'}
+                  </button>
+                </div>
+              </div>
+            )}
             {sendOpened && !isSent && !route?.sendsAndLogs && (
               <div className="actions send-confirm">
                 <span>Did it send?</span>

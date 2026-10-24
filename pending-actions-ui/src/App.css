@@ -1654,6 +1654,52 @@ th.num {
   margin-top: 0.5rem;
 }
 
+.quality-ok {
+  margin: 0.4rem 0;
+  font-size: 0.85rem;
+  color: #8fcf9a;
+}
+
+.quality-review {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid #6b5a3a;
+  border-radius: 6px;
+  background: #221e17;
+  font-size: 0.85rem;
+}
+
+.quality-title {
+  margin: 0 0 0.3rem;
+  font-weight: 600;
+  color: #e3c48a;
+}
+
+.quality-review ul {
+  margin: 0 0 0.4rem;
+  padding-left: 1.1rem;
+}
+
+.quality-item {
+  margin-bottom: 0.3rem;
+}
+
+.quality-level {
+  font-weight: 600;
+}
+
+.quality-item.rule .quality-level {
+  color: #e59a8a;
+}
+
+.quality-item.suggest .quality-level {
+  color: #e3c48a;
+}
+
+.quality-suggestion {
+  color: var(--muted, #a3a8b0);
+}
+
 .step-badge {
   display: inline-flex;
   align-items: center;
