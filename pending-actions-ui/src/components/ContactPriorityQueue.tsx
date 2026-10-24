@@ -3,7 +3,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { ChannelBadge } from './ChannelBadge'
 import { DuplicateBadge } from './DuplicateBadge'
 import type { DeclineReason } from '../types'
-import { LEAD_STATUS_OPTIONS, ManageLeadForm, type MessageTarget } from './ManageLeadStatus'
+import { LEAD_STATUS_OPTIONS, ManageLeadForm, stepBadge, type MessageTarget } from './ManageLeadStatus'
 import {
   EMPTY_REPLY_PLAN,
   formatDecidedAt,
@@ -388,6 +388,21 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
             ? item.todayLabel
             : ''
         const phoneHref = telHref(item.recruiterPhone)
+        const panelFirst = replyInPanel || followupInPanel
+        const manageButton = (
+          item.normalizedKey ? (
+            <button
+              type="button"
+              className={panelFirst ? 'btn primary' : 'btn link muted'}
+              onClick={() => toggleLeadPanel(item.id, 'manage')}
+            >
+              {panelFirst && stepBadge(1)}
+              {`${replyInPanel ? 'Open reply' : followupInPanel ? 'Open follow-up' : 'Manage lead'} ${
+                panelKind === 'manage' ? '▲' : '▾'
+              }`}
+            </button>
+          ) : null
+        )
         return (
           <li
             key={item.id}
@@ -595,6 +610,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                 </span>
               </div>
               <div className="priority-actions">
+                {panelFirst && manageButton}
                 {item.company && item.title ? (
                   <HistoryLink company={item.company} title={item.title} />
                 ) : null}
@@ -637,17 +653,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     Reopen
                   </a>
                 )}
-                {item.normalizedKey && (
-                  <button
-                    type="button"
-                    className={replyInPanel || followupInPanel ? 'btn primary' : 'btn link muted'}
-                    onClick={() => toggleLeadPanel(item.id, 'manage')}
-                  >
-                    {`${replyInPanel ? 'Open reply' : followupInPanel ? 'Open follow-up' : 'Manage lead'} ${
-                      panelKind === 'manage' ? '▲' : '▾'
-                    }`}
-                  </button>
-                )}
+                {!panelFirst && manageButton}
               </div>
             </div>
 

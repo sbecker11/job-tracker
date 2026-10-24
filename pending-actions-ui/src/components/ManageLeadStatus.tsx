@@ -59,6 +59,15 @@ function statusLabel(value: string): string {
 /** Pseudo-status: log a reply without changing the lead's status. */
 const REPLY_STATUS = '__reply__'
 
+/** Number badge tying a button to its numbered step on the card. */
+export function stepBadge(n: number) {
+  return (
+    <span className="step-badge" aria-hidden="true">
+      {n}
+    </span>
+  )
+}
+
 /** Pseudo-status: not a lead stage — routes to the decline letter flow (→ skipped). */
 const DECLINE_STATUS = '__decline__'
 
@@ -165,6 +174,7 @@ export function ManageLeadForm({
   const [sent, setSent] = useState('')
   const [copied, setCopied] = useState(false)
   const [sentVia, setSentVia] = useState('')
+  const [opened, setOpened] = useState(false)
 
   const canDecline = Boolean(decline && message && reasons.length)
   const declining = canDecline && status === DECLINE_STATUS
@@ -192,6 +202,7 @@ export function ManageLeadForm({
     setReplyText(reply?.draft || '')
     setLetterEdit(null)
     setSent('')
+    setOpened(false)
   }
 
   const markSent = (which: string, after?: () => void) => () => {
@@ -221,7 +232,7 @@ export function ManageLeadForm({
   const sentLink =
     declining && reason ? (
       <a
-        className={`btn${sent === 'decline' ? ' muted' : ''}`}
+        className={`btn${sent === 'decline' ? ' muted' : opened ? ' primary' : ''}`}
         href={declineUrl(normalizedKey, reason.code, isOther ? customReason : '', {
           channel,
           letter: true,
@@ -230,24 +241,27 @@ export function ManageLeadForm({
         onClick={markSent('decline', decline?.onClosed)}
         title="After you send it: log the message and close the lead as skipped with this reason"
       >
+        {stepBadge(3)}
         {sent === 'decline' ? 'Message sent ✓' : 'Message sent'}
       </a>
     ) : replying ? (
       <a
-        className={`btn${sent === 'reply' ? ' muted' : ''}`}
+        className={`btn${sent === 'reply' ? ' muted' : opened ? ' primary' : ''}`}
         href={leadStatusUrl(normalizedKey, currentStatus || 'new', '', { channel, message: text })}
         onClick={markSent('reply', reply?.onSent)}
         title="After you send it: log your reply (status stays the same) and start waiting on the recruiter"
       >
+        {stepBadge(3)}
         {sent === 'reply' ? 'Message sent ✓' : 'Message sent'}
       </a>
     ) : followingUp ? (
       <a
-        className={`btn${sent === 'followup' ? ' muted' : ''}`}
+        className={`btn${sent === 'followup' ? ' muted' : opened ? ' primary' : ''}`}
         href={leadStatusUrl(normalizedKey, 'following_up', '', { channel, message: text })}
         onClick={markSent('followup', onApplied)}
         title="After you send it: log the message, set Following up, and restart the wait clock"
       >
+        {stepBadge(3)}
         {sent === 'followup' ? 'Message sent ✓' : 'Message sent'}
       </a>
     ) : null
@@ -359,8 +373,14 @@ export function ManageLeadForm({
 
       {composing && message && !needsCustom && (
         <div className="followup-preview">
+          {replying && reply?.original?.trim() && (
+            <details className="original-message" open>
+              <summary>Their message — from {reply.from || 'recruiter'}</summary>
+              <pre className="draft original-message-body">{reply.original}</pre>
+            </details>
+          )}
           <label className="manage-lead-field">
-            <span>Message — edit before sending if you like</span>
+            <span>{replying ? 'Your reply' : 'Message'} — edit before sending if you like</span>
             <textarea
               className="draft followup-edit"
               rows={8}
@@ -368,16 +388,10 @@ export function ManageLeadForm({
               onChange={(e) => {
                 setText(e.target.value)
                 setSent('')
+                setOpened(false)
               }}
             />
           </label>
-          {replying && reply?.original?.trim() && (
-            <details className="original-message">
-              <summary>Original message from {reply.from || 'recruiter'}</summary>
-              <pre className="draft original-message-body">{reply.original}</pre>
-            </details>
-          )}
-          <SendToBox route={route} message={message} />
           <div className="actions">
             {route?.sendsAndLogs && textHref && (
               <a
@@ -386,26 +400,30 @@ export function ManageLeadForm({
                 onClick={markSent(mode, afterSent)}
                 title={route.step}
               >
+                {stepBadge(2)}
                 {sent === mode ? `${route.button} ✓` : route.button}
               </a>
             )}
             {route && !route.sendsAndLogs && text.trim() && (
               <a
-                className="btn primary"
+                className={opened ? 'btn' : 'btn primary'}
                 href={route.href(text)}
                 target="_blank"
                 rel="noreferrer"
                 onClick={() => {
                   setSentVia('')
+                  setOpened(true)
                   if (!route.prefilled) void copyText(text)
                 }}
                 title={route.step}
               >
-                {route.button}
+                {stepBadge(2)}
+                {opened ? `${route.button} ✓` : route.button}
               </a>
             )}
             {text.trim() && !route?.sendsAndLogs && sentLink && (
               <>
+                {sentLink}
                 <label className="sent-via" title="Which app you actually sent it from — logged with the message">
                   via{' '}
                   <select value={channel} onChange={(e) => setSentVia(e.target.value)}>
@@ -416,10 +434,10 @@ export function ManageLeadForm({
                     ))}
                   </select>
                 </label>
-                {sentLink}
               </>
             )}
           </div>
+          <SendToBox route={route} message={message} />
           <div className="actions secondary-actions">
             <button
               type="button"
@@ -442,6 +460,7 @@ export function ManageLeadForm({
                 rel="noreferrer"
                 onClick={() => {
                   setSentVia(r.channel)
+                  setOpened(true)
                   if (!r.prefilled) void copyText(text)
                 }}
               >
