@@ -46,6 +46,7 @@ from job_tracker.email.models import EmailMessage, ExtractedRole
 from job_tracker.pipeline import store
 from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_EXTRACT_MODEL
 from job_tracker.pipeline.llm_extract import extract_roles_llm_cached
+from job_tracker.pipeline.pitch_match import find_lead_for_same_pitch, recruiter_name_for_mail
 from job_tracker.pipeline.qualifying_reply import extract_role_heuristic
 
 MatchTier = str  # "thread_id" | "message_id_ref" | "linkedin_thread" | "contact_email" | "named_end_client" | "llm_company_title" | "llm_company_only" | "llm_new_lead" | "heuristic_company_title" | "heuristic_new_lead" | "unmatched"
@@ -245,6 +246,15 @@ def match_message_to_job(
                 tier="contact_email",
                 reason=f"{other_address!r} already on file as a contact",
             )
+
+    pitch_name = recruiter_name_for_mail(message.subject or "", message.combined_text or "")
+    pitch_key = find_lead_for_same_pitch(conn, name=pitch_name, text=message.combined_text or "")
+    if pitch_key:
+        return MatchOutcome(
+            pitch_key,
+            "same_pitch",
+            f"same recruiter pitch as {pitch_key!r}",
+        )
 
     # Free heuristic before paid LLM (2026-08-04): structured InMails with
     # Position: + agency Inc line become stub leads without API spend.

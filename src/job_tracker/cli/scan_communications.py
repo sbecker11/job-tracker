@@ -107,6 +107,7 @@ from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT, _job_folder, _sa
 from job_tracker.pipeline.llm_extract import DEFAULT_MODEL as DEFAULT_LLM_EXTRACT_MODEL
 from job_tracker.pipeline.llm_interview import extract_interview_details_llm
 from job_tracker.pipeline.contact_intake import record_message_contact
+from job_tracker.pipeline.pitch_match import absorb_linked_copy
 from job_tracker.pipeline.models import JobConversation, JobDocument, JobLead, UnmatchedMessage
 from job_tracker.pipeline.post_application import (
     PostApplicationLabel,
@@ -308,7 +309,20 @@ def _scan_one(
         if _update_lead_jd_text(conn, job_key, outcome.extracted_role, message):
             result["action"] = "linked (+ jd_text updated)"
 
-    if job_key is not None:
+    if job_key is not None and outcome.tier == "same_pitch":
+        absorb_linked_copy(
+            conn,
+            job_key,
+            message_id,
+            message.combined_text or "",
+            subject=message.subject,
+            from_address=message.from_address,
+            channel="email",
+            output_root=output_root,
+        )
+        record_message_contact(conn, job_key, message, direction=direction, message_id=message_id)
+        result["action"] = "same pasted thread"
+    elif job_key is not None:
         contact_id = record_message_contact(conn, job_key, message, direction=direction, message_id=message_id)
 
         # Post-application signal detection (2026-07-22): a message matched
@@ -508,6 +522,12 @@ def main(argv: list[str] | None = None) -> int:
     conn = connect(args.db)
     results: list[dict] = []
     try:
+        if not args.dry_run:
+            from job_tracker.pipeline.pitch_match import link_historic_same_pitches
+
+            historic = link_historic_same_pitches(conn)
+            for item in historic:
+                print(f"[same pitch] {item}", file=sys.stderr)
         inbound_ids = list_message_ids(
             service, query=args.inbound_query, limit=args.limit, newer_than_days=args.newer_than
         )

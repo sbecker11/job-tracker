@@ -94,6 +94,67 @@ def test_workflow_clarify_includes_linkedin_stub_and_sorts_by_attempts(tmp_path:
     assert hit["status"] == "new"
 
 
+def test_gmail_copy_of_a_paste_is_one_contact(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(
+        company="End-client TBD via Jaideep S",
+        title="Data Engineer",
+        source_label="linkedin_message",
+        source_message_id="paste:jaideep",
+        jd_text="python aws data",
+        match_pct=70.0,
+        verdict="review",
+    )
+    upsert_lead(conn, lead)
+    conn.execute(
+        "UPDATE job_leads SET first_seen = ? WHERE normalized_key = ?",
+        ((NOW - timedelta(days=1)).isoformat(), lead.normalized_key),
+    )
+    conn.commit()
+    add_job_contact(
+        conn,
+        JobContact(job_key=lead.normalized_key, name="Jaideep S", role="recruiter"),
+    )
+    pitch = (
+        "Hi Shawn, I'm looking Data Engineer (Databricks & Cloud Analytics), "
+        "SaltLake City,UT-W2 or H1 Transfer- Onsite. "
+        "Plz let me know if you are available and would like to apply"
+    )
+    add_job_conversation(
+        conn,
+        JobConversation(
+            job_key=lead.normalized_key,
+            message_id="paste:jaideep",
+            channel="linkedin",
+            direction="inbound",
+            summary="Data Engineer",
+            occurred_at=(NOW - timedelta(days=1)).isoformat(),
+            body_text=pitch,
+        ),
+    )
+    add_job_conversation(
+        conn,
+        JobConversation(
+            job_key=lead.normalized_key,
+            message_id="gmail-notice",
+            channel="email",
+            direction="inbound",
+            summary="Jaideep S sent you a message",
+            occurred_at=NOW.isoformat(),
+            body_text=f"Jaideep S sent you a message\n\n{pitch}\n",
+        ),
+    )
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    workflow = build_workflow_payload(
+        data, conn=conn, age_days_fn=render_pending_actions._age_days, now=NOW
+    )
+    conn.close()
+    clarify = workflow["stages"]["clarify"]
+    hit = next(i for i in clarify if i.get("normalizedKey") == lead.normalized_key)
+    assert hit["contactAttempts"] == 1
+    assert "Databricks" in hit["messageBody"]
+
+
 def test_workflow_email_unmatched_lands_in_clarify(tmp_path: Path):
     conn = connect(tmp_path / "leads.db")
     record_unmatched_message(

@@ -256,6 +256,20 @@ def test_followup_reads_the_whole_thread_and_does_not_reask():
     assert "end client" in draft.body
 
 
+def test_onsite_or_hybrid_closes_the_remote_question():
+    onsite = (
+        "Hi Shawn, I'm looking Data Engineer (Databricks & Cloud Analytics), "
+        "SaltLake City,UT-W2 or H1 Transfer- Onsite. Python, Spark, AWS, SQL."
+    )
+    assert detect_pitch_gaps(onsite).needs_remote is False
+    draft = draft_qualifying_reply(onsite, known_recruiter_name="Jaideep S")
+    assert "Is the role fully remote" not in draft.body
+    hybrid = "It's a hybrid role based in Salt Lake City for a Data Engineer. Python, Spark, AWS, SQL."
+    assert detect_pitch_gaps(hybrid).needs_remote is False
+    unstated = "Data Engineer role. Python, Spark, AWS, SQL. W2."
+    assert detect_pitch_gaps(unstated).needs_remote is True
+
+
 def test_c2c_only_mention_still_asks_about_engagement():
     pitch = "Data Engineer, 12-month contract, $60/hr on C2C. Python, Spark, AWS Glue, SQL."
     assert detect_pitch_gaps(pitch).needs_engagement

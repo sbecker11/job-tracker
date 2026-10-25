@@ -91,7 +91,8 @@ _REMOTE_KNOWN_RE = re.compile(
     r"^Location\s*[:\-].*\bremote\b|"
     r"\b(100%\s*remote|fully\s*remote|remote\s*only)\b|"
     r"^Type\s*[:\-].*\bremote\b|"
-    r"^Location\s*[:\-]\s*Remote\b",
+    r"^Location\s*[:\-]\s*Remote\b|"
+    r"\b(on-?site|hybrid|in[- ]office)\b",
     re.I | re.M,
 )
 _END_CLIENT_KNOWN_RE = re.compile(

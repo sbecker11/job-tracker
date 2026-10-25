@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
+from job_tracker.pipeline.pitch_match import pitches_overlap
 from job_tracker.pipeline.qualifying_reply import (
     SIGNATURE,
     detect_pitch_gaps,
@@ -173,6 +174,32 @@ def _human_inbound_conversations(convs: list) -> list:
     ]
 
 
+def _conv_text(conv) -> str:
+    return f"{conv['summary'] or ''}\n{conv['body_text'] or ''}"
+
+
+def _distinct_human_inbound(convs: list) -> list:
+    """One entry per pitch. A Gmail notification of a pasted thread is the
+    same contact, and the paste is the one the card quotes."""
+    kept: list = []
+    for conv in _human_inbound_conversations(convs):
+        text = _conv_text(conv)
+        for i, prev in enumerate(kept):
+            if pitches_overlap(text, _conv_text(prev)):
+                if (conv["message_id"] or "").startswith("paste:") and not (
+                    prev["message_id"] or ""
+                ).startswith("paste:"):
+                    kept[i] = conv
+                break
+        else:
+            kept.append(conv)
+    return kept
+
+
+def _contact_attempt_count(convs: list) -> int:
+    return len(_distinct_human_inbound(convs))
+
+
 def _sort_time(ts: str | None) -> datetime:
     try:
         when = datetime.fromisoformat((ts or "").replace("Z", "+00:00"))
@@ -197,7 +224,7 @@ def _unanswered_days(convs: list, age_days_fn: Callable[[str | None, datetime], 
 
 def _unanswered_inbound(convs: list) -> object | None:
     """Latest human inbound that arrived after Shawn's last outbound (or with no outbound)."""
-    human_in = _human_inbound_conversations(convs)
+    human_in = _distinct_human_inbound(convs)
     if not human_in:
         return None
     outbound = [c for c in convs if (c["direction"] or "") == "outbound"]
@@ -582,7 +609,7 @@ def build_clarify_queue(
         unanswered_days = int(item.get("ageDays") or 0)
         if key:
             convs = list(list_job_conversations(conn, key))
-            attempts = len(_human_inbound_conversations(convs)) or max(1, attempts)
+            attempts = _contact_attempt_count(convs) or max(1, attempts)
             if _unanswered_inbound(convs) is not None:
                 unanswered_days = _unanswered_days(convs, age_days_fn, now)
         channel = _channel_from_addresses(
@@ -704,7 +731,8 @@ def build_clarify_queue(
         inbound = _human_inbound_conversations(convs)
         if not inbound:
             continue
-        latest = inbound[-1]
+        distinct = _distinct_human_inbound(convs)
+        latest = distinct[-1] if distinct else inbound[-1]
         # Leads made by Gmail/IMAP triage before 2026-10-22 logged the first
         # message without its body; the pitch text is on the lead instead.
         body = latest["body_text"] or (r["jd_text"] if len(inbound) == 1 else "") or ""
@@ -751,7 +779,7 @@ def build_clarify_queue(
                 "messageId": latest["message_id"] or "",
                 "normalizedKey": key,
                 "replyId": reply_id,
-                "contactAttempts": len(inbound),
+                "contactAttempts": _contact_attempt_count(convs),
                 "replyDue": True,
                 "unansweredDays": _unanswered_days(convs, age_days_fn, now),
                 "actionHint": next_action,
@@ -853,7 +881,7 @@ def build_clarify_queue(
                 "messageId": unanswered["message_id"] or "",
                 "normalizedKey": key,
                 "replyId": f"reply-due:{key}",
-                "contactAttempts": len(_human_inbound_conversations(convs)),
+                "contactAttempts": _contact_attempt_count(convs),
                 "replyDue": True,
                 "unansweredDays": unanswered_days,
                 "actionHint": next_action,
@@ -934,7 +962,7 @@ def build_clarify_queue(
                 "messageId": unanswered["message_id"] or "",
                 "normalizedKey": key,
                 "replyId": f"post-decline:{key}",
-                "contactAttempts": len(_human_inbound_conversations(convs)),
+                "contactAttempts": _contact_attempt_count(convs),
                 "replyDue": True,
                 "unansweredDays": unanswered_days,
                 "postDecline": True,
@@ -1430,7 +1458,7 @@ def build_send_resume_queue(
                 title=lead.get("title") or "",
                 source_label=(row["source_label"] if row else "") or "",
                 age_days=int(lead.get("ageDays") or 0),
-                contact_attempts=len(human_inbound),
+                contact_attempts=_contact_attempt_count(convs),
                 asked=asked,
                 apply_url=lead.get("applyUrl") or "",
                 package_kind=label,
@@ -1479,7 +1507,7 @@ def build_send_resume_queue(
             title=r["title"] or "",
             source_label=r["source_label"] or "",
             age_days=age_days_fn(r["first_seen"], now),
-            contact_attempts=len(human_inbound),
+            contact_attempts=_contact_attempt_count(convs),
             asked=True,
             direct_recruiter=dro,
             match_pct=match_pct,
@@ -1555,7 +1583,7 @@ def build_wait_schedule_queue(
                 "waitingDays": waiting_days,
                 "awaitingSince": r["awaiting_response_since"],
                 "status": r["status"],
-                "contactAttempts": max(1, len(human_inbound)),
+                "contactAttempts": max(1, _contact_attempt_count(convs)),
                 "followUpDue": follow_up_due,
                 "followUpThresholdDays": threshold,
                 "draftReply": draft,
@@ -1675,7 +1703,7 @@ def build_stale_active_queue(
             "waitingDays": silent_days,
             "awaitingSince": r["last_comm"] or "",
             "status": r["status"],
-            "contactAttempts": max(1, len(_human_inbound_conversations(convs))),
+            "contactAttempts": max(1, _contact_attempt_count(convs)),
             "followUpDue": True,
             "followUpThresholdDays": stale_days,
             "staleActive": not reopened,
