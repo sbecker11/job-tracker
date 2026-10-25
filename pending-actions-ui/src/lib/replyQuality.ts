@@ -22,6 +22,7 @@ export interface QualityContext {
 }
 
 const SIGNATURE = 'Best, Shawn\nshawn.becker@spexture.com'
+const CLOSING_RE = /\bBest(?: regards)?,\s*Shawn(?: Becker)?\b/i
 
 const COMP_RE = /\$\s?\d|\b\d{2,3}\s*(?:\/|per\s+)(?:hr|hour)\b|\b\d{2,3}\s?k\b(?!\w)/i
 const WORK_AUTH_RE =
@@ -113,13 +114,14 @@ export function checkMessage(text: string, ctx: QualityContext): QualityIssue[] 
       fix: (s) => s.replace(GREETING_RE, `${greet[1]} ${first},`),
     })
 
-  if (!/Best,\s*Shawn/.test(t) || !/shawn\.becker@spexture\.com/.test(t))
+  if (!CLOSING_RE.test(t) || !/shawn\.becker@spexture\.com/.test(t))
     add({
       id: 'signature',
       level: 'suggest',
       message: 'Missing the standard sign-off.',
-      suggestion: 'End with "Best, Shawn" and shawn.becker@spexture.com.',
-      fix: (s) => `${s.replace(/\s*Best,[\s\S]*$/, '').trimEnd()}\n\n${SIGNATURE}`,
+      suggestion:
+        'End with "Best, Shawn" (or "Best regards, Shawn Becker") and shawn.becker@spexture.com.',
+      fix: (s) => `${s.replace(/\s*Best(?: regards)?,[\s\S]*$/i, '').trimEnd()}\n\n${SIGNATURE}`,
     })
 
   if (PLACEHOLDER_RE.test(t))

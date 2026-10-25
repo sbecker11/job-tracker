@@ -42,6 +42,11 @@ describe('checkMessage', () => {
     expect(checkMessage(text, { firstName: 'Nalini', kind: 'reply' })).toEqual([])
   })
 
+  it('accepts "Best regards, Shawn Becker" as the closing', () => {
+    const text = 'Hi Ed,\n\nThanks for the update.\n\nBest regards, Shawn Becker\nshawn.becker@spexture.com'
+    expect(ids(text, '', 'Ed')).toEqual([])
+  })
+
   it('does not treat the phone number as a rate', () => {
     expect(ids(`Hi Ed,\n\nHappy to talk. You can reach me at +1 857-891-0896.\n\n${SIG}`, '', 'Ed')).toEqual([])
   })

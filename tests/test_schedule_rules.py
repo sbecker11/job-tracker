@@ -82,6 +82,10 @@ def test_sys3_only_top_level_entry_points_take_the_lock():
     re-entrant), so only the entry points that own a whole run may import it."""
     allowed = {
         "scripts/comms_fast_cycle.py",
+        # Long LLM runs: take the DB lock per write (--lock), never under with_db_lock.
+        "scripts/extract_required_skills.py",
+        # Uses db_lock only for its own cache lock, not var/comms_fast.lock.
+        "scripts/analyze_skills.py",
         "scripts/triage_imap_now.py",
         "scripts/with_db_lock.py",
         "src/job_tracker/pipeline/db_lock.py",

@@ -175,6 +175,37 @@ CREATE TABLE IF NOT EXISTS unmatched_messages (
     -- message in the same LinkedIn thread. Hidden from the queue.
     superseded_by TEXT
 );
+
+-- Required-skills extraction (2026-10-24): one row per lead that was run
+-- through pipeline/required_skills.py, plus one row per skill it lists.
+-- input_hash lets a re-run skip leads whose JD + messages haven't changed.
+CREATE TABLE IF NOT EXISTS lead_skill_extractions (
+    job_key TEXT PRIMARY KEY,
+    input_hash TEXT,
+    model TEXT,
+    extracted_at TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cost_usd REAL,
+    role_family TEXT,
+    seniority TEXT,
+    years_required REAL,
+    engagement_json TEXT,
+    raw_json TEXT
+);
+CREATE TABLE IF NOT EXISTS lead_skills (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_key TEXT NOT NULL,
+    skill TEXT NOT NULL,
+    canonical TEXT NOT NULL,
+    category TEXT,
+    importance TEXT,
+    years REAL,
+    source TEXT,
+    quote TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_lead_skills_job ON lead_skills(job_key);
+CREATE INDEX IF NOT EXISTS idx_lead_skills_canonical ON lead_skills(canonical);
 """
 
 # Columns added after the initial release. New databases get them via

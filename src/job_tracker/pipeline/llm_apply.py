@@ -322,16 +322,27 @@ def _print_llm_call_actual(metrics: CallMetrics) -> None:
     )
 
 
-def _call(system: str, user: str, *, model: str, client=None, max_tokens: int = 4096, step: str = "call") -> tuple[str, CallMetrics]:
+def _call(
+    system: str,
+    user: str,
+    *,
+    model: str,
+    client=None,
+    max_tokens: int = 4096,
+    step: str = "call",
+    thinking: dict | None = None,
+) -> tuple[str, CallMetrics]:
     client = client or _client()
     pred_cost, est_in, est_out = _predicted_call_cost(model, system, user, max_tokens=max_tokens)
     _print_llm_call_pred(step, pred_cost, est_in, est_out)
     start = time.monotonic()
+    extra = {"thinking": thinking} if thinking is not None else {}
     response = client.messages.create(
         model=model,
         max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": user}],
+        **extra,
     )
     elapsed_s = time.monotonic() - start
     text = "".join(block.text for block in response.content if getattr(block, "type", "") == "text")
@@ -355,7 +366,14 @@ _REPAIR_SYSTEM_PROMPT = (
 
 
 def _call_and_parse_json(
-    system: str, user: str, *, model: str, client=None, max_tokens: int = 4096, step: str = "call"
+    system: str,
+    user: str,
+    *,
+    model: str,
+    client=None,
+    max_tokens: int = 4096,
+    step: str = "call",
+    thinking: dict | None = None,
 ) -> tuple[dict, list[CallMetrics]]:
     """Call the model and parse its JSON response, with one repair retry if the
     first response isn't valid JSON (observed failure mode: an unescaped quote
@@ -363,7 +381,12 @@ def _call_and_parse_json(
     Returns the parsed dict plus every CallMetrics incurred (1 normally, 2 if
     a repair retry was needed)."""
     client = client or _client()
-    raw, metrics = _call(system, user, model=model, client=client, max_tokens=max_tokens, step=step)
+    raw, metrics = _call(
+        system, user, model=model, client=client, max_tokens=max_tokens, step=step, thinking=thinking
+    )
+    if not raw.strip():
+        # Nothing to repair: the output budget went to thinking before any text.
+        raise LLMApplyError(f"{step}: empty response after {metrics.output_tokens} output tokens")
     try:
         return _parse_json_object(raw), [metrics]
     except (json.JSONDecodeError, LLMApplyError) as exc:
@@ -375,6 +398,7 @@ def _call_and_parse_json(
             client=client,
             max_tokens=max_tokens,
             step=f"{step}_json_repair",
+            thinking=thinking,
         )
         return _parse_json_object(repaired), [metrics, repair_metrics]
 
