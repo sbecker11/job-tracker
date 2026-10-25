@@ -39,3 +39,13 @@ documents, meetings, offers, processed mail), résumé-package files under
 ```bash
 python scripts/find_mail_api.py   # if the UI is already up without the API
 ```
+
+## Paste a LinkedIn thread
+
+Copy the thread in LinkedIn (the message, including any `linkedin.com/messaging/thread/…` link), then from the job-tracker repo:
+
+```bash
+python scripts/paste_linkedin_lead.py
+```
+
+That reads the clipboard and posts it to `POST /api/linkedin-lead` on the API above. The lead shows on Pending Actions within a minute. A pipe works too: `pbpaste | python scripts/paste_linkedin_lead.py`.

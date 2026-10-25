@@ -1,7 +1,9 @@
-"""Local HTTP API for Pending Actions "Find JD email" (IMAP + full leads.db + package files).
+"""Local HTTP API for Pending Actions.
 
     python scripts/find_mail_api.py --port 3175
 
+`GET /api/find-mail` searches leads and mail. `POST /api/linkedin-lead`
+turns a pasted LinkedIn thread into a lead and regenerates the page.
 Binds 127.0.0.1 only. Vite proxies /api → this port. Do not expose on LAN.
 """
 
@@ -22,6 +24,7 @@ if str(_SRC) not in sys.path:
 
 from job_tracker.cli.export_communications import export_job_history  # noqa: E402
 from job_tracker.pipeline.find_mail import search  # noqa: E402
+from job_tracker.pipeline.paste_linkedin import post_pasted_thread, refresh_pending_actions  # noqa: E402
 from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect  # noqa: E402
 
 DEFAULT_PORT = 3175
@@ -71,6 +74,38 @@ class FindMailHandler(BaseHTTPRequestHandler):
             return
         self._send(404, {"error": "not found"})
 
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
+        if path not in {"/api/linkedin-lead", "/linkedin-lead"}:
+            self._send(404, {"error": "not found"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 400_000:
+            self._send(400, {"ok": False, "error": "Paste the LinkedIn thread in the request body."})
+            return
+        raw = self.rfile.read(length)
+        text = raw.decode("utf-8", errors="replace")
+        if "application/json" in (self.headers.get("Content-Type") or "").lower():
+            try:
+                text = str(json.loads(text).get("text") or "")
+            except json.JSONDecodeError:
+                self._send(400, {"ok": False, "error": "Invalid JSON."})
+                return
+        conn = connect(self.db_path)
+        try:
+            result = post_pasted_thread(conn, text)
+        finally:
+            conn.close()
+        if not result.get("ok"):
+            self._send(400, result)
+            return
+        result["rendered"] = refresh_pending_actions(self.db_path) if result.get("changed") else False
+        self._send(200, result)
+
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
@@ -81,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     FindMailHandler.db_path = args.db
     server = ThreadingHTTPServer((args.host, args.port), FindMailHandler)
     print(f"find-mail API http://{args.host}:{args.port}/api/find-mail?q=", flush=True)
+    print(f"linkedin paste http://{args.host}:{args.port}/api/linkedin-lead", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
