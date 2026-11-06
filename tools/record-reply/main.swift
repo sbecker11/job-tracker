@@ -73,7 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let name = value("name")
         let channel = value("channel").isEmpty ? "linkedin" : value("channel")
 
-        guard let (text, sentAt) = confirm(name: name, draft: value("text")) else { return }
+        guard let (text, sentAt) = confirm(config: config, messageId: messageId, name: name, draft: value("text")) else { return }
 
         var args = ["--db", config.dbPath, "--message-id", messageId, "--text", text,
                     "--channel", channel, "--sent-at", sentAt]
@@ -89,7 +89,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The reply as sent + when; nil on Cancel. Today → now; an earlier day → noon that day.
-    private func confirm(name: String, draft: String) -> (String, String)? {
+    /// A greeting that names someone else stops Save and offers a way back.
+    private func confirm(config: Config, messageId: String, name: String, draft: String) -> (String, String)? {
         NSApp.activate(ignoringOtherApps: true)
         let a = NSAlert()
         a.messageText = "Record your reply to \(name.isEmpty ? "the recruiter" : name)"
@@ -125,6 +126,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard a.runModal() == .alertFirstButtonReturn else { return nil }
         let text = tv.string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
+        if let warning = greetingWarning(config: config, messageId: messageId, name: name, text: text) {
+            let warn = NSAlert()
+            warn.messageText = "Check the name"
+            warn.informativeText = warning
+            warn.alertStyle = .warning
+            warn.addButton(withTitle: "Go back")
+            warn.addButton(withTitle: "Save anyway")
+            if warn.runModal() != .alertSecondButtonReturn {
+                return confirm(config: config, messageId: messageId, name: name, draft: text)
+            }
+        }
 
         let cal = Calendar.current
         var when = Date()
@@ -134,6 +146,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime]
         return (text, iso.string(from: when))
+    }
+
+    /// nil when the greeting fits. The warning text when it names someone else.
+    private func greetingWarning(config: Config, messageId: String, name: String, text: String) -> String? {
+        guard !name.isEmpty else { return nil }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: config.binPath)
+        proc.arguments = [
+            "--db", config.dbPath, "--message-id", messageId, "--text", text,
+            "--contact-name", name, "--check-greeting",
+        ]
+        let outPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            return nil
+        }
+        guard proc.terminationStatus == 3 else { return nil }
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        let warning = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return warning.isEmpty ? nil : warning
     }
 
     private func run(_ bin: String, _ args: [String]) -> String? {

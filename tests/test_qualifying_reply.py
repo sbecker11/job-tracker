@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from job_tracker.pipeline.models import UnmatchedMessage
 from job_tracker.pipeline.qualifying_reply import (
     detect_pitch_gaps,
@@ -147,6 +149,51 @@ It's a hybrid role based in Salt Lake City.
 """
 
 
+RAHMAN_BRIEF_CONVERSATION = """
+Applied AI & Data Architecture Advisory Opportunity
+
+Dr. Md Mostafizur Rahman
+HR Director | Talent Acquisition
+
+Hello Shawn,
+
+I'm representing a U.S.-based AI startup exploring a remote Consultant/Advisor opportunity.
+
+Would you be open to a brief conversation to learn more about this opportunity?
+"""
+
+
+@pytest.mark.parametrize(
+    "ask",
+    [
+        "Would you be open to a brief conversation to learn more about this opportunity?",
+        "Are you open to a quick chat to explore this further?",
+        "Let me know if you'd be open to connecting.",
+        "Do you have time for a quick call this week?",
+    ],
+)
+def test_call_ask_without_jd_is_screen_first(ask):
+    gaps = detect_pitch_gaps(f"Hi Shawn,\n\nI have an opportunity with a client.\n\n{ask}\n")
+    assert gaps.screen_first is True
+
+
+def test_draft_rahman_brief_conversation_offers_a_call():
+    draft = draft_qualifying_reply(
+        RAHMAN_BRIEF_CONVERSATION, subject="Applied AI & Data Architecture Advisory Opportunity"
+    )
+    assert draft.gaps.screen_first is True
+    assert "call" in draft.body.lower()
+    assert "paste the job description" not in draft.body.lower()
+
+
+def test_interested_only_pitch_is_not_screen_first():
+    gaps = detect_pitch_gaps(
+        "Hi Shawn\nI have a Job Opportunity for you with client.\n"
+        "Type – Contract to Hire\nLocation -Remote\nPlease let me know if you are Interested,\n"
+    )
+    assert gaps.screen_first is False
+
+
 def test_draft_confidential_chat_is_screen_first():
     gaps = detect_pitch_gaps(STEPHEN_CALL_THEN_JD, subject="AI Engineer Salt Lake City")
     assert gaps.screen_first is True
@@ -268,6 +315,38 @@ def test_onsite_or_hybrid_closes_the_remote_question():
     assert detect_pitch_gaps(hybrid).needs_remote is False
     unstated = "Data Engineer role. Python, Spark, AWS, SQL. W2."
     assert detect_pitch_gaps(unstated).needs_remote is True
+
+
+def test_doctor_is_greeted_formally_by_family_name():
+    draft = draft_qualifying_reply(
+        "Hello Shawn,\n\nWould you be open to a brief conversation?\n",
+        known_recruiter_name="Dr. Md Mostafizur Rahman",
+        received_at="2026-10-24T16:00:00",
+    )
+    assert draft.first_name == "Dr. Rahman"
+    assert draft.body.startswith("Hello, Dr. Rahman.")
+
+
+def test_doctor_follow_up_uses_the_same_formal_greeting():
+    from job_tracker.pipeline.qualifying_reply import detect_pitch_gaps
+    from job_tracker.pipeline.reply_intent import draft_live_thread_reply
+
+    reply = draft_live_thread_reply(
+        "Could we schedule a quick call tomorrow?",
+        first_name="Dr. Rahman",
+        gaps=detect_pitch_gaps(""),
+    )
+    assert reply is not None
+    assert reply.startswith("Hello, Dr. Rahman.")
+
+
+def test_md_abbreviation_is_not_a_doctorate():
+    draft = draft_qualifying_reply(
+        "Hello Shawn,\n\nWould you be open to a brief conversation?\n",
+        known_recruiter_name="Md Rahim",
+        received_at="2026-10-24T16:00:00",
+    )
+    assert draft.body.startswith("Hi Rahim,")
 
 
 def test_c2c_only_mention_still_asks_about_engagement():

@@ -13,7 +13,7 @@ candidate:
   name: "Shawn Becker"
   positioning: "Senior individual-contributor track"
   compensation_floor:
-    contract_hourly_w2_usd: 75
+    contract_hourly_w2_usd: 70
     permanent_base_usd: 115000
 
 # Structural / stack dealbreakers (CLAUDE.md §3). "keywords" are matched
@@ -94,6 +94,10 @@ dealbreakers:
       # onsite near Lehi is fine.
       - "location\\s*:(?![^\\n]{0,80}\\b(UT|Utah|Lehi|Salt Lake|Provo|Orem|Draper|Sandy|American Fork|Pleasant Grove|South Jordan)\\b)[^\\n]{0,80}[-–(]\\s*on-?site\\b(?!\\s*/\\s*(remote|hybrid))"
     min_hits: 1
+    # Onsite near Lehi is fine (~15 min commute), so a Utah work site clears
+    # every pattern above. Added 2026-11-04 after "100% onsite at the
+    # Riverton office ... Riverton, UT" (Net2Source) was auto-skipped.
+    skip_if: "(?-i:\\bUT\\b)|\\b(Utah|Lehi|Salt Lake|SLC|Provo|Orem|Draper|Sandy|American Fork|Pleasant Grove|South Jordan|West Jordan|Riverton|Herriman|Bluffdale|Saratoga Springs|Eagle Mountain|Lindon|Alpine|Highland|Cedar Hills|Vineyard|Midvale|Murray|Cottonwood Heights)\\b"
     verdict: "Dealbreaker — onsite-only, not in/near Lehi, UT"
   - id: eastern_time_required
     label: "Remote but must be located in / work Eastern time"

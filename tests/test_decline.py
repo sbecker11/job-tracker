@@ -13,6 +13,7 @@ from job_tracker.cli import decline_lead
 from job_tracker.pipeline.decline import (
     DECLINE_REASONS,
     draft_decline_letter,
+    first_name,
     record_decline,
     terms_changed,
 )
@@ -63,6 +64,13 @@ def test_every_letter_follows_reply_house_rules(reason):
         assert banned not in letter.lower()
 
 
+def test_first_name_skips_a_title():
+    assert first_name("Kimber Gabryszak") == "Kimber"
+    assert first_name("Dr. Md Mostafizur Rahman") == "Mostafizur"
+    assert first_name("Mr. John Smith") == "John"
+    assert first_name("recruiter@firm.com") == "there"
+
+
 def test_company_ending_in_a_period_is_not_doubled():
     letter = draft_decline_letter("not_qualified", company="Next Level, Inc.", title="Lead")
     assert "role at Next Level, Inc. After reviewing" in letter
@@ -79,7 +87,7 @@ def test_placeholder_title_and_client_are_left_out():
 
 def test_other_reason_uses_the_note_and_requires_one():
     letter = draft_decline_letter("other", recruiter_name="", note="I've just accepted another offer.")
-    assert letter.startswith("Hi there,\n\nThank you for reaching out.")
+    assert letter.startswith("Hi,\n\nThank you for reaching out.")
     assert "I've just accepted another offer." in letter
     with pytest.raises(ValueError):
         draft_decline_letter("other")

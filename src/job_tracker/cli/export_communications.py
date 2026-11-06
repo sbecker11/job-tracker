@@ -1,25 +1,26 @@
 """CLI: render one job's full communications history (job_conversations) to
-a single ODT under that job's folder.
+a single RTF file under that job's folder.
 
 Deliberately on-demand, not automatic (2026-07-17 design decision — see
 chat history): every inbound/outbound message is already archived as text
 in `job_conversations.body_text` the moment it's linked (by
 `triage_recruiter_inbox.py` or `scan_communications.py`), which is cheap,
-searchable, and needs no rendering step. An ODT is only generated when you
-actually want a paper trail to hand someone — this command builds it fresh
-from whatever's in the DB right now, every time; it does not accumulate
-separate dated snapshots.
+searchable, and needs no rendering step. An RTF is only generated when
+you actually want a paper trail to hand someone — this command builds it
+fresh from whatever's in the DB right now, every time; it does not
+accumulate separate dated snapshots.
 
-ODT (not PDF) so the thread opens in Pages / LibreOffice / Word with normal
-dark-mode reading, copy/paste, and editing — Preview's PDF dark mode is
-chrome-only.
+RTF (2026-10-27) so History opens in TextEdit with a dark page and light
+text. LibreOffice, which opened the previous ODT, has no dark theme that
+is comfortable to read. A leftover ``Communications_*.odt`` or ``.txt``
+next to the new file is removed on export.
 
 Every export (CLI, Find Mail, and ``viewcomms://``) collapses IMAP+Gmail
 twins after stripping LinkedIn notification chrome, then replaces later
 copies of the same cleaned body with a pointer to the first instance.
 Non-human mailer tracking (pixel padding, ``midToken`` / ``lipi`` /
 unsubscribe URLs, encoded LinkedIn thread links) is diverted to a sidecar
-``.log`` next to the ODT.
+``.log`` next to the RTF.
 """
 
 from __future__ import annotations
@@ -32,8 +33,6 @@ import zipfile
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
-from xml.sax.saxutils import escape
-
 from job_tracker.pipeline.llm_apply import DEFAULT_OUTPUT_ROOT, _job_folder, _safe_filename
 from job_tracker.pipeline.models import JobDocument
 from job_tracker.pipeline.store import (
@@ -481,20 +480,6 @@ def replace_duplicate_bodies(
     return out
 
 
-def _xml_text(text: str) -> str:
-    """Escape XML specials; map bare newlines to ODF soft line-breaks."""
-    # escape() leaves newlines alone; soft-break each one so multi-line
-    # email bodies stay readable inside a single text:p.
-    return escape(text or "").replace("\r\n", "\n").replace("\r", "\n").replace(
-        "\n", "<text:line-break/>"
-    )
-
-
-def _p(text: str, *, style: str | None = None) -> str:
-    style_attr = f' text:style-name="{style}"' if style else ""
-    return f"<text:p{style_attr}>{_xml_text(text)}</text:p>"
-
-
 _STAGE_LABELS: dict[str, str] = {
     "pursued": "Pursued",
     "package_generated": "Package generated",
@@ -546,7 +531,55 @@ def status_timeline(job) -> list[tuple[str, str]]:
     return sorted(events, key=_key)
 
 
-def _render_odt(
+def _rtf_escape(text: str) -> str:
+    """Escape one paragraph for RTF, keeping Unicode as ``\\uN?``."""
+    parts: list[str] = []
+    for ch in (text or "").replace("\r\n", "\n").replace("\r", "\n"):
+        if ch == "\\":
+            parts.append("\\\\")
+        elif ch == "{":
+            parts.append("\\{")
+        elif ch == "}":
+            parts.append("\\}")
+        elif ch == "\n":
+            parts.append("\\line ")
+        elif ord(ch) < 128:
+            parts.append(ch)
+        else:
+            n = ord(ch)
+            if n > 32767:
+                n -= 65536
+            parts.append(f"\\u{n}?")
+    return "".join(parts)
+
+
+def rtf_to_text(raw: str) -> str:
+    """Best-effort plain text from an RTF history, for tests and re-export."""
+    def _uchar(match: re.Match[str]) -> str:
+        n = int(match.group(1))
+        if n < 0:
+            n += 65536
+        return chr(n)
+
+    text = re.sub(r"\\u(-?\d+)\?", _uchar, raw)
+    text = text.replace("\\\\", "\x00")
+    text = text.replace("\\{", "{").replace("\\}", "}")
+    text = text.replace("\\par", "\n").replace("\\line", "\n")
+    text = re.sub(r"\\[a-zA-Z]+-?\d* ?", "", text)
+    text = text.replace("{", "").replace("}", "").replace("\x00", "\\")
+    return text
+
+
+def _rtf_paragraph(text: str, *, size: int = 22, bold: bool = False) -> str:
+    weight = "\\b " if bold else ""
+    closer = "\\b0" if bold else ""
+    return (
+        f"\\pard\\plain\\f0\\fs{size}{weight}\\cf1\\cb2\\highlight2 "
+        f"{_rtf_escape(text)}{closer}\\par"
+    )
+
+
+def _render_rtf(
     job_key: str,
     company: str,
     title: str,
@@ -558,42 +591,33 @@ def _render_odt(
     status: str = "",
     timeline: list[tuple[str, str]] | None = None,
 ) -> None:
-    """Write a minimal ODF Text document (no odfpy — stdlib zip + XML)."""
+    """Write the history as a dark-page RTF (light text on #1a1a1a)."""
     log_name = f"Communications_{_safe_filename(title)}.log"
-    parts: list[str] = [
-        _p(f"{title} @ {company}", style="Title"),
-        _p(
-            f"Communications history — {len(conversations)} entries — job_key: {job_key}",
-            style="Subtitle",
-        ),
-        _p(
-            f"Non-human mailer tracking was moved to {log_name}.",
-            style="Subtitle",
-        ),
-        _p(""),
+    lines: list[str] = [
+        f"{title} @ {company}",
+        f"Communications history — {len(conversations)} entries — job_key: {job_key}",
+        f"Non-human mailer tracking was moved to {log_name}.",
+        "",
     ]
 
     if timeline:
         current = _STAGE_LABELS.get(status, status.replace("_", " ").capitalize()) if status else ""
-        parts.append(
-            _p(f"Status timeline — current status: {current}" if current else "Status timeline", style="Heading")
+        lines.append(
+            f"Status timeline — current status: {current}" if current else "Status timeline"
         )
         for when, label in timeline:
-            parts.append(_p(f"{when[:10]}  {label}", style="Summary"))
-        parts.append(_p(""))
+            lines.append(f"{when[:10]}  {label}")
+        lines.append("")
 
     docs = [d for d in documents if d["doc_type"] not in _DOC_TYPES_HIDDEN]
     if docs:
-        parts.append(_p("Documents on file", style="Heading"))
+        lines.append("Documents on file")
         for doc in docs:
-            parts.append(
-                _p(
-                    f"{doc['doc_type']} (v{doc['version']}), attached {doc['created_at']}: "
-                    f"{doc['path_or_url']}",
-                    style="Summary",
-                )
+            lines.append(
+                f"{doc['doc_type']} (v{doc['version']}), attached {doc['created_at']}: "
+                f"{doc['path_or_url']}"
             )
-        parts.append(_p(""))
+        lines.append("")
 
     tracking_sections: list[tuple[str, str, str, list[str]]] = []
     cleaned_bodies = []
@@ -627,81 +651,25 @@ def _render_odt(
             else "INBOUND (they wrote)"
         )
         summary = _row_get(convo, "summary") or "(no summary)"
-        parts.append(
-            _p(
-                f"{convo['occurred_at']} — {direction_label} — {contact_label}",
-                style="Heading",
-            )
-        )
-        parts.append(_p(summary, style="Summary"))
+        lines.append(f"{convo['occurred_at']} — {direction_label} — {contact_label}")
+        lines.append(summary)
         if body and body.strip() != summary.strip():
-            parts.append(_p(body, style="Body"))
-        parts.append(_p(""))  # spacer between messages
+            lines.append(body)
+        lines.append("")
 
-    content_xml = (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
-        'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" '
-        'xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" '
-        'xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" '
-        'office:version="1.2">\n'
-        "<office:automatic-styles>\n"
-        '<style:style style:name="Title" style:family="paragraph">'
-        '<style:text-properties fo:font-size="16pt" fo:font-weight="bold"/>'
-        "</style:style>\n"
-        '<style:style style:name="Subtitle" style:family="paragraph">'
-        '<style:text-properties fo:font-size="10pt"/>'
-        "</style:style>\n"
-        '<style:style style:name="Heading" style:family="paragraph">'
-        '<style:text-properties fo:font-size="11pt" fo:font-weight="bold"/>'
-        "</style:style>\n"
-        '<style:style style:name="Summary" style:family="paragraph">'
-        '<style:text-properties fo:font-size="10pt" fo:font-style="italic"/>'
-        "</style:style>\n"
-        '<style:style style:name="Body" style:family="paragraph">'
-        '<style:text-properties fo:font-size="9pt" style:font-name="Courier New"/>'
-        "</style:style>\n"
-        "</office:automatic-styles>\n"
-        "<office:body><office:text>\n"
-        + "\n".join(parts)
-        + "\n</office:text></office:body>\n"
-        "</office:document-content>\n"
+    paragraphs = []
+    for index, line in enumerate(lines):
+        paragraphs.append(_rtf_paragraph(line, size=32 if index == 0 else 22, bold=index == 0))
+    # fillColor 1710618 is #1a1a1a stored as BGR. cf1 is #e6e6e6, cb2/highlight2 is the page.
+    document = (
+        "{\\rtf1\\ansi\\ansicpg1252\\deff0\n"
+        "{\\fonttbl{\\f0\\fswiss Helvetica;}}\n"
+        "{\\colortbl;\\red230\\green230\\blue230;\\red26\\green26\\blue26;}\n"
+        "{\\*\\background{\\shp{\\*\\shpinst\\shpleft0\\shptop0\\shpright0\\shpbottom0"
+        "{\\sp{\\sn fillColor}{\\sv 1710618}}{\\sp{\\sn fFilled}{\\sv 1}}}}}\n"
+        + "\n".join(paragraphs)
+        + "\n}"
     )
-
-    styles_xml = (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
-        'office:version="1.2">\n'
-        "<office:styles/>\n"
-        "</office:document-styles>\n"
-    )
-
-    meta_xml = (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
-        'xmlns:dc="http://purl.org/dc/elements/1.1/" '
-        'office:version="1.2">\n'
-        "<office:meta>"
-        f"<dc:title>{escape(f'{title} @ {company} — communications')}</dc:title>"
-        "</office:meta>\n"
-        "</office:document-meta>\n"
-    )
-
-    manifest_xml = (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" '
-        'manifest:version="1.2">\n'
-        '<manifest:file-entry manifest:full-path="/" '
-        'manifest:media-type="application/vnd.oasis.opendocument.text"/>\n'
-        '<manifest:file-entry manifest:full-path="content.xml" '
-        'manifest:media-type="text/xml"/>\n'
-        '<manifest:file-entry manifest:full-path="styles.xml" '
-        'manifest:media-type="text/xml"/>\n'
-        '<manifest:file-entry manifest:full-path="meta.xml" '
-        'manifest:media-type="text/xml"/>\n'
-        "</manifest:manifest>\n"
-    )
-
     out_path.parent.mkdir(parents=True, exist_ok=True)
     write_tracking_log(
         out_path.with_suffix(".log"),
@@ -710,17 +678,11 @@ def _render_odt(
         job_key=job_key,
         sections=tracking_sections,
     )
-    # ODF requires `mimetype` as the first zip entry, stored (not deflated).
-    with zipfile.ZipFile(out_path, "w") as zf:
-        zf.writestr(
-            "mimetype",
-            "application/vnd.oasis.opendocument.text",
-            compress_type=zipfile.ZIP_STORED,
-        )
-        zf.writestr("META-INF/manifest.xml", manifest_xml)
-        zf.writestr("content.xml", content_xml)
-        zf.writestr("styles.xml", styles_xml)
-        zf.writestr("meta.xml", meta_xml)
+    out_path.write_text(document, encoding="utf-8")
+    for suffix in (".odt", ".txt"):
+        leftover = out_path.with_suffix(suffix)
+        if leftover.is_file():
+            leftover.unlink()
 
 
 def export_job_history(
@@ -730,7 +692,7 @@ def export_job_history(
     db_path: Path = DEFAULT_DB_PATH,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
 ) -> dict:
-    """Write the communications ODT and return a JSON-serializable result.
+    """Write the communications RTF and return a JSON-serializable result.
 
     Does not open the file — the URL-scheme helper and the local HTTP API
     decide whether to `open` it.
@@ -757,8 +719,8 @@ def export_job_history(
         documents = list_job_documents(conn, job_key)
         multi_lead = len(get_sibling_titles(conn, company, exclude_title=title)) > 0
         job_dir = _job_folder(output_root, company=company, title=title, multi_lead=multi_lead)
-        out_path = job_dir / "communications" / f"Communications_{_safe_filename(title)}.odt"
-        _render_odt(
+        out_path = job_dir / "communications" / f"Communications_{_safe_filename(title)}.rtf"
+        _render_rtf(
             job_key,
             company,
             title,
@@ -787,18 +749,27 @@ def export_job_history(
 
 
 def discover_on_disk_communications(output_root: Path) -> list[Path]:
-    """Every Communications_*.odt under a job's communications/ folder."""
+    """Every Communications history file under a job's communications/ folder.
+
+    A leftover ``.odt`` or ``.txt`` is included so a batch re-export can
+    replace it with RTF. When more than one suffix exists, the RTF wins.
+    """
     root = Path(output_root)
     if not root.is_dir():
         return []
-    found: list[Path] = []
-    for path in root.rglob("Communications_*.odt"):
-        if path.name.startswith(".") or ".~lock" in path.name:
-            continue
-        if path.parent.name != "communications":
-            continue
-        found.append(path)
-    return sorted(found)
+    rank = {".odt": 0, ".txt": 1, ".rtf": 2}
+    found: dict[Path, Path] = {}
+    for pattern in ("Communications_*.odt", "Communications_*.txt", "Communications_*.rtf"):
+        for path in root.rglob(pattern):
+            if path.name.startswith(".") or ".~lock" in path.name:
+                continue
+            if path.parent.name != "communications":
+                continue
+            key = path.parent / path.stem
+            current = found.get(key)
+            if current is None or rank.get(path.suffix, 0) >= rank.get(current.suffix, 0):
+                found[key] = path
+    return sorted(found.values())
 
 
 def _lead_folder_index(conn) -> dict[tuple[str, str], tuple[str, str]]:
@@ -809,6 +780,27 @@ def _lead_folder_index(conn) -> dict[tuple[str, str], tuple[str, str]]:
             row["title"],
         )
     return index
+
+
+def _heading_from_history(path: Path) -> tuple[str, str] | None:
+    """First ``title @ company`` line, from an RTF, a text file, or a leftover ODT."""
+    if path.suffix.lower() == ".odt":
+        return _heading_from_odt(path)
+    try:
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    if path.suffix.lower() == ".rtf":
+        raw = rtf_to_text(raw)
+    for line in raw.splitlines():
+        line = line.strip()
+        if " @ " not in line:
+            continue
+        title, company = line.split(" @ ", 1)
+        title, company = title.strip(), company.strip()
+        if title and company:
+            return title, company
+    return None
 
 
 def _heading_from_odt(path: Path) -> tuple[str, str] | None:
@@ -833,14 +825,14 @@ def _heading_from_odt(path: Path) -> tuple[str, str] | None:
 def resolve_odt_lead(
     path: Path, *, index: dict[tuple[str, str], tuple[str, str]]
 ) -> tuple[str, str] | None:
-    """Map an on-disk ODT back to job_leads company/title."""
+    """Map an on-disk history file back to job_leads company/title."""
     if path.parent.name == "communications":
         title_folder = path.parent.parent.name
         company_folder = path.parent.parent.parent.name
         hit = index.get((company_folder, title_folder))
         if hit:
             return hit
-    heading = _heading_from_odt(path)
+    heading = _heading_from_history(path)
     if heading:
         title, company = heading
         hit = index.get((_safe_filename(company), _safe_filename(title)))
@@ -855,7 +847,7 @@ def export_on_disk_histories(
     db_path: Path = DEFAULT_DB_PATH,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
 ) -> dict:
-    """Re-export every on-disk communications ODT with the current processing."""
+    """Re-export every on-disk communications history with the current processing."""
     conn = connect(db_path)
     try:
         index = _lead_folder_index(conn)
@@ -891,7 +883,7 @@ def _print_one_export(result: dict) -> int:
         err = result.get("error") or "export failed"
         company, title = result.get("company") or "", result.get("title") or ""
         if err == "unresolved":
-            print(f"Could not match on-disk ODT to a lead: {result.get('path')}", file=sys.stderr)
+            print(f"Could not match on-disk history to a lead: {result.get('path')}", file=sys.stderr)
             return 1
         if err == "not found":
             print(f"No job found for {title!r} @ {company!r}.", file=sys.stderr)
@@ -917,7 +909,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--all-on-disk",
         action="store_true",
-        help="Re-export every Communications_*.odt under --output-root.",
+        help="Re-export every Communications history file under --output-root.",
     )
     ap.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     args = ap.parse_args(argv)
@@ -928,7 +920,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         batch = export_on_disk_histories(db_path=args.db, output_root=args.output_root)
         if batch["found"] == 0:
-            print(f"No communications ODTs found under {args.output_root}.")
+            print(f"No communications history files found under {args.output_root}.")
             return 0
         rc = 0
         for result in batch["results"]:
@@ -936,7 +928,7 @@ def main(argv: list[str] | None = None) -> int:
                 rc = 1
         print(
             f"Batch: {batch['exported']} exported, {batch['failed']} failed "
-            f"({batch['found']} on-disk ODT(s))."
+            f"({batch['found']} on-disk history file(s))."
         )
         return rc
 

@@ -1,8 +1,7 @@
-"""Tests for the on-demand communications ODT export CLI."""
+"""Tests for the on-demand communications RTF export CLI."""
 
 from __future__ import annotations
 
-import zipfile
 from pathlib import Path
 
 import pytest
@@ -14,6 +13,7 @@ from job_tracker.cli.export_communications import (
     omit_empty_email_husk,
     replace_duplicate_bodies,
     replace_duplicate_job_descriptions,
+    rtf_to_text,
     main as export_main,
 )
 from job_tracker.pipeline.models import JobConversation, JobLead
@@ -39,18 +39,19 @@ def seeded_db(tmp_path: Path) -> Path:
     return db_path
 
 
-def test_export_writes_odt(seeded_db: Path, tmp_path: Path, capsys):
+def test_export_writes_rtf(seeded_db: Path, tmp_path: Path, capsys):
     out_root = tmp_path / "out"
     rc = export_main(
         ["--db", str(seeded_db), "--company", "Acme", "--title", "Engineer", "--output-root", str(out_root)]
     )
     assert rc == 0
 
-    odt_path = out_root / "Acme" / "Engineer" / "communications" / "Communications_Engineer.odt"
-    assert odt_path.is_file()
-    assert odt_path.stat().st_size > 0
+    rtf_path = out_root / "Acme" / "Engineer" / "communications" / "Communications_Engineer.rtf"
+    assert rtf_path.is_file()
+    assert rtf_path.stat().st_size > 0
     assert "Exported 1 conversation" in capsys.readouterr().out
-    assert odt_path.suffix == ".odt"
+    assert rtf_path.suffix == ".rtf"
+    rtf_path.with_suffix(".odt").write_bytes(b"old libreoffice file")
 
     from job_tracker.cli.export_communications import export_job_history
 
@@ -59,16 +60,18 @@ def test_export_writes_odt(seeded_db: Path, tmp_path: Path, capsys):
     )
     assert result["ok"] is True
     assert result["count"] == 1
-    assert Path(result["path"]).is_file()
+    assert Path(result["path"]) == rtf_path
+    assert not rtf_path.with_suffix(".odt").exists()
 
-    with zipfile.ZipFile(odt_path) as zf:
-        assert zf.namelist()[0] == "mimetype"
-        assert zf.read("mimetype") == b"application/vnd.oasis.opendocument.text"
-        content = zf.read("content.xml").decode("utf-8")
+    raw = rtf_path.read_text(encoding="utf-8")
+    assert raw.startswith("{\\rtf1")
+    assert "\\red230\\green230\\blue230" in raw
+    assert "\\red26\\green26\\blue26" in raw
+    content = rtf_to_text(raw)
     assert "Engineer @ Acme" in content
     assert "Hi Shawn" in content
-    assert "\u2014" in content or "—" in content  # curly em dash preserved (UTF-8)
-    log_path = odt_path.with_suffix(".log")
+    assert "\u2014" in content or "—" in content  # curly em dash preserved
+    log_path = rtf_path.with_suffix(".log")
     assert log_path.is_file()
     assert "No non-human tracking data extracted." in log_path.read_text(encoding="utf-8")
 
@@ -281,10 +284,9 @@ def test_export_diverts_tracking_to_log(tmp_path: Path):
         ["--db", str(db_path), "--company", "PCC", "--title", "Staff AI", "--output-root", str(out_root)]
     )
     assert rc == 0
-    odt_path = out_root / "PCC" / "Staff_AI" / "communications" / "Communications_Staff_AI.odt"
-    log_path = odt_path.with_suffix(".log")
-    with zipfile.ZipFile(odt_path) as zf:
-        content = zf.read("content.xml").decode("utf-8")
+    rtf_path = out_root / "PCC" / "Staff_AI" / "communications" / "Communications_Staff_AI.rtf"
+    log_path = rtf_path.with_suffix(".log")
+    content = rtf_to_text(rtf_path.read_text(encoding="utf-8"))
     assert "midToken" not in content
     assert "AQHN1hl0Di2vzA" not in content
     assert "͏" not in content
@@ -424,11 +426,10 @@ def test_all_on_disk_reexports_every_odt(tmp_path: Path, capsys):
     rc = export_main(["--db", str(db_path), "--all-on-disk", "--output-root", str(out_root)])
     captured = capsys.readouterr()
     assert rc == 0
-    assert "Batch: 2 exported, 0 failed (2 on-disk ODT(s))." in captured.out
-    beta_odt = out_root / "Beta_Inc" / "Staff_AI" / "communications" / "Communications_Staff_AI.odt"
-    beta_log = beta_odt.with_suffix(".log")
-    with zipfile.ZipFile(beta_odt) as zf:
-        content = zf.read("content.xml").decode("utf-8")
+    assert "Batch: 2 exported, 0 failed (2 on-disk history file(s))." in captured.out
+    beta_rtf = out_root / "Beta_Inc" / "Staff_AI" / "communications" / "Communications_Staff_AI.rtf"
+    beta_log = beta_rtf.with_suffix(".log")
+    content = rtf_to_text(beta_rtf.read_text(encoding="utf-8"))
     assert "hs=224" not in content
     assert "Non-human mailer tracking was moved" in content
     assert "midToken=ABC" in beta_log.read_text(encoding="utf-8")

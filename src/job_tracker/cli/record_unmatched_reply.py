@@ -15,6 +15,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from job_tracker.pipeline.card_patch import spawn_card_refresh
 from job_tracker.pipeline.models import JobConversation, JobLead
 from job_tracker.pipeline.signature import parse_signature
 from job_tracker.pipeline.store import (
@@ -45,12 +46,26 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--contact-name", default="", help="Recruiter name (default: from their signature)")
     ap.add_argument("--company", default="", help="Company, if known (default: End-client TBD via <name>)")
     ap.add_argument("--title", default="", help="Role, if known (default: Role TBD)")
+    ap.add_argument(
+        "--check-greeting",
+        action="store_true",
+        help="Do not record. Exit 3 and print a warning when the greeting names someone else.",
+    )
     args = ap.parse_args(argv)
+
+    text = args.text.strip()
+    if args.check_greeting:
+        from job_tracker.pipeline.qualifying_reply import greeting_mismatch
+
+        warning = greeting_mismatch(text, args.contact_name)
+        if warning:
+            print(warning)
+            return 3
+        return 0
 
     if not Path(args.db).exists():
         print(f"No leads DB found at {args.db}.", file=sys.stderr)
         return 1
-    text = args.text.strip()
     if not text:
         print("--text is empty.", file=sys.stderr)
         return 2
@@ -122,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Recorded reply on {job_key!r}; waiting on {name or 'the recruiter'} since {when}.")
     finally:
         conn.close()
+    spawn_card_refresh(args.db, job_key, message_id=args.message_id)
     return 0
 
 

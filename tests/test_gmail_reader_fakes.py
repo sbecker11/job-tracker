@@ -310,3 +310,27 @@ def test_list_message_ids_quota_raises_gmail_quota_exceeded():
 
     with pytest.raises(gmail_reader.GmailQuotaExceeded):
         gmail_reader.list_message_ids(Boom(), query="in:inbox")
+
+
+def test_dropped_tls_connection_is_retried_then_deferred(monkeypatch):
+    import ssl
+
+    import pytest
+
+    from job_tracker.email import gmail_reader
+
+    monkeypatch.setattr(gmail_reader, "_NETWORK_RETRY_DELAYS_S", (0, 0))
+
+    class Flaky:
+        def __init__(self, fails):
+            self.fails = fails
+
+        def execute(self):
+            if self.fails:
+                self.fails -= 1
+                raise ssl.SSLEOFError("UNEXPECTED_EOF_WHILE_READING")
+            return {"ok": True}
+
+    assert gmail_reader.execute_gmail(Flaky(2)) == {"ok": True}
+    with pytest.raises(gmail_reader.GmailQuotaExceeded):
+        gmail_reader.execute_gmail(Flaky(3))

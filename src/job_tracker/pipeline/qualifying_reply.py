@@ -130,8 +130,15 @@ _SCREEN_CALL_BEFORE_JD_RE = re.compile(
     r"(?i)("
     r"availability to discuss|"
     r"some availability|"
-    r"schedule a (quick )?call|"
-    r"open to a (confidential )?chat|"
+    r"schedule a (quick |brief |short )?(call|chat|time)|"
+    r"(hop|jump|get) on a (quick |brief |short )?call|"
+    r"open to (a |an )?((quick|brief|short|confidential|informal|introductory)[ ,]+)*"
+    r"(call|chat|conversation|discussion|connect)|"
+    r"open to (connecting|chatting|talking|speaking)|"
+    r"(chat|call|talk|connect|speak) to (explore|discuss|learn more)|"
+    r"\bexplore (this|it|the (role|opportunity)) further|"
+    r"time (to|for) (a )?(quick |brief )?(call|chat|talk|connect|speak)|"
+    r"your availability|"
     r"when we speak|"
     r"once we (talk|speak|connect)|"
     r"after (we|our) (call|chat|conversation)|"
@@ -368,6 +375,123 @@ def _received_phrase(received_at: str) -> str:
     return f" on {when.strftime('%B')} {when.day}"
 
 
+# A courtesy title is not the name to greet. "Md" / "Mohd" at the start of a
+# name is a Mohammad abbreviation, not a medical degree.
+_TITLE_TOKENS = frozenset({
+    "dr", "doctor", "mr", "mrs", "ms", "miss", "prof", "professor", "sir", "madam", "mx", "rev",
+})
+_GIVEN_NAME_ABBREV = frozenset({"md", "mohd"})
+_GENERATIONAL = frozenset({"jr", "sr", "ii", "iii", "iv"})
+# Written after the name: PhD, MD, M.D., and the other doctorate credentials.
+_DOCTORATE_KEYS = frozenset({
+    "phd", "dphil", "do", "dds", "dmd", "pharmd", "edd", "psyd", "dvm", "od", "drph", "dnp", "mbbs",
+})
+
+
+def _name_tokens(full_name: str) -> list[str]:
+    tokens: list[str] = []
+    for raw in (full_name or "").replace(",", " ").split():
+        if "@" in raw:
+            return []
+        cleaned = raw.strip()
+        if cleaned:
+            tokens.append(cleaned)
+    return tokens
+
+
+def _bare(token: str) -> str:
+    return token.strip(".").lower()
+
+
+def _is_doctor_credential(token: str) -> bool:
+    """True for a doctorate written after the name. "Md" alone is not MD."""
+    compact = token.replace(".", "")
+    key = compact.lower()
+    if key in _DOCTORATE_KEYS:
+        return True
+    return key == "md" and (compact.isupper() or "." in token)
+
+
+def _is_doctor(full_name: str) -> bool:
+    tokens = _name_tokens(full_name)
+    if not tokens:
+        return False
+    if _bare(tokens[0]) in {"dr", "doctor"}:
+        return True
+    return any(_is_doctor_credential(token) for token in tokens)
+
+
+def _family_name(full_name: str) -> str:
+    tokens = _name_tokens(full_name)
+    while tokens and _bare(tokens[0]) in _TITLE_TOKENS:
+        tokens.pop(0)
+    while tokens and (_is_doctor_credential(tokens[-1]) or _bare(tokens[-1]) in _GENERATIONAL):
+        tokens.pop()
+    while len(tokens) > 1 and _bare(tokens[0]) in _GIVEN_NAME_ABBREV:
+        tokens.pop(0)
+    return tokens[-1].strip(".") if tokens else ""
+
+
+def greeting_name(full_name: str) -> str:
+    """Given name for "Hi <name>,". "Dr. Md Mostafizur Rahman" -> "Mostafizur"."""
+    tokens = _name_tokens(full_name)
+    while tokens and _bare(tokens[0]) in _TITLE_TOKENS:
+        tokens.pop(0)
+    while len(tokens) > 1 and _bare(tokens[0]) in _GIVEN_NAME_ABBREV:
+        tokens.pop(0)
+    while tokens and (_is_doctor_credential(tokens[0]) or _bare(tokens[0]) in _GENERATIONAL):
+        tokens.pop(0)
+    return tokens[0].strip(".") if tokens else ""
+
+
+def greeting_line(full_name: str) -> str:
+    """First line of a reply. A doctorate is "Hello, Dr. Becker." Otherwise "Hi Kimber,"."""
+    if _is_doctor(full_name):
+        last = _family_name(full_name)
+        if last:
+            return f"Hello, Dr. {last}."
+    first = greeting_name(full_name)
+    return f"Hi {first}," if first else "Hi,"
+
+
+def greeting_mismatch(text: str, full_name: str) -> str:
+    """Empty when the greeting names this person. A short warning otherwise.
+
+    "Hi Mostafizur," and "Hello, Dr. Rahman." both fit Dr. Md Mostafizur Rahman.
+    "Hi Dr Pandey," does not. A title by itself ("Hi Dr,") is not a name.
+    """
+    who = (full_name or "").strip()
+    if not who or "@" in who:
+        return ""
+    expected = greeting_line(who)
+    allowed = {
+        _bare(token)
+        for token in _name_tokens(who)
+        if _bare(token) not in _TITLE_TOKENS
+        and _bare(token) not in _GIVEN_NAME_ABBREV
+        and _bare(token) not in _GENERATIONAL
+        and not _is_doctor_credential(token)
+    }
+    line = (text or "").strip().splitlines()[0].strip() if text and text.strip() else ""
+    match = re.match(r"^(?:Hi|Hello|Dear)\b\s*(.*)$", line, re.IGNORECASE)
+    if not match:
+        return f'No greeting. You are writing to {who}. Start with "{expected}"'
+    said = match.group(1).strip(" \t,.")
+    names = [
+        _bare(token)
+        for token in _name_tokens(said)
+        if _bare(token) not in _TITLE_TOKENS
+        and _bare(token) not in _GIVEN_NAME_ABBREV
+        and _bare(token) not in _GENERATIONAL
+        and not _is_doctor_credential(token)
+    ]
+    if not names:
+        return f'The greeting has no name. You are writing to {who}. Start with "{expected}"'
+    if any(token not in allowed for token in names):
+        return f'This greets "{said}", but you are writing to {who}. Start with "{expected}"'
+    return ""
+
+
 def draft_qualifying_reply(
     text: str,
     *,
@@ -392,14 +516,12 @@ def draft_qualifying_reply(
     `thread_replies` (their later messages) settle what they've answered."""
     extracted_name = extract_linkedin_sender_name(text)
     name = known_recruiter_name.strip() or extracted_name
-    first = name.split()[0] if name else ""
-    # Drop trailing initial like "Evan" from "Evan T."
-    if first.endswith("."):
-        first = first[:-1]
+    greeting = greeting_line(name)
+    family = _family_name(name)
+    first = f"Dr. {family}" if _is_doctor(name) and family else greeting_name(name)
     gaps = detect_pitch_gaps(text, subject=subject, thread_replies=thread_replies)
     role = extract_role_heuristic(text, subject=subject)
 
-    greeting = f"Hi {first}," if first else "Hi,"
     if followup:
         interest = "Thanks for the update."
     else:

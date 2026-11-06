@@ -81,19 +81,52 @@ def is_gmail_rate_limit(exc: BaseException) -> bool:
     return False
 
 
+class GmailUnavailable(GmailQuotaExceeded):
+    """Gmail unreachable (dropped TLS connection, timeout, reset, 5xx) after retries.
+
+    A subclass so every cycle CLI that already defers on quota errors also
+    defers on these instead of HALTing the schedule.
+    """
+
+
+_NETWORK_RETRY_DELAYS_S = (2, 10)
+
+
+def is_gmail_network_error(exc: BaseException) -> bool:
+    """True for transient transport failures and Gmail 5xx responses."""
+    import socket
+    import ssl
+
+    if isinstance(exc, (ssl.SSLError, socket.timeout, TimeoutError, ConnectionError)):
+        return True
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    try:
+        return int(status) >= 500
+    except (TypeError, ValueError):
+        return False
+
+
 def execute_gmail(request: Any) -> Any:
     """`request.execute()` — Gmail rate limits become `GmailQuotaExceeded`.
 
     Sleeping through a per-minute quota would stall Spexture IMAP and the
     rest of the hourly cycle. Cycle CLIs catch `GmailQuotaExceeded` and
-    exit 0 so the next hour retries.
+    exit 0 so the next hour retries. Transient network errors are retried
+    briefly, then raised as `GmailUnavailable` (same handling).
     """
-    try:
-        return request.execute()
-    except Exception as exc:
-        if is_gmail_rate_limit(exc):
-            raise GmailQuotaExceeded(str(exc)) from exc
-        raise
+    import time
+
+    for attempt in range(len(_NETWORK_RETRY_DELAYS_S) + 1):
+        try:
+            return request.execute()
+        except Exception as exc:
+            if is_gmail_rate_limit(exc):
+                raise GmailQuotaExceeded(str(exc)) from exc
+            if not is_gmail_network_error(exc):
+                raise
+            if attempt == len(_NETWORK_RETRY_DELAYS_S):
+                raise GmailUnavailable(f"Gmail unreachable: {exc!r}") from exc
+            time.sleep(_NETWORK_RETRY_DELAYS_S[attempt])
 
 
 def defer_gmail_quota(

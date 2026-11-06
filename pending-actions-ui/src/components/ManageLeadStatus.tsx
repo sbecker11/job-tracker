@@ -1,5 +1,6 @@
 import { useContext, useState } from 'react'
 import { DeclineReasonsContext } from '../lib/declineReasons'
+import { addressName, GREETING_LINE_RE, greetingLineFor } from '../lib/greeting'
 import { checkMessage, type QualityIssue } from '../lib/replyQuality'
 import {
   callUrl,
@@ -79,8 +80,8 @@ interface Props {
    * current status (e.g. Archived/Duplicates-skipped rows) — purely a UX
    * nicety, not required for the action itself. */
   currentStatus?: string
-  /** Called when Apply is clicked (the helper app does the actual write). */
-  onApplied?: () => void
+  /** Called when Apply is clicked (the helper app does the actual write), with the status applied. */
+  onApplied?: (status?: string) => void
   /** Called after Cancel resets the form; the caller closes it. */
   onCancel?: () => void
 }
@@ -218,7 +219,7 @@ export function ManageLeadForm({
   const replying = canReply && status === REPLY_STATUS
 
   const greetName = chosen && !chosen.primary ? firstNameOf(chosen.name) : ''
-  const regreet = (t: string) => (greetName ? t.replace(/^(Hi|Hello|Dear) [^,\n]*,/, `$1 ${greetName},`) : t)
+  const regreet = (t: string) => (greetName ? t.replace(GREETING_LINE_RE, greetingLineFor(greetName)) : t)
   const reason = reasons.find((r) => r.code === reasonCode) || reasons[0]
   const isOther = reason?.code === 'other'
   const needsCustom = declining && isOther && !customReason.trim()
@@ -324,7 +325,7 @@ export function ManageLeadForm({
     setSenderId(id)
     clearSend()
     const name = next && !next.primary ? firstNameOf(next.name) : firstNameOf(senders?.find((s) => s.primary)?.name || '')
-    const swap = (t: string) => (name ? t.replace(/^(Hi|Hello|Dear) [^,\n]*,/, `$1 ${name},`) : t)
+    const swap = (t: string) => (name ? t.replace(GREETING_LINE_RE, greetingLineFor(name)) : t)
     setReplyText((t) => swap(t))
     setFollowupText((t) => swap(t))
     setLetterEdit((t) => (t == null ? t : swap(t)))
@@ -453,7 +454,7 @@ export function ManageLeadForm({
             <a
               className={`btn${sent ? ' muted' : ''}`}
               href={leadStatusUrl(normalizedKey, status, '')}
-              onClick={markSent('apply', onApplied)}
+              onClick={markSent('apply', () => onApplied?.(status))}
             >
               {sent ? (onApplied ? 'Applied ✓' : 'Applied ✓ — Regenerate to see it') : 'Apply'}
             </a>
@@ -527,7 +528,11 @@ export function ManageLeadForm({
               ) : (
                 <span className="btn disabled">No way to send found — see More options</span>
               )}
-              {route && <span className="send-how">{route.prefilled ? `opens ${route.how}, filled in` : `opens ${route.how}`}</span>}
+              {route && (
+                <span className="send-how">
+                  {route.note ?? (route.prefilled ? `opens ${route.how}, filled in` : `opens ${route.how}`)}
+                </span>
+              )}
             </div>
             {review && review.length === 0 && copied && <p className="quality-ok">Quality check passed ✓ — copied.</p>}
             {review && review.length > 0 && (
@@ -560,6 +565,7 @@ export function ManageLeadForm({
             )}
             {sendOpened && !isSent && !route?.sendsAndLogs && (
               <div className="actions send-confirm">
+                {route?.note && <span>{route.note}</span>}
                 <span>Did it send?</span>
                 <a className="btn primary" href={logHref} onClick={markSent(mode, afterSent)} title="Log the message">
                   {stepBadge(4)}
@@ -636,8 +642,7 @@ export function ManageLeadForm({
 }
 
 function firstNameOf(name: string): string {
-  const n = (name || '').trim()
-  return n && !n.includes('@') ? n.split(/\s+/)[0] : ''
+  return addressName(name || '')
 }
 
 function formatWhen(at: string): string {

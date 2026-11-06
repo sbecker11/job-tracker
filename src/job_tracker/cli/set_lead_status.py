@@ -14,6 +14,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from job_tracker.pipeline.card_patch import spawn_card_refresh
 from job_tracker.pipeline.models import LEAD_STAGES, JobConversation
 from job_tracker.pipeline.store import (
     MARKED_SENT_PREFIX,
@@ -91,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{row['title']!r} @ {row['company']!r}: saved {args.contact_role} contact {found}")
         if not args.status:
             conn.close()
+            spawn_card_refresh(args.db, args.key)
             return 0
 
     prior_status = row["status"]
@@ -133,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         note += f": {args.reason.strip()}"
     append_lead_note(conn, args.key, note)
     conn.close()
+    spawn_card_refresh(args.db, args.key)
 
     print(f"{row['title']!r} @ {row['company']!r}: {prior_status} -> {target}")
     return 0

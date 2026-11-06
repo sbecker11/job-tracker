@@ -234,6 +234,16 @@ def _unanswered_inbound(convs: list) -> object | None:
     last_out = max(outbound, key=lambda c: _sort_time(c["occurred_at"]))
     if _sort_time(last_in["occurred_at"]) > _sort_time(last_out["occurred_at"]):
         return last_in
+    # LinkedIn reply notices repeat the thread subject, so pitches_overlap folds
+    # a real reply into the first pitch. A message after Shawn's last outbound
+    # is new unless it is a paste re-copying a pitch from before that.
+    out_at = _sort_time(last_out["occurred_at"])
+    earlier = [_conv_text(c) for c in human_in if _sort_time(c["occurred_at"]) <= out_at]
+    later = [c for c in _human_inbound_conversations(convs) if _sort_time(c["occurred_at"]) > out_at]
+    for conv in sorted(later, key=lambda c: _sort_time(c["occurred_at"]), reverse=True):
+        is_paste = (dict(conv).get("message_id") or "").startswith("paste:")
+        if not (is_paste and any(pitches_overlap(_conv_text(conv), e) for e in earlier)):
+            return conv
     return None
 
 
@@ -413,9 +423,9 @@ def draft_wait_followup_message(
     waiting_days: int = 0,
 ) -> str:
     """Short status check-in (Wait past the follow-up threshold, or Manage Lead → Following up)."""
-    from job_tracker.pipeline.decline import clean_role_fields, first_name
+    from job_tracker.pipeline.decline import clean_role_fields
+    from job_tracker.pipeline.qualifying_reply import greeting_line
 
-    who = first_name(recruiter_name)
     company, title = clean_role_fields(company, title)
     if title and company:
         role_clause = f" on the {title} role at {company}"
@@ -427,7 +437,7 @@ def draft_wait_followup_message(
         role_clause = ""
     days_bit = f"It's been {waiting_days} days since I last reached out, so I " if waiting_days > 0 else "I "
     return (
-        f"Hi {who},\n\n"
+        f"{greeting_line(recruiter_name)}\n\n"
         f"Just checking in{role_clause}. {days_bit}wanted to see whether there's any update, "
         f"or if you need anything else from me.\n\n"
         f"{SIGNATURE}"
@@ -1517,6 +1527,94 @@ def build_send_resume_queue(
     return queue
 
 
+_WAIT_COLUMNS = (
+    "normalized_key, company, title, source_label, first_seen, awaiting_response_since, status"
+)
+_WAIT_WHERE = """deleted_at IS NULL
+          AND awaiting_response_since IS NOT NULL
+          AND status NOT IN ('rejected', 'skipped', 'accepted', 'started',
+                             'deleted', 'unavailable', 'hired')"""
+
+
+def _wait_item(
+    conn,
+    r,
+    *,
+    threshold: int,
+    age_days_fn: Callable[[str | None, datetime], int],
+    now: datetime,
+) -> dict:
+    key = r["normalized_key"]
+    convs = list(list_job_conversations(conn, key))
+    waiting_days = age_days_fn(r["awaiting_response_since"], now)
+    follow_up_due = waiting_days >= threshold
+    recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
+    thread = _thread_url_for_lead(convs, conn, key)
+    channel = _card_channel(
+        thread_url=thread, source_label=r["source_label"] or "", email=email, email_is_li_relay=email_is_li_relay
+    )
+    next_action = _next_action_wait(
+        waiting_days=waiting_days, threshold=threshold, recruiter_name=recruiter
+    )
+    draft = (
+        draft_wait_followup_message(
+            recruiter_name=recruiter,
+            company=r["company"] or "",
+            title=r["title"] or "",
+            waiting_days=waiting_days,
+        )
+        if follow_up_due
+        else ""
+    )
+    item = {
+        "kind": "lead",
+        "stage": "wait_schedule",
+        "channel": channel,
+        "company": r["company"] or "",
+        "title": r["title"] or "",
+        "normalizedKey": key,
+        "recruiterName": recruiter,
+        "recruiterEmail": email,
+        "recruiterPhone": phone,
+        "emailIsLinkedInRelay": email_is_li_relay,
+        "ageDays": age_days_fn(r["first_seen"], now),
+        "waitingDays": waiting_days,
+        "awaitingSince": r["awaiting_response_since"],
+        "status": r["status"],
+        "contactAttempts": max(1, _contact_attempt_count(convs)),
+        "followUpDue": follow_up_due,
+        "followUpThresholdDays": threshold,
+        "draftReply": draft,
+        "threadUrl": thread,
+        "gmailUrl": recruiting_gmail_message_url(
+            _gmail_api_id_for_conversations(convs)
+        ),
+        "markSentUrl": f"mps://mark?key={quote(key, safe='')}&channel={channel}",
+        "actionHint": next_action,
+        "nextAction": next_action,
+    }
+    if not item["gmailUrl"] or not item["threadUrl"]:
+        enrich_item_reply_links(item, conn=conn)
+    return item
+
+
+def build_wait_item(
+    conn,
+    job_key: str,
+    *,
+    age_days_fn: Callable[[str | None, datetime], int],
+    now: datetime,
+) -> dict | None:
+    """The Wait/schedule card for one lead, or None when it isn't waiting on anyone."""
+    r = conn.execute(
+        f"SELECT {_WAIT_COLUMNS} FROM job_leads WHERE normalized_key = ? AND {_WAIT_WHERE}",
+        (job_key,),
+    ).fetchone()
+    if r is None:
+        return None
+    return _wait_item(conn, r, threshold=_wait_followup_days(), age_days_fn=age_days_fn, now=now)
+
+
 def build_wait_schedule_queue(
     *,
     conn,
@@ -1532,72 +1630,16 @@ def build_wait_schedule_queue(
     queue: list[dict] = []
     threshold = _wait_followup_days()
     for r in conn.execute(
-        """
-        SELECT normalized_key, company, title, source_label, first_seen,
-               awaiting_response_since, status
+        f"""
+        SELECT {_WAIT_COLUMNS}
         FROM job_leads
-        WHERE deleted_at IS NULL
-          AND awaiting_response_since IS NOT NULL
-          AND status NOT IN ('rejected', 'skipped', 'accepted', 'started',
-                             'deleted', 'unavailable', 'hired')
+        WHERE {_WAIT_WHERE}
         ORDER BY awaiting_response_since ASC
         """
     ):
-        key = r["normalized_key"]
-        if key in exclude_keys:
+        if r["normalized_key"] in exclude_keys:
             continue
-        convs = list(list_job_conversations(conn, key))
-        human_inbound = _human_inbound_conversations(convs)
-        waiting_days = age_days_fn(r["awaiting_response_since"], now)
-        follow_up_due = waiting_days >= threshold
-        recruiter, email, phone, email_is_li_relay = _recruiter_contact(conn, key)
-        thread = _thread_url_for_lead(convs, conn, key)
-        channel = _card_channel(
-            thread_url=thread, source_label=r["source_label"] or "", email=email, email_is_li_relay=email_is_li_relay
-        )
-        next_action = _next_action_wait(
-            waiting_days=waiting_days, threshold=threshold, recruiter_name=recruiter
-        )
-        draft = (
-            draft_wait_followup_message(
-                recruiter_name=recruiter,
-                company=r["company"] or "",
-                title=r["title"] or "",
-                waiting_days=waiting_days,
-            )
-            if follow_up_due
-            else ""
-        )
-        item = {
-                "kind": "lead",
-                "stage": "wait_schedule",
-                "channel": channel,
-                "company": r["company"] or "",
-                "title": r["title"] or "",
-                "normalizedKey": key,
-                "recruiterName": recruiter,
-                "recruiterEmail": email,
-                "recruiterPhone": phone,
-                "emailIsLinkedInRelay": email_is_li_relay,
-                "ageDays": age_days_fn(r["first_seen"], now),
-                "waitingDays": waiting_days,
-                "awaitingSince": r["awaiting_response_since"],
-                "status": r["status"],
-                "contactAttempts": max(1, _contact_attempt_count(convs)),
-                "followUpDue": follow_up_due,
-                "followUpThresholdDays": threshold,
-                "draftReply": draft,
-                "threadUrl": thread,
-                "gmailUrl": recruiting_gmail_message_url(
-                    _gmail_api_id_for_conversations(convs)
-                ),
-                "markSentUrl": f"mps://mark?key={quote(key, safe='')}&channel={channel}",
-                "actionHint": next_action,
-                "nextAction": next_action,
-            }
-        if not item["gmailUrl"] or not item["threadUrl"]:
-            enrich_item_reply_links(item, conn=conn)
-        queue.append(item)
+        queue.append(_wait_item(conn, r, threshold=threshold, age_days_fn=age_days_fn, now=now))
     # Overdue follow-ups first, then longest wait, then contact attempts.
     queue.sort(
         key=lambda x: (
@@ -2115,6 +2157,9 @@ def build_workflow_payload(
                 routes=item["replyPlan"]["routes"],
                 dealbreaker=item.get("dealbreaker") or "",
             )
+    from job_tracker.pipeline.llm_reply import apply_llm_drafts
+
+    apply_llm_drafts([*clarify, *send_resume, *wait_schedule], conn)
     annotate_today_order(
         clarify=clarify,
         send_resume=send_resume,

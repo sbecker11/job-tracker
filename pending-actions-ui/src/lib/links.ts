@@ -2,6 +2,9 @@
  * both ArchivedLeadsPanel and DuplicateLeadsFolder — kept in one place so the
  * two never drift on how these links get built. */
 
+// .ts extension: tests/test_page_person_email.py imports this file with plain Node.
+import { addressName } from './greeting.ts'
+
 /** Finder folder open (tools/reveal-folder/). */
 export function revealFolderUrl(folderPath?: string): string | null {
   if (!folderPath) return null
@@ -241,6 +244,8 @@ export interface SendRoute {
   step: string
   /** True: the link opens with the message filled in. False: copy it first, then paste. */
   prefilled: boolean
+  /** A few words shown when the message cannot be filled in. */
+  note?: string
   /** True: the SendText helper confirms, sends and logs it — no Message sent click. */
   sendsAndLogs?: boolean
   href: (text: string) => string
@@ -249,7 +254,7 @@ export interface SendRoute {
 function firstName(name: string): string {
   const n = name.trim()
   if (!n || n.includes('@')) return n
-  return n.split(/\s+/)[0]
+  return addressName(n)
 }
 
 /** Buttons and wording for the plan's routes, in the plan's order. */
@@ -288,6 +293,7 @@ export function sendRoutes(t: MessageTarget): SendRoute[] {
           to,
           step: `Click "${button}". The thread opens and the message is copied. Paste it and press Send.`,
           prefilled: false,
+          note: r.linkedin ? 'Paste into the thread.' : undefined,
           href: () => to,
         }
       }

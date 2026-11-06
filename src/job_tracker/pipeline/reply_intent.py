@@ -166,5 +166,8 @@ def draft_live_thread_reply(
 
 
 def _compose(first_name: str, parts: list[str]) -> str:
-    greeting = f"Hi {first_name}," if first_name else "Hi,"
+    if first_name.startswith("Dr. "):
+        greeting = f"Hello, {first_name}."
+    else:
+        greeting = f"Hi {first_name}," if first_name else "Hi,"
     return f"{greeting}\n\n" + " ".join(parts) + f"\n\n{SIGNATURE}"

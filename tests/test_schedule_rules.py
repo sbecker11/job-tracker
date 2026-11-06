@@ -87,6 +87,8 @@ def test_sys3_only_top_level_entry_points_take_the_lock():
         # Uses db_lock only for its own cache lock, not var/comms_fast.lock.
         "scripts/analyze_skills.py",
         "scripts/triage_imap_now.py",
+        # Always started detached (card_patch.spawn_card_refresh); it waits for the lock.
+        "scripts/refresh_lead_card.py",
         "scripts/with_db_lock.py",
         "src/job_tracker/pipeline/db_lock.py",
     }

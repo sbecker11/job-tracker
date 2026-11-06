@@ -92,6 +92,28 @@ def test_spelled_out_days_per_week_onsite_is_a_dealbreaker():
     assert any(h.id == "onsite_only" and h.load_bearing for h in result.dealbreaker_hits)
 
 
+def test_onsite_only_near_lehi_is_not_a_dealbreaker():
+    # Regression (2026-11-04): Net2Source "100% onsite at the Riverton office"
+    # was auto-skipped although Riverton is a short commute from Lehi.
+    jd = (
+        "Location: 100% onsite at the Riverton office: 14850 Pony Express Road, "
+        "Riverton, UT, 84065. Python, FastAPI, PostgreSQL, CI/CD."
+    )
+    assert not any(h.id == "onsite_only" for h in score_jd(jd).dealbreaker_hits)
+
+
+def test_inline_nice_to_have_line_is_not_load_bearing():
+    # Regression (2026-11-05): Isotalent Principal Engineer was force-passed on
+    # "* Nice to have: C#/.NET (the established platform is .NET)".
+    jd = """
+    * Expert-level TypeScript and Python
+    * Deep React experience
+    * Nice to have: C#/.NET (the established platform is .NET), Next.js, Vite, or Vue.js
+    """
+    hits = [h for h in score_jd(jd).dealbreaker_hits if h.id == "dotnet"]
+    assert hits and not hits[0].load_bearing
+
+
 def test_dealbreaker_keyword_under_nice_to_have_heading_is_not_load_bearing():
     # Regression (2026-07-07): "Nice To Have\n\nExperience with Golang (Go)."
     # tripped golang's min_hits=2 (one hit from "golang", one from "(Go)")

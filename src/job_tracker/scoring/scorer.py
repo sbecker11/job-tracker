@@ -120,6 +120,10 @@ def _split_hard_soft(text: str) -> tuple[str, str]:
         if _is_heading_shaped(stripped):
             mode = "soft" if _SOFT_HEADING_RE.search(stripped) else "hard"
             continue
+        # "* Nice to have: C#/.NET" — an inline label scopes just its own line.
+        if _SOFT_HEADING_RE.match(stripped.lstrip("-*•· \t")):
+            soft_lines.append(line)
+            continue
         (soft_lines if mode == "soft" else hard_lines).append(line)
     return "\n".join(hard_lines), "\n".join(soft_lines)
 
@@ -132,6 +136,8 @@ def _dealbreaker_sweep(text: str, framework: dict[str, Any]) -> list[Dealbreaker
         hard_count = _count_hits(hard_text, keywords)
         soft_count = _count_hits(soft_text, keywords)
         if hard_count == 0 and soft_count == 0:
+            continue
+        if entry.get("skip_if") and re.search(entry["skip_if"], text, re.I):
             continue
         min_hits = entry.get("min_hits", 1)
         hits.append(

@@ -16,7 +16,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from job_tracker.pipeline.models import JobConversation
-from job_tracker.pipeline.qualifying_reply import SIGNATURE
+from job_tracker.pipeline.qualifying_reply import SIGNATURE, greeting_line, greeting_name
 from job_tracker.pipeline.store import (
     add_job_conversation,
     advance_status,
@@ -97,11 +97,11 @@ _PLACEHOLDER_PAREN_RE = re.compile(r"\s*\([^)]*\b(?:tbd|unknown)\b[^)]*\)", re.I
 
 
 def first_name(recruiter_name: str) -> str:
-    """Greeting name: "Kimber Gabryszak" -> "Kimber"; blank or an email -> "there"."""
-    parts = (recruiter_name or "").strip().split()
-    if not parts or "@" in parts[0]:
-        return "there"
-    return parts[0]
+    """Greeting name: "Kimber Gabryszak" -> "Kimber"; "Dr. Md Mostafizur Rahman" -> "Mostafizur".
+
+    Blank, an email, or a title with no name left -> "there".
+    """
+    return greeting_name(recruiter_name) or "there"
 
 
 def clean_role_fields(company: str = "", title: str = "") -> tuple[str, str]:
@@ -116,7 +116,7 @@ def clean_role_fields(company: str = "", title: str = "") -> tuple[str, str]:
 
 
 def decline_greeting(*, recruiter_name: str = "", company: str = "", title: str = "") -> str:
-    who = first_name(recruiter_name)
+    who = greeting_line(recruiter_name)
     company, title = clean_role_fields(company, title)
     if title and company:
         about = f" about the {title} role at {company}"
@@ -127,7 +127,7 @@ def decline_greeting(*, recruiter_name: str = "", company: str = "", title: str 
     else:
         about = ""
     end = "" if about.endswith(".") else "."
-    return f"Hi {who},\n\nThank you for reaching out{about}{end}"
+    return f"{who}\n\nThank you for reaching out{about}{end}"
 
 
 def reason_sentence(code: str, note: str = "") -> str:
@@ -183,11 +183,10 @@ def pitch_dealbreaker(
 
     framework = framework if framework is not None else load_framework(DEFAULT_FRAMEWORK_PATH)
     text = f"{subject}\n{body}"
-    utah = bool(_UTAH_RE.search(text))
     by_id = {d.get("id"): d for d in framework.get("dealbreakers") or []}
     for dealbreaker_id, (code, note) in _PITCH_DEALBREAKERS.items():
         entry = by_id.get(dealbreaker_id)
-        if entry is None or (dealbreaker_id == "onsite_only" and utah):
+        if entry is None or (entry.get("skip_if") and re.search(entry["skip_if"], text, re.I)):
             continue
         # Raw text, not the JD sweep's hard/soft split: that split drops short
         # heading-shaped lines, and "Location: Austin, TX (Onsite)" is one.
@@ -197,17 +196,12 @@ def pitch_dealbreaker(
     return None
 
 
-_UTAH_RE = re.compile(
-    r"\b(UT|Utah|Lehi|Salt Lake|SLC|Provo|Orem|Draper|Sandy|American Fork|Pleasant Grove|South Jordan)\b"
-)
-
-
 def draft_post_decline_reply(*, recruiter_name: str = "", company: str = "", title: str = "") -> str:
-    who = first_name(recruiter_name)
+    who = greeting_line(recruiter_name)
     _, title = clean_role_fields("", title)
     role = f" on the {title} role" if title else ""
     return (
-        f"Hi {who},\n\nThanks for getting back to me. My answer{role} is the same for now, "
+        f"{who}\n\nThanks for getting back to me. My answer{role} is the same for now, "
         f"but I appreciate you keeping me in mind for anything that's a closer fit.\n\n{SIGNATURE}"
     )
 

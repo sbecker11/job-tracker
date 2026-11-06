@@ -35,7 +35,7 @@ Fast tick (every 3 min): `comms_fast_cycle.py` — lightweight inbox check, shar
 | `scb_boston@yahoo.com` | Forward → recruiting funnel | classify → triage | Verified 2026-07-04 |
 | `sbecker@alum.mit.edu` | Forward → recruiting funnel | classify → triage | Verified 2026-07-04; check alumni backlog once |
 | `sbecker11@icloud.com` (`@mac.com`, `@me.com`) | iCloud IMAP (same INBOX) | triage_imap_inbox `--personal-mailbox` | **Needs Apple app-specific password** in `ICLOUD_IMAP_PASSWORD`. Not a Gmail forward. Mail stays in iCloud INBOX. |
-| `scbboston@gmail.com` | Personal hub | **Not processed** (removed 2026-09-13) | Mailbox left untouched — no classify, scan, or triage |
+| `scbboston@gmail.com` | Personal hub | **Not processed** (removed 2026-09-13) | Mailbox left untouched — no classify, scan, or triage. GitHub error mail forwarded from here to `+errormessages` or `+runfailures` on the recruiting address is stored by the classifier until marked fixed (`comms-migration/var/github-errors/`) |
 | LinkedIn InMail replies | `Category/social` on funnel | scan_communications | Not triage_recruiter_inbox |
 | Sent-folder replies | Gmail Sent | scan_communications `--include-sent` | Tier-1 match only |
 | Archives / old SKIP rejections | Gmail All Mail | **Phase 2:** `scan_rejection_backlog.py` | Not live triage; run weekly or after HALT gap |

@@ -134,7 +134,9 @@ LINKEDIN_PERSONAL_REPLY_SENDERS = frozenset(
     {"hit-reply@linkedin.com", "inmail-hit-reply@linkedin.com"}
 )
 DEFAULT_INBOUND_QUERY = "(from:hit-reply@linkedin.com OR from:inmail-hit-reply@linkedin.com)"
-DEFAULT_SENT_QUERY = "in:sent"
+# Also Shawn's BCC copies: mail he sends outside the pipeline is BCC'd to the
+# recruiting Gmail, where it lands in the inbox rather than Sent.
+DEFAULT_SENT_QUERY = "{in:sent from:shawn.becker@spexture.com from:scbboston@gmail.com}"
 
 
 def is_linkedin_personal_reply_sender(address: str) -> bool:
@@ -265,6 +267,20 @@ def _create_lead_from_extraction(conn, role: ExtractedRole, message: EmailMessag
     return lead.normalized_key
 
 
+def _header_time(date_header: str) -> str:
+    """The Date header as UTC ISO, or "" when missing or unparseable."""
+    from datetime import timezone
+    from email.utils import parsedate_to_datetime
+
+    try:
+        parsed = parsedate_to_datetime(date_header)
+    except (TypeError, ValueError, IndexError):
+        return ""
+    if parsed is None or parsed.tzinfo is None:
+        return ""
+    return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
 def _scan_one(
     conn,
     service,
@@ -342,20 +358,21 @@ def _scan_one(
                 conn, job_key, post_app, message_id=message_id, email_text=message.combined_text
             )
 
-        add_job_conversation(
-            conn,
-            JobConversation(
-                job_key=job_key,
-                contact_id=contact_id,
-                message_id=message_id,
-                channel="email",
-                direction=direction,
-                summary=conversation_summary,
-                thread_id=message.thread_id,
-                rfc_message_id=message.rfc_message_id,
-                body_text=message.combined_text,
-            ),
+        conversation = JobConversation(
+            job_key=job_key,
+            contact_id=contact_id,
+            message_id=message_id,
+            channel="email",
+            direction=direction,
+            summary=conversation_summary,
+            thread_id=message.thread_id,
+            rfc_message_id=message.rfc_message_id,
+            body_text=message.combined_text,
         )
+        sent_at = _header_time(message.date)
+        if sent_at:
+            conversation.occurred_at = sent_at
+        add_job_conversation(conn, conversation)
         if not result["action"]:
             result["action"] = "linked"
         if post_app_action:

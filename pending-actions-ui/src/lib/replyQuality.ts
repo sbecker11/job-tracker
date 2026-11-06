@@ -3,6 +3,8 @@
  * recruiter's latest message, so the reply neither re-asks what they answered
  * nor skips what they asked. */
 
+import { GREETING_LINE_RE, greetingLineFor } from './greeting'
+
 export type IssueLevel = 'rule' | 'suggest'
 
 export interface QualityIssue {
@@ -16,7 +18,7 @@ export interface QualityIssue {
 export interface QualityContext {
   /** The recruiter's latest message (empty when none was received). */
   theirMessage?: string
-  /** First name the greeting should use. */
+  /** Name the greeting should use: a given name, or "Dr. <family name>" (see greeting.ts). */
   firstName?: string
   kind: 'reply' | 'follow-up' | 'decline'
 }
@@ -62,7 +64,8 @@ const REPLY_COVERS = {
   resume: /\b(?:resume|résumé|cv)\b/i,
 }
 
-const GREETING_RE = /^(Hi|Hello|Dear)\b([^,\n]*),/
+// "Hi Ann," and "Hello, Dr. Lee." — group 2 is the name.
+const GREETING_RE = /^(Hi|Hello|Dear)\b,?[ \t]*((?:Dr\.[ \t]*)?[^\n,.!]*)/
 
 export function checkMessage(text: string, ctx: QualityContext): QualityIssue[] {
   const issues: QualityIssue[] = []
@@ -97,21 +100,22 @@ export function checkMessage(text: string, ctx: QualityContext): QualityIssue[] 
 
   const greet = t.match(GREETING_RE)
   const first = (ctx.firstName || '').trim()
+  const expected = greetingLineFor(first)
   if (!greet)
     add({
       id: 'greeting',
       level: 'suggest',
       message: 'No greeting line.',
-      suggestion: first ? `Start with "Hi ${first},".` : 'Start with "Hi <first name>,".',
-      fix: first ? (s) => `Hi ${first},\n\n${s.trimStart()}` : undefined,
+      suggestion: first ? `Start with "${expected}".` : 'Start with "Hi <first name>,".',
+      fix: first ? (s) => `${expected}\n\n${s.trimStart()}` : undefined,
     })
   else if (first && greet[2].trim().toLowerCase() !== first.toLowerCase())
     add({
       id: 'greeting-name',
       level: 'suggest',
       message: greet[2].trim() ? `Greets "${greet[2].trim()}", but you're writing to ${first}.` : 'The greeting has no name.',
-      suggestion: `Use "${greet[1]} ${first},".`,
-      fix: (s) => s.replace(GREETING_RE, `${greet[1]} ${first},`),
+      suggestion: `Use "${expected}".`,
+      fix: (s) => s.replace(GREETING_LINE_RE, expected),
     })
 
   if (!CLOSING_RE.test(t) || !/shawn\.becker@spexture\.com/.test(t))

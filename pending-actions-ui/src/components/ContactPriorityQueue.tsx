@@ -91,6 +91,7 @@ function RouteButtons({ item, text }: { item: ContactPriorityItem; text: string 
           }}
         >
           {r.button}
+          {r.note ? ` — ${r.note}` : ''}
         </a>
       ))}
     </>
@@ -158,6 +159,8 @@ interface Props {
 }
 
 const NO_DECLINE_REASONS: DeclineReason[] = []
+/** Statuses that take a lead off the action list, so Apply hides its row at once. */
+const CLOSING_STATUSES = new Set(['skipped', 'rejected', 'deleted', 'unavailable'])
 
 function reopenUrl(item: ContactPriorityItem): string | null {
   if (!item.postDecline || !item.normalizedKey) return null
@@ -671,12 +674,17 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                   <ManageLeadForm
                     normalizedKey={item.normalizedKey}
                     currentStatus={item.status}
-                    initialStatus={item.stage === 'wait_schedule' && item.followUpDue ? 'following_up' : undefined}
-                    onApplied={() => onLeadActioned?.(item.id, false)}
+                    initialStatus={
+                      (item.stage === 'wait_schedule' && item.followUpDue) ||
+                      (item.stage === 'send_resume' && item.draftReply)
+                        ? 'following_up'
+                        : undefined
+                    }
+                    onApplied={(status) => onLeadActioned?.(item.id, CLOSING_STATUSES.has(status || ''))}
                     onCancel={() => setLeadPanel(null)}
                     message={messageTarget(item)}
                     senders={item.senders}
-                    followupDraft={item.followupDraft}
+                    followupDraft={item.stage === 'send_resume' && item.draftReply ? item.draftReply : item.followupDraft}
                     reply={
                       replyInPanel
                         ? {

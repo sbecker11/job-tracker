@@ -12,6 +12,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from job_tracker.pipeline.card_patch import spawn_card_refresh
 from job_tracker.pipeline.decline import DECLINE_REASONS, draft_decline_letter, record_decline
 from job_tracker.pipeline.pending_workflow import _recruiter_contact
 from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect
@@ -67,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     finally:
         conn.close()
+    spawn_card_refresh(args.db, args.key)
 
     print(f"{row['title']!r} @ {row['company']!r}: {row['status']} -> skipped (declined: {args.reason})")
     return 0

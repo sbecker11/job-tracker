@@ -306,7 +306,51 @@ def notify_macos(title: str, body: str) -> None:
         subprocess.run(["afplay", str(glass)], check=False)
 
 
+_REUSE_CHROME_TAB = """
+on run argv
+    set prefixA to item 1 of argv
+    set prefixB to item 2 of argv
+    if application "Google Chrome" is not running then return "none"
+    tell application "Google Chrome"
+        repeat with w in windows
+            set i to 0
+            repeat with t in tabs of w
+                set i to i + 1
+                set u to URL of t
+                if u starts with prefixA or u starts with prefixB then
+                    tell t to reload
+                    set active tab index of w to i
+                    set index of w to 1
+                    activate
+                    return "reused"
+                end if
+            end repeat
+        end repeat
+    end tell
+    return "none"
+end run
+"""
+
+
 def open_ui() -> None:
+    """Reload the Pending Actions tab if Chrome already has one; otherwise open it.
+
+    Plain `open URL` adds a new tab/window on every alert.
+    """
+    port_prefix = UI_URL.rstrip("/")
+    alt_prefix = port_prefix.replace("127.0.0.1", "localhost")
+    try:
+        res = subprocess.run(
+            ["osascript", "-e", _REUSE_CHROME_TAB, port_prefix, alt_prefix],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if res.returncode == 0 and res.stdout.strip() == "reused":
+            return
+    except (OSError, subprocess.TimeoutExpired):
+        pass
     subprocess.run(["open", UI_URL], check=False)
 
 

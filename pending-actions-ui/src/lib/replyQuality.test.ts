@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
+import { addressName, greetingLine } from './greeting'
 import { checkMessage } from './replyQuality'
+
+describe('greeting', () => {
+  it('matches the Python greeting_line rules', () => {
+    expect(greetingLine('Dr. Md Mostafizur Rahman')).toBe('Hello, Dr. Rahman.')
+    expect(greetingLine('Carlson Nkwain, PhD')).toBe('Hello, Dr. Nkwain.')
+    expect(greetingLine('Anuj kumar Pandey')).toBe('Hi Anuj,')
+    expect(greetingLine('Md Rahim')).toBe('Hi Rahim,')
+    expect(greetingLine('')).toBe('Hi,')
+  })
+})
 
 const SIG = 'Best, Shawn\nshawn.becker@spexture.com'
 const ids = (text: string, theirMessage = '', firstName = 'Nalini') =>
@@ -40,6 +51,14 @@ describe('checkMessage', () => {
     expect(text.startsWith('Hi Nalini,')).toBe(true)
     expect(text.endsWith(SIG)).toBe(true)
     expect(checkMessage(text, { firstName: 'Nalini', kind: 'reply' })).toEqual([])
+  })
+
+  it('accepts and enforces the formal greeting for a doctor', () => {
+    const ok = `Hello, Dr. Rahman.\n\nThanks for the note.\n\n${SIG}`
+    expect(ids(ok, '', addressName('Dr. Md Mostafizur Rahman'))).toEqual([])
+    const wrong = `Hi Dr Pandey,\n\nThanks for the note.\n\n${SIG}`
+    const issue = checkMessage(wrong, { firstName: 'Dr. Rahman', kind: 'reply' }).find((i) => i.id === 'greeting-name')!
+    expect(issue.fix!(wrong).startsWith('Hello, Dr. Rahman.\n\nThanks')).toBe(true)
   })
 
   it('accepts "Best regards, Shawn Becker" as the closing', () => {

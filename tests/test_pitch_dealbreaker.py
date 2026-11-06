@@ -108,3 +108,36 @@ def test_dealbreaker_card_gets_decline_and_ranks_below_replies(tmp_path: Path):
     assert not open_.get("dealbreaker")
     assert open_["todayTier"] == 1
     assert open_["todayRank"] < onsite["todayRank"]
+
+
+def test_full_render_has_the_llm_write_open_replies(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from job_tracker.pipeline import llm_apply, llm_reply
+
+    written = "Hi Prachi,\n\nI'd like to be considered for this contract role.\n\nBest,\nShawn"
+    fake = SimpleNamespace(
+        messages=SimpleNamespace(
+            create=lambda **_: SimpleNamespace(
+                content=[SimpleNamespace(type="text", text=written)],
+                usage=SimpleNamespace(input_tokens=10, output_tokens=10, cache_read_input_tokens=0),
+            )
+        )
+    )
+    monkeypatch.setenv("JOB_TRACKER_LLM_REPLY", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")  # pragma: allowlist secret
+    monkeypatch.setattr(llm_reply, "_profile_text", lambda: "Shawn Becker profile")
+    monkeypatch.setattr(llm_apply, "_client", lambda: fake)
+
+    conn = connect(tmp_path / "leads.db")
+    _record(conn, "gmail:onsite", "deepak.kumar@diverselynx.com",
+            "Job opportunity :: Sr. Forward Deployed Engineer :: Milford, OH - Onsite", ONSITE_PITCH, 13)
+    _record(conn, "gmail:open", "prachi@agency.com", "Exploring a new opportunity together", OPEN_PITCH, 1)
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    workflow = build_workflow_payload(data, conn=conn, age_days_fn=render_pending_actions._age_days, now=NOW)
+    conn.close()
+
+    clarify = {i["messageId"]: i for i in workflow["stages"]["clarify"] if i.get("messageId")}
+    assert clarify["gmail:open"]["draftSource"] == "llm"
+    assert "considered for this contract role" in clarify["gmail:open"]["draftReply"]
+    assert clarify["gmail:onsite"]["draftSource"] == "template"

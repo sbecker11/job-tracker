@@ -52,9 +52,9 @@ const RECORD_REPLY_TIMEOUT_MS = 600_000
 /** Poll cadence while a RecordReply confirm is outstanding (the helper regenerates on success). */
 const RECORD_REPLY_POLL_MS = 5_000
 const NO_DECLINE_REASONS: DeclineReason[] = []
-/** Delay before the auto-Regenerate after a Decline/Dismiss/Manage-lead click,
- * so the helper app's database write lands before the page is rebuilt. */
-const ACTION_REGEN_DELAY_MS = 3_000
+/** After a Decline/Apply/Reply-sent click, how long to wait for the one-card
+ * update before falling back to a full Regenerate. */
+const CARD_PATCH_WAIT_MS = 20_000
 /** Inbound message ids whose Reply sent already completed (survives refresh). */
 const REPLY_SENT_ACK_STORAGE_KEY = 'pending-actions.replySentAck'
 
@@ -319,16 +319,24 @@ export default function App() {
   useEffect(() => () => {
     if (actionRegenRef.current) window.clearTimeout(actionRegenRef.current)
   }, [])
+  const generatedAtRef = useRef('')
+  generatedAtRef.current = data?.generatedAt || ''
   const onLeadActioned = useCallback((itemId: string, hide: boolean) => {
     if (hide) setHiddenAt((prev) => ({ ...prev, [itemId]: Date.now() }))
     if (actionRegenRef.current) window.clearTimeout(actionRegenRef.current)
-    actionRegenRef.current = window.setTimeout(() => {
-      actionRegenRef.current = null
-      if (busyRef.current) return
+    const before = generatedAtRef.current
+    // The helper's CLI rewrites just this lead's card (scripts/refresh_lead_card.py);
+    // the regenerating poll picks that up. Full render only if it never lands.
+    if (!busyRef.current) {
       setError('')
       setRegenerating(true)
+    }
+    actionRegenRef.current = window.setTimeout(() => {
+      actionRegenRef.current = null
+      if (generatedAtRef.current !== before) return
+      setRegenerating(true)
       fireCustomUrl(REGEN_HREF)
-    }, ACTION_REGEN_DELAY_MS)
+    }, CARD_PATCH_WAIT_MS)
   }, [])
 
   // Background auto-refresh (2026-08-18): pending-actions.json is otherwise

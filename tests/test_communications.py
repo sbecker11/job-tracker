@@ -1195,3 +1195,11 @@ def test_resolve_communication_already_resolved(seeded_db: Path):
         ["--db", str(seeded_db), "--message-id", "u6", "--company", "Clevanoo LLC", "--title", "Senior Full Stack AI/ML Engineer"]
     )
     assert rc == 1
+
+
+def test_sent_copy_is_stamped_with_its_date_header_not_scan_time():
+    from job_tracker.cli.scan_communications import _header_time
+
+    assert _header_time("Thu, 5 Nov 2026 14:45:55 -0700") == "2026-11-05T21:45:55+00:00"
+    assert _header_time("") == ""
+    assert _header_time("not a date") == ""
