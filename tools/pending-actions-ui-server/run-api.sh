@@ -6,7 +6,9 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${ROOT}/../.." && pwd)"
 PYTHON="${REPO_ROOT}/.venv/bin/python"
 API_SCRIPT="${REPO_ROOT}/scripts/find_mail_api.py"
-HOST="${PENDING_ACTIONS_UI_HOST:-127.0.0.1}"
+# Separate from PENDING_ACTIONS_UI_HOST: the UI may listen on the LAN, but this
+# API must stay on loopback (Vite proxies /api to it).
+HOST="${FIND_MAIL_API_HOST:-127.0.0.1}"
 PORT="${FIND_MAIL_API_PORT:-3175}"
 
 if [[ ! -x "${PYTHON}" ]]; then

@@ -28,6 +28,18 @@ if [[ -z "${NODE_BIN}" || ! -x "${NODE_BIN}" ]]; then
   exit 1
 fi
 
+# LAN access: PENDING_ACTIONS_UI_HOST=0.0.0.0 lets other machines on the home
+# network open the page; PENDING_ACTIONS_UI_ALLOWED_HOSTS lists the hostnames
+# they use (e.g. mini1.local). Unset values are carried over from the existing
+# plist so a plain re-install keeps them.
+plist_env() {
+  [[ -f "${PLIST_PATH}" ]] || return 0
+  plutil -extract "EnvironmentVariables.$1" raw -o - "${PLIST_PATH}" 2>/dev/null || true
+}
+UI_HOST="${PENDING_ACTIONS_UI_HOST:-$(plist_env PENDING_ACTIONS_UI_HOST)}"
+UI_HOST="${UI_HOST:-127.0.0.1}"
+UI_ALLOWED_HOSTS="${PENDING_ACTIONS_UI_ALLOWED_HOSTS:-$(plist_env PENDING_ACTIONS_UI_ALLOWED_HOSTS)}"
+
 cat >"${PLIST_PATH}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -47,6 +59,10 @@ cat >"${PLIST_PATH}" <<EOF
     <string>$(dirname "${NODE_BIN}"):/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>PENDING_ACTIONS_UI_NODE</key>
     <string>${NODE_BIN}</string>
+    <key>PENDING_ACTIONS_UI_HOST</key>
+    <string>${UI_HOST}</string>
+    <key>PENDING_ACTIONS_UI_ALLOWED_HOSTS</key>
+    <string>${UI_ALLOWED_HOSTS}</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -89,10 +105,19 @@ cat >"${API_PLIST_PATH}" <<EOF
 </plist>
 EOF
 
-launchctl bootout "gui/$(id -u)/${LABEL}" >/dev/null 2>&1 || true
-launchctl bootstrap "gui/$(id -u)" "${PLIST_PATH}"
-launchctl bootout "gui/$(id -u)/${API_LABEL}" >/dev/null 2>&1 || true
-launchctl bootstrap "gui/$(id -u)" "${API_PLIST_PATH}"
+# bootout returns before the old job is gone; bootstrapping too soon fails
+# with "5: Input/output error", so retry for a few seconds.
+reload_agent() {
+  local label="$1" plist="$2" try
+  launchctl bootout "gui/$(id -u)/${label}" >/dev/null 2>&1 || true
+  for try in 1 2 3 4 5 6 7 8 9 10; do
+    launchctl bootstrap "gui/$(id -u)" "${plist}" 2>/dev/null && return 0
+    sleep 1
+  done
+  launchctl bootstrap "gui/$(id -u)" "${plist}"
+}
+reload_agent "${LABEL}" "${PLIST_PATH}"
+reload_agent "${API_LABEL}" "${API_PLIST_PATH}"
 
 echo "Installed: ${PLIST_PATH}"
 echo "           ${API_PLIST_PATH}"
@@ -100,6 +125,10 @@ echo "Label:     ${LABEL}"
 echo "API label: ${API_LABEL}"
 echo "Node:      ${NODE_BIN}"
 echo "UI:        http://127.0.0.1:3174/"
+if [[ "${UI_HOST}" != "127.0.0.1" ]]; then
+  echo "LAN:       listening on ${UI_HOST}:3174 (allowed hosts: ${UI_ALLOWED_HOSTS:-IP addresses only})"
+  echo "           e.g. http://$(scutil --get LocalHostName 2>/dev/null || hostname -s).local:3174/"
+fi
 echo "Find-mail: http://127.0.0.1:3175/api/find-mail?q="
 echo "Logs:      ${LOG_DIR}/launchd.{out,err}.log"
 echo "           ${LOG_DIR}/find-mail-api.launchd.{out,err}.log"

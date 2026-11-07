@@ -41,6 +41,15 @@ Plist behavior: `RunAtLoad=true` (login/reboot), `KeepAlive=true` (restart if Vi
 | Logs | `pending-actions-ui/logs/launchd.{out,err}.log` |
 | API logs | `pending-actions-ui/logs/find-mail-api.launchd.{out,err}.log` |
 
+## Open from another machine on the home network
+
+```bash
+PENDING_ACTIONS_UI_HOST=0.0.0.0 PENDING_ACTIONS_UI_ALLOWED_HOSTS=mini1.local,mini1 \
+  ./tools/pending-actions-ui-server/install.sh
+```
+
+Then browse to `http://mini1.local:3174/` (IP addresses always work). Both values are saved in the plist, and a plain re-run of `install.sh` keeps them; pass `PENDING_ACTIONS_UI_HOST=127.0.0.1` to go back to local-only. The find-mail API stays on `127.0.0.1` (`FIND_MAIL_API_HOST`), but Vite proxies `/api` to it, so anyone on the LAN can use the page's lookups and LinkedIn-paste endpoint — use this on a trusted network only. "View comms" opens files on the machine running the server.
+
 After an `nvm` Node upgrade, re-run `install.sh` so the plist picks up the new `node` path.
 
 Check status: `launchctl print "gui/$(id -u)/com.sbecker11.job-tracker.pending-actions-ui"`

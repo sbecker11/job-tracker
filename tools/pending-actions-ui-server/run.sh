@@ -67,7 +67,7 @@ if command -v lsof >/dev/null 2>&1; then
     if [[ -x "${API_RUN}" ]]; then
       nohup "${API_RUN}" >>"${REPO_ROOT}/pending-actions-ui/logs/find-mail-api.log" 2>&1 &
       disown || true
-      echo "pending-actions-ui-server: find-mail API fallback on ${HOST}:${API_PORT} (pid $!)" >&2
+      echo "pending-actions-ui-server: find-mail API fallback on 127.0.0.1:${API_PORT} (pid $!)" >&2
     fi
   fi
 fi
