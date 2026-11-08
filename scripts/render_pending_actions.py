@@ -1648,13 +1648,14 @@ function escapeHtml(s) {
 // 2026-08-14). The company-name link opens the shared
 // <Company>/ root; the title link opens THIS lead's own package folder.
 // File count is scoped to the package folder alone.
-const FOLDER_ROOT = "${FOLDER_ROOT}";
-// Opens a package folder in Finder via the local RevealFolder helper
-// (tools/reveal-folder/) — browsers cannot open Finder from a static
-// page with file:// alone. Install once: tools/reveal-folder/install.sh
+// Company and role links open the mini1 File Sharing folder in Finder on
+// whichever Mac clicked the link (HomeOffice or mini1). Share name "Resumes"
+// is ~/Desktop/Resumes, so 2026/<company>/<role> matches the package layout.
+const SMB_FOLDER_BASE = "smb://mini1.local/Resumes/2026";
 function folderUrl(folderPath) {
-  const abs = `${FOLDER_ROOT}/${folderPath}`.replace(/\/+/g, "/");
-  return `revealfolder://reveal?path=${encodeURIComponent(abs)}`;
+  if (!folderPath) return "#";
+  const parts = String(folderPath).split("/").filter(Boolean).map(encodeURIComponent);
+  return parts.length ? `${SMB_FOLDER_BASE}/${parts.join("/")}` : SMB_FOLDER_BASE;
 }
 function companyCellHtml(company, companyFolderPath) {
   return `<a class="company-link" href="${folderUrl(companyFolderPath)}" title="Open company folder in Finder">${escapeHtml(company)}</a>`;
@@ -1662,8 +1663,7 @@ function companyCellHtml(company, companyFolderPath) {
 
 # Opens this lead's full communications history (job_conversations) as a
 # freshly-exported ODT via the local ViewCommunications helper
-# (tools/view-communications/) — mirrors folderUrl()'s revealfolder://
-# pattern; a static file:// page can neither query sqlite nor shell out to
+# (tools/view-communications/) — a static file:// page can neither query sqlite nor shell out to
 # export-communications/open an ODT on its own. Install once:
 # tools/view-communications/install.sh
 function commsUrl(company, title) {
@@ -2426,7 +2426,6 @@ def _render_html(data: dict, *, output_root: Path) -> str:
             f'<span class="detail">({covered}/{expected}h covered)</span>'
         ),
     )
-    html = html.replace("${FOLDER_ROOT}", str(output_root))
     html = html.replace("${STALE_DAYS_THRESHOLD}", str(STALE_DAYS_THRESHOLD))
     html = html.replace("${LLM_REVIEW_GATE_PCT}", str(LLM_REVIEW_GATE_PCT))
     # ~15ms/lead (the rescore loop's dominant cost) plus a flat 3s floor for

@@ -22,6 +22,7 @@ from typing import Any, Callable
 from urllib.parse import quote
 
 from job_tracker.email.imap_reader import ImapAccount, connect as imap_connect, fetch_message
+from job_tracker.pipeline.folder_url import smb_folder_url
 from job_tracker.pipeline.store import recruiter_contacts
 
 HOSTINGER_MAILBOX_BASE = "https://mail.hostinger.com/0/mailboxes"
@@ -552,7 +553,7 @@ def _collapse_db_hits_to_leads(
         hit["comm_count"] = comm_count
         hit["folder_path"] = folder_path
         hit["company_folder_path"] = company_folder
-        hit["reveal_url"] = f"revealfolder://reveal?path={quote(folder_path)}"
+        hit["reveal_url"] = smb_folder_url(folder_path) or ""
         out.append(hit)
     out.sort(key=lambda h: h.get("date") or "", reverse=True)
     return out + leftover

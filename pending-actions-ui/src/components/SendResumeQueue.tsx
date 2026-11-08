@@ -1,11 +1,6 @@
 import type { SendResumeItem } from '../types'
+import { revealFolderUrl } from '../lib/links'
 import { ChannelBadge } from './ChannelBadge'
-
-function revealFolderUrl(folderPath: string): string | null {
-  if (!folderPath) return null
-  // Absolute path not known in the browser — use relative path hint via helper when available.
-  return `revealfolder://reveal?path=${encodeURIComponent(folderPath)}`
-}
 
 export function SendResumeQueue({ items }: { items: SendResumeItem[] }) {
   if (!items.length) {

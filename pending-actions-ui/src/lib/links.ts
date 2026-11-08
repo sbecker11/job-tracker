@@ -5,10 +5,27 @@
 // .ts extension: tests/test_page_person_email.py imports this file with plain Node.
 import { addressName } from './greeting.ts'
 
-/** Finder folder open (tools/reveal-folder/). */
+/** Finder open of a company or role folder on the mini1 File Sharing share.
+ * Works from HomeOffice and from mini1: smb://mini1.local/Resumes/2026/<company>/<role>
+ * `folderPath` may be that relative path or an absolute path under Desktop/Resumes/2026. */
+const SMB_FOLDER_BASE = 'smb://mini1.local/Resumes/2026'
+const SMB_FOLDER_MARKER = '/Resumes/2026/'
+
 export function revealFolderUrl(folderPath?: string): string | null {
   if (!folderPath) return null
-  return `revealfolder://reveal?path=${encodeURIComponent(folderPath)}`
+  const text = folderPath.trim()
+  if (!text) return null
+  if (text.startsWith('smb://')) return text
+  let rest = text
+  const markerAt = text.indexOf(SMB_FOLDER_MARKER)
+  if (markerAt >= 0) {
+    rest = text.slice(markerAt + SMB_FOLDER_MARKER.length)
+  } else if (text.startsWith('/')) {
+    return null
+  }
+  const segments = rest.split('/').filter(Boolean).map((part) => encodeURIComponent(part))
+  if (!segments.length) return SMB_FOLDER_BASE
+  return `${SMB_FOLDER_BASE}/${segments.join('/')}`
 }
 
 /** Export + open this lead's job_conversations ODT via the local API.

@@ -13,6 +13,7 @@ import {
   leadStatusUrl,
   NO_ROUTE_STEP,
   recordReplyUrl,
+  revealFolderUrl,
   sendRoutes,
 } from '../lib/links'
 import { HistoryLink } from './HistoryLink'
@@ -65,11 +66,6 @@ function dismissUrl(item: ContactPriorityItem): string | null {
   if (item.stage !== 'clarify') return null
   const kind = item.normalizedKey ? 'lead' : item.kind === 'unmatched' ? 'unmatched' : 'lead'
   return `dlr://dismiss?${helperQuery({ kind, key: item.normalizedKey, message_id: item.messageId })}`
-}
-
-function revealFolderUrl(folderPath: string | undefined): string | null {
-  if (!folderPath) return null
-  return `revealfolder://reveal?path=${encodeURIComponent(folderPath)}`
 }
 
 /** The card's routes as buttons, in plan order; links that can't be prefilled copy the message first. */

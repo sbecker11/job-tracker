@@ -144,7 +144,7 @@ def test_search_db_collapses_many_conversations_to_one_lead(tmp_path: Path):
     assert len(keyed) == 1
     assert keyed[0]["comm_count"] == 3
     assert keyed[0]["subject"] == "Artech — Data Engineer"
-    assert keyed[0]["reveal_url"].startswith("revealfolder://")
+    assert keyed[0]["reveal_url"].startswith("smb://mini1.local/Resumes/2026/")
     assert keyed[0]["folder_path"]
 
 

@@ -3,7 +3,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { AllTabsToggle } from './AllTabsToggle'
 import { DuplicateBadge } from './DuplicateBadge'
 import { ManageLeadStatus } from './ManageLeadStatus'
-import { leadAnchorId } from '../lib/links'
+import { leadAnchorId, revealFolderUrl } from '../lib/links'
 import { HistoryLink } from './HistoryLink'
 import type { GlobalSearchResult } from '../priorityQueue'
 import type { DecideLead, WorkflowPayload } from '../types'
@@ -12,11 +12,6 @@ import type { DecideLead, WorkflowPayload } from '../types'
  * constant/rationale (2026-08-18 perf pass). "Needs your decision" alone
  * can run to 100+ rows. */
 const ESTIMATED_ROW_HEIGHT = 46
-
-function revealFolderUrl(folderPath: string | undefined): string | null {
-  if (!folderPath) return null
-  return `revealfolder://reveal?path=${encodeURIComponent(folderPath)}`
-}
 
 /** Search box filter — company/title/recruiter/email/phone, same fields as
  * ArchivedLeadsPanel / ContactPriorityQueue / DuplicatesSkippedPanel

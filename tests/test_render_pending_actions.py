@@ -261,6 +261,7 @@ def test_html_wires_title_and_company_finder_links(tmp_path: Path):
     assert "companyFolderPath" in text
     assert "Open this role's folder in Finder" in text
     assert "Open company folder in Finder" in text
+    assert "smb://mini1.local/Resumes/2026" in text
     assert "titleCellHtml(lead.title, lead.folderPath, lead.fileCount, lead.commCount, lead.company)" in text
     assert "companyCellHtml(lead.company, lead.companyFolderPath)" in text
     assert '"companyFolderPath": "Acme"' in text
