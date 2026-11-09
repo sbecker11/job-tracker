@@ -174,6 +174,19 @@ def _human_inbound_conversations(convs: list) -> list:
     ]
 
 
+def _package_sent_since_ask(convs: list, human_inbound: list) -> bool:
+    """True when Mark package sent was logged after the latest résumé ask (a new ask resurfaces it)."""
+    sent = [c["occurred_at"] or "" for c in convs if (c["message_id"] or "").startswith("package-sent:")]
+    if not sent:
+        return False
+    asks = [
+        c["occurred_at"] or ""
+        for c in human_inbound
+        if _RESUME_ASK_RE.search((c["body_text"] or "") + " " + (c["summary"] or ""))
+    ]
+    return max(sent) >= max(asks, default="")
+
+
 def _conv_text(conv) -> str:
     return f"{conv['summary'] or ''}\n{conv['body_text'] or ''}"
 
@@ -1451,7 +1464,7 @@ def build_send_resume_queue(
                 _RESUME_ASK_RE.search((c["body_text"] or "") + " " + (c["summary"] or ""))
                 for c in human_inbound
             )
-            if not has_person:
+            if not has_person or _package_sent_since_ask(convs, human_inbound):
                 continue
             pitched = label == "ready" and bool(human_inbound)
             if not asked and not lead.get("directRecruiter") and not pitched:
@@ -1493,7 +1506,7 @@ def build_send_resume_queue(
         convs = list(list_job_conversations(conn, key))
         human_inbound = _human_inbound_conversations(convs)
         outbound = [c for c in convs if (c["direction"] or "") == "outbound"]
-        if not human_inbound or not outbound:
+        if not human_inbound or not outbound or _package_sent_since_ask(convs, human_inbound):
             continue
         asked = any(
             _RESUME_ASK_RE.search((c["body_text"] or "") + " " + (c["summary"] or ""))

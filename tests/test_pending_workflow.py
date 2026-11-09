@@ -767,6 +767,51 @@ def test_recruiter_pitch_with_ready_package_goes_to_send_resume(tmp_path: Path):
     assert "Yatharth Singh" in hit["nextAction"]
 
 
+def test_mark_package_sent_leaves_send_resume_after_resume_ask(tmp_path: Path):
+    """A résumé ask kept the lead in Send résumé even after Mark package sent;
+    a newer ask brings it back out of Wait (Clarify wins while it's unanswered)."""
+    from job_tracker.pipeline.store import mark_package_sent
+
+    conn = connect(tmp_path / "leads.db")
+    lead, entry = _ready_lead_with_package(conn, tmp_path, company="Esolutions", title="AI Engineer")
+    key = lead.normalized_key
+    add_job_contact(conn, JobContact(job_key=key, name="Atul Bisen", role="recruiter"))
+
+    def ask(days_ago: int, mid: str) -> None:
+        add_job_conversation(
+            conn,
+            JobConversation(
+                job_key=key,
+                message_id=mid,
+                direction="inbound",
+                summary="Right To Represent (RTR)",
+                occurred_at=(NOW - timedelta(days=days_ago)).isoformat(),
+                body_text="Please share your updated resume along with Visa and DL.",
+            ),
+        )
+
+    def stages() -> dict:
+        data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+        data["ready_to_apply"] = [entry]
+        return build_workflow_payload(
+            data, conn=conn, age_days_fn=render_pending_actions._age_days, now=NOW, output_root=tmp_path
+        )["stages"]
+
+    ask(3, "ask-1")
+    assert any(i["normalizedKey"] == key for i in stages()["sendResume"])
+
+    mark_package_sent(conn, key, when=(NOW - timedelta(days=1)).isoformat())
+    after = stages()
+    assert not any(i["normalizedKey"] == key for i in after["sendResume"])
+    assert any(i["normalizedKey"] == key for i in after["waitSchedule"])
+
+    ask(0, "ask-2")
+    again = stages()
+    assert any(i["normalizedKey"] == key for i in again["clarify"] + again["sendResume"])
+    assert not any(i["normalizedKey"] == key for i in again["waitSchedule"])
+    conn.close()
+
+
 def test_named_contact_without_a_message_stays_in_apply(tmp_path: Path):
     conn = connect(tmp_path / "leads.db")
     lead, entry = _ready_lead_with_package(conn, tmp_path, company="Weave", title="Platform Engineer")
