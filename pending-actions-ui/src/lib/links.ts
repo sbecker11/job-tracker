@@ -5,17 +5,46 @@
 // .ts extension: tests/test_page_person_email.py imports this file with plain Node.
 import { addressName } from './greeting.ts'
 
-/** Finder open of a company or role folder on the mini1 File Sharing share.
- * Works from HomeOffice and from mini1: smb://mini1.local/Resumes/2026/<company>/<role>
+/** Finder open of a company or role folder.
+ * From HomeOffice: the mini1 File Sharing share, smb://mini1.local/Resumes/2026/<company>/<role>.
+ * On mini1 itself Finder refuses to mount its own share ("There was a problem
+ * connecting to the server"), so a browser on the server Mac gets the local
+ * RevealFolder helper (tools/reveal-folder/) instead.
  * `folderPath` may be that relative path or an absolute path under Desktop/Resumes/2026. */
 const SMB_FOLDER_BASE = 'smb://mini1.local/Resumes/2026'
 const SMB_FOLDER_MARKER = '/Resumes/2026/'
+const LOCAL_FOLDER_BASE = '~/Desktop/Resumes/2026'
+const SERVER_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '[::1]', '::1'])
+
+let clientOnServer: boolean | null = null
+
+/** Ask the Vite server whether this browser runs on the server Mac. Call before first render. */
+export async function detectClientOnServer(): Promise<void> {
+  try {
+    const res = await fetch('/__client-on-server', { cache: 'no-store' })
+    if (res.ok) clientOnServer = Boolean((await res.json()).onServer)
+  } catch {
+    // Fall back to the page hostname below.
+  }
+}
+
+function onServerMac(): boolean {
+  if (clientOnServer !== null) return clientOnServer
+  return typeof window !== 'undefined' && SERVER_HOSTNAMES.has(window.location.hostname)
+}
+
+/** An smb:// folder URL as the link this browser can open (see revealFolderUrl). */
+export function folderHref(smbUrl: string): string {
+  if (!onServerMac() || !smbUrl.startsWith(SMB_FOLDER_BASE)) return smbUrl
+  const rest = decodeURIComponent(smbUrl.slice(SMB_FOLDER_BASE.length))
+  return `revealfolder://reveal?path=${encodeURIComponent(LOCAL_FOLDER_BASE + rest)}`
+}
 
 export function revealFolderUrl(folderPath?: string): string | null {
   if (!folderPath) return null
   const text = folderPath.trim()
   if (!text) return null
-  if (text.startsWith('smb://')) return text
+  if (text.startsWith('smb://')) return folderHref(text)
   let rest = text
   const markerAt = text.indexOf(SMB_FOLDER_MARKER)
   if (markerAt >= 0) {
@@ -24,8 +53,8 @@ export function revealFolderUrl(folderPath?: string): string | null {
     return null
   }
   const segments = rest.split('/').filter(Boolean).map((part) => encodeURIComponent(part))
-  if (!segments.length) return SMB_FOLDER_BASE
-  return `${SMB_FOLDER_BASE}/${segments.join('/')}`
+  if (!segments.length) return folderHref(SMB_FOLDER_BASE)
+  return folderHref(`${SMB_FOLDER_BASE}/${segments.join('/')}`)
 }
 
 /** Export + open this lead's job_conversations ODT via the local API.

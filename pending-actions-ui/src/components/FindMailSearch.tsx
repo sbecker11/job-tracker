@@ -72,7 +72,7 @@ function HitList({
           {hits.map((hit, i) => {
             const leadLabel = [hit.company, hit.title].filter(Boolean).join(' — ')
             const statusNote = hit.status ? ` (${hit.status})` : ''
-            const folderHref = hit.reveal_url || revealFolderUrl(hit.folder_path) || revealFolderUrl(hit.company_folder_path)
+            const folderHref = revealFolderUrl(hit.reveal_url) || revealFolderUrl(hit.folder_path) || revealFolderUrl(hit.company_folder_path)
             const openLead = (e: MouseEvent<HTMLAnchorElement>) => {
               if (!hit.job_key || !onOpenLead) return
               e.preventDefault()

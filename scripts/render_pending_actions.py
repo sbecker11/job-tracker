@@ -1648,14 +1648,21 @@ function escapeHtml(s) {
 // 2026-08-14). The company-name link opens the shared
 // <Company>/ root; the title link opens THIS lead's own package folder.
 // File count is scoped to the package folder alone.
-// Company and role links open the mini1 File Sharing folder in Finder on
-// whichever Mac clicked the link (HomeOffice or mini1). Share name "Resumes"
-// is ~/Desktop/Resumes, so 2026/<company>/<role> matches the package layout.
+// Company and role links open the package folder in Finder. Share name
+// "Resumes" is ~/Desktop/Resumes, so smb 2026/<company>/<role> matches the
+// package layout. Finder on mini1 refuses to mount its own share, so a page
+// opened from disk (file://, i.e. on the Mac that owns the files) uses the
+// local RevealFolder helper (tools/reveal-folder/) on FOLDER_ROOT instead.
 const SMB_FOLDER_BASE = "smb://mini1.local/Resumes/2026";
+const FOLDER_ROOT = ${FOLDER_ROOT_JSON};
 function folderUrl(folderPath) {
   if (!folderPath) return "#";
-  const parts = String(folderPath).split("/").filter(Boolean).map(encodeURIComponent);
-  return parts.length ? `${SMB_FOLDER_BASE}/${parts.join("/")}` : SMB_FOLDER_BASE;
+  const parts = String(folderPath).split("/").filter(Boolean);
+  if (location.protocol === "file:") {
+    return `revealfolder://reveal?path=${encodeURIComponent([FOLDER_ROOT, ...parts].join("/"))}`;
+  }
+  const encoded = parts.map(encodeURIComponent);
+  return encoded.length ? `${SMB_FOLDER_BASE}/${encoded.join("/")}` : SMB_FOLDER_BASE;
 }
 function companyCellHtml(company, companyFolderPath) {
   return `<a class="company-link" href="${folderUrl(companyFolderPath)}" title="Open company folder in Finder">${escapeHtml(company)}</a>`;
@@ -2428,6 +2435,7 @@ def _render_html(data: dict, *, output_root: Path) -> str:
     )
     html = html.replace("${STALE_DAYS_THRESHOLD}", str(STALE_DAYS_THRESHOLD))
     html = html.replace("${LLM_REVIEW_GATE_PCT}", str(LLM_REVIEW_GATE_PCT))
+    html = html.replace("${FOLDER_ROOT_JSON}", _json_for_script(str(output_root.expanduser()).rstrip("/")))
     # ~15ms/lead (the rescore loop's dominant cost) plus a flat 3s floor for
     # process startup/venv activation, capped at 20s so a runaway lead count
     # can't leave the regen button looking hung forever.
