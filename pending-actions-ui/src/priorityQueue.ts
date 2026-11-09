@@ -74,6 +74,7 @@ export interface ContactPriorityItem {
   companyFolderPath?: string
   applyUrl?: string
   packageReady?: boolean
+  packageSent?: boolean
   resumeRequested?: boolean
   markSentUrl?: string
   actionHint?: string
@@ -308,6 +309,8 @@ function todayFields(
   | 'resolvedVia'
   | 'replyPlan'
   | 'senders'
+  | 'packageReady'
+  | 'packageSent'
 > {
   return {
     todayTier: src.todayTier,
@@ -325,6 +328,8 @@ function todayFields(
     resolvedVia: src.resolvedVia,
     replyPlan: src.replyPlan,
     senders: src.senders,
+    packageReady: src.packageReady,
+    packageSent: src.packageSent,
   }
 }
 

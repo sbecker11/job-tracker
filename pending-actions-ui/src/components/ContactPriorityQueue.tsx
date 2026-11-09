@@ -17,6 +17,8 @@ import {
   sendRoutes,
 } from '../lib/links'
 import { HistoryLink } from './HistoryLink'
+import { MessageActions, type MessageActionsProps } from './MessageActions'
+import { addressName } from '../lib/greeting'
 import {
   replyAckKey,
   matchesSearch,
@@ -68,30 +70,98 @@ function dismissUrl(item: ContactPriorityItem): string | null {
   return `dlr://dismiss?${helperQuery({ kind, key: item.normalizedKey, message_id: item.messageId })}`
 }
 
-/** The card's routes as buttons, in plan order; links that can't be prefilled copy the message first. */
-function RouteButtons({ item, text }: { item: ContactPriorityItem; text: string }) {
+/** Message sent? wiring for a Clarify detail card: RecordReply for LinkedIn
+ * unmatched, a logged reply for leads, else a Sent-folder scan. */
+function clarifySentProps(
+  item: ContactPriorityItem,
+  text: string,
+  ctx: {
+    recordable: boolean
+    onReplyRecorded?: (item: ContactPriorityItem) => void
+    onReplySent?: (item: ContactPriorityItem) => void
+    onLeadActioned?: (itemId: string, hide: boolean) => void
+    acknowledged: boolean
+    busy: boolean
+  },
+): Pick<MessageActionsProps, 'messageSentHref' | 'onMessageSent' | 'messageSentDone' | 'messageSentBusy'> {
+  if (ctx.recordable && item.messageId) {
+    return {
+      messageSentHref: recordReplyUrl(item.messageId, item.recruiterName || '', text),
+      onMessageSent: () => ctx.onReplyRecorded?.(item),
+      messageSentDone: ctx.acknowledged,
+      messageSentBusy: ctx.busy,
+    }
+  }
+  if (item.normalizedKey) {
+    return {
+      messageSentHref: leadStatusUrl(item.normalizedKey, item.status || 'new', '', {
+        channel: item.channel === 'linkedin' ? 'linkedin' : 'email',
+        message: text,
+      }),
+      onMessageSent: () => ctx.onLeadActioned?.(item.id, true),
+    }
+  }
+  return {
+    onMessageSent: ctx.onReplySent ? () => ctx.onReplySent!(item) : undefined,
+    messageSentDone: ctx.acknowledged,
+    messageSentBusy: ctx.busy,
+  }
+}
+
+/** The shared Copy / Send / Message sent? / Package sent? row for a card's own
+ * detail, with the card's other routes as secondary links underneath. */
+function DetailMessageActions({
+  item,
+  text,
+  onTextChange,
+  ...rest
+}: { item: ContactPriorityItem; text: string; onTextChange: (t: string) => void } & Pick<
+  MessageActionsProps,
+  'messageSentHref' | 'onMessageSent' | 'messageSentDone' | 'messageSentBusy' | 'packageSentHref' | 'onPackageSent'
+>) {
   const routes = sendRoutes(messageTarget(item)).filter((r) => !r.sendsAndLogs)
-  if (!routes.length) return <span className="btn disabled">No reply route — see Manage lead</span>
+  const [route, ...others] = routes
   return (
     <>
-      {routes.map((r) => (
-        <a
-          key={`${r.how}:${r.to}`}
-          className="btn link"
-          href={r.href(text)}
-          target="_blank"
-          rel="noreferrer"
-          title={r.step}
-          onClick={() => {
-            if (!r.prefilled && text) void copyText(text)
-          }}
-        >
-          {r.button}
-          {r.note ? ` — ${r.note}` : ''}
-        </a>
-      ))}
+      <MessageActions
+        text={text}
+        onTextChange={onTextChange}
+        quality={{
+          theirMessage: item.messageBody || '',
+          firstName: addressName(item.recruiterName || ''),
+          kind: 'reply',
+        }}
+        route={route}
+        {...rest}
+      />
+      {others.length > 0 && (
+        <div className="actions secondary-actions">
+          {others.map((r) => (
+            <a
+              key={`${r.how}:${r.to}`}
+              className="btn link"
+              href={r.href(text)}
+              target="_blank"
+              rel="noreferrer"
+              title={r.step}
+              onClick={() => {
+                if (!r.prefilled && text) void copyText(text)
+              }}
+            >
+              {r.button}
+              {r.note ? ` — ${r.note}` : ''}
+            </a>
+          ))}
+        </div>
+      )}
     </>
   )
+}
+
+/** Package sent? only when the résumé package is on disk and not yet marked sent. */
+function packageSentHref(item: ContactPriorityItem): string | undefined {
+  if (!item.normalizedKey || !item.packageReady || item.packageSent) return undefined
+  return markSentHref(item) || undefined
 }
 
 function messageTarget(item: ContactPriorityItem): MessageTarget {
@@ -175,7 +245,6 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
   replySentDone = {},
   replyRecordPending = {},
   replyScanningId = '',
-  replyScanBusy = false,
   onViewDuplicates,
   onJumpToSurvivor,
   highlightKey,
@@ -190,7 +259,6 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
   const [leadPanel, setLeadPanel] = useState<{ id: string; kind: 'manage' } | null>(null)
   const toggleLeadPanel = (id: string, kind: 'manage') =>
     setLeadPanel((cur) => (cur?.id === id && cur.kind === kind ? null : { id, kind }))
-  const [copiedId, setCopiedId] = useState('')
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const draftOf = (it: ContactPriorityItem) => drafts[it.id] ?? it.draftReply ?? ''
   const [query, setQuery] = useState('')
@@ -343,9 +411,9 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
         const recordSteps =
           recordable && item.replyDue && !replyInPanel
             ? [
-                'Click "Copy reply" and edit it if you like.',
-                'Open the LinkedIn thread, paste the reply and press Send.',
-                'Click "Reply sent" and confirm what you sent — the card moves to Waiting on them.',
+                'Click "Show steps", edit the message if you like, then click "Copy message".',
+                'Click "Send message" to open the LinkedIn thread, paste the message and press Send.',
+                'Click "Message sent?" and confirm what you sent — the card moves to Waiting on them.',
               ]
             : null
         const word = replyInPanel ? 'reply' : 'follow-up'
@@ -353,9 +421,9 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
           replyInPanel || followupInPanel
             ? [
                 `Click "Open ${word} ▾" below. Check the sender and review the ${word}; it's already written for you.`,
-                `Click "Copy ${word} message". It checks the message first; apply or skip any suggestions.`,
+                'Click "Copy message". It checks the message first; apply or skip any suggestions.',
                 route
-                  ? `Click "Send ${word} message". ${
+                  ? `Click "Send message". ${
                       route.sendsAndLogs
                         ? 'The text helper sends and logs it.'
                         : route.prefilled
@@ -363,7 +431,8 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                           : `The ${route.how} opens. Paste the message and press Send.`
                     }`
                   : NO_ROUTE_STEP,
-                ...(route?.sendsAndLogs ? [] : ['Come back and answer "Did it send?". Yes logs it.']),
+                ...(route?.sendsAndLogs ? [] : ['Click "Message sent?" to log it.']),
+                ...(packageSentHref(item) ? ['If the résumé went with it, click "Package sent?".'] : []),
               ]
             : null
         const sendTo = route
@@ -545,39 +614,6 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                       {item.duplicateOfCompany ? ` @ ${item.duplicateOfCompany}` : ''}
                     </a>
                   )}
-                  {item.replyDue && recordable && (
-                    <a
-                      className={`btn link regen-btn reply-sent-btn${replyAcknowledged ? ' muted' : ''}`}
-                      href={recordReplyUrl(item.messageId!, item.recruiterName || '', draftOf(item))}
-                      onClick={() => onReplyRecorded?.(item)}
-                      title="After you send it on LinkedIn: confirm what you sent, and this card moves to Waiting on them"
-                    >
-                      {replyAcknowledged ? 'Reply sent ✓' : replyRecording ? 'Confirm in RecordReply…' : 'Reply sent'}
-                    </a>
-                  )}
-                  {item.replyDue && onReplySent && !replyInPanel && !recordable && (
-                    <button
-                      type="button"
-                      className="btn link regen-btn reply-sent-btn"
-                      onClick={() => onReplySent(item)}
-                      disabled={replyAcknowledged || replyScanBusy}
-                      title={
-                        replyAcknowledged
-                          ? 'Already marked for this recruiter message — re-enables when a new reply is due'
-                          : 'After you BCC yourself on the reply: scan Sent + refresh so this card can move to Wait'
-                      }
-                      aria-busy={replyScanning}
-                    >
-                      {replyScanning && (
-                        <span className="regen-spinner" aria-hidden="true" />
-                      )}
-                      {replyScanning
-                        ? 'Scanning…'
-                        : replyAcknowledged
-                          ? 'Reply sent ✓'
-                          : 'Reply sent'}
-                    </button>
-                  )}
                 </div>
               </div>
               {steps ? (
@@ -621,19 +657,6 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                 {item.company && item.title ? (
                   <HistoryLink company={item.company} title={item.title} />
                 ) : null}
-                {item.stage === 'clarify' && item.draftReply && !replyInPanel && (
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={async () => {
-                      await copyText(draftOf(item))
-                      setCopiedId(item.id)
-                      setTimeout(() => setCopiedId(''), 1500)
-                    }}
-                  >
-                    {copiedId === item.id ? 'Copied' : 'Copy reply'}
-                  </button>
-                )}
                 {((item.stage === 'clarify' && !replyInPanel) || item.stage === 'send_resume') && (
                   <button
                     type="button"
@@ -680,6 +703,8 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     onCancel={() => setLeadPanel(null)}
                     message={messageTarget(item)}
                     senders={item.senders}
+                    packageSentHref={packageSentHref(item)}
+                    onPackageSent={() => onLeadActioned?.(item.id, item.stage === 'send_resume')}
                     followupDraft={item.stage === 'send_resume' && item.draftReply ? item.draftReply : item.followupDraft}
                     reply={
                       replyInPanel
@@ -707,18 +732,12 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
 
             {showDetail && item.stage === 'clarify' && (
               <div className="priority-detail">
-                <div className="actions">
-                  <RouteButtons item={item} text={draftOf(item)} />
-                  {dismissUrl(item) && (
-                    <a
-                      className="btn link muted"
-                      href={dismissUrl(item)!}
-                      onClick={() => onLeadActioned?.(item.id, true)}
-                    >
-                      Dismiss / marked replied
-                    </a>
-                  )}
-                </div>
+                {item.messageBody?.trim() && (
+                  <details className="original-message">
+                    <summary>Original message from {item.recruiterName || 'recruiter'}</summary>
+                    <pre className="draft original-message-body">{item.messageBody}</pre>
+                  </details>
+                )}
                 {item.draftReply ? (
                   <textarea
                     className="draft followup-edit"
@@ -730,11 +749,29 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                 ) : (
                   <p className="empty-hint">No generated draft — reply from the thread/inbox.</p>
                 )}
-                {item.messageBody?.trim() && (
-                  <details className="original-message">
-                    <summary>Original message from {item.recruiterName || 'recruiter'}</summary>
-                    <pre className="draft original-message-body">{item.messageBody}</pre>
-                  </details>
+                <DetailMessageActions
+                  item={item}
+                  text={draftOf(item)}
+                  onTextChange={(t) => setDrafts((d) => ({ ...d, [item.id]: t }))}
+                  {...clarifySentProps(item, draftOf(item), {
+                    recordable,
+                    onReplyRecorded,
+                    onReplySent,
+                    onLeadActioned,
+                    acknowledged: replyAcknowledged,
+                    busy: replyScanning || replyRecording,
+                  })}
+                />
+                {dismissUrl(item) && (
+                  <div className="actions secondary-actions">
+                    <a
+                      className="btn link muted"
+                      href={dismissUrl(item)!}
+                      onClick={() => onLeadActioned?.(item.id, true)}
+                    >
+                      Dismiss / marked replied
+                    </a>
+                  </div>
                 )}
               </div>
             )}
@@ -760,26 +797,9 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     )}
                   </li>
                   <li>
-                    <strong>Copy message &amp; send</strong> to{' '}
-                    {item.recruiterName || 'recruiter'}
+                    <strong>Send the message</strong> to {item.recruiterName || 'recruiter'}
                     {item.recruiterEmail ? ` (${item.recruiterEmail})` : ''} — attach résumé + cover
-                    letter.
-                    <div className="actions">
-                      {item.draftReply && (
-                        <button
-                          type="button"
-                          className="btn"
-                          onClick={async () => {
-                            await copyText(draftOf(item))
-                            setCopiedId(item.id)
-                            setTimeout(() => setCopiedId(''), 1500)
-                          }}
-                        >
-                          {copiedId === item.id ? 'Copied' : 'Copy message'}
-                        </button>
-                      )}
-                      <RouteButtons item={item} text={draftOf(item)} />
-                    </div>
+                    letter, then click Message sent? and Package sent?
                     {item.draftReply && (
                       <textarea
                         className="draft followup-edit"
@@ -789,21 +809,21 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                         aria-label="Reply message (editable)"
                       />
                     )}
-                  </li>
-                  <li>
-                    <strong>Mark sent → Wait</strong>
-                    <div className="actions">
-                      {markSentHref(item) && (
-                        <a className="btn link" href={markSentHref(item)!}>
-                          Mark sent
-                        </a>
-                      )}
-                    </div>
-                    <p className="hint-line">
-                      Recruiter email / LinkedIn reply (mail): next Sent-folder scan usually
-                      auto-detects and moves this to Wait. LinkedIn web paste: click Mark sent.
-                      Then Regenerate.
-                    </p>
+                    <DetailMessageActions
+                      item={item}
+                      text={draftOf(item)}
+                      onTextChange={(t) => setDrafts((d) => ({ ...d, [item.id]: t }))}
+                      messageSentHref={
+                        item.normalizedKey
+                          ? leadStatusUrl(item.normalizedKey, item.status || 'package_generated', '', {
+                              channel: item.channel === 'linkedin' ? 'linkedin' : 'email',
+                              message: draftOf(item),
+                            })
+                          : undefined
+                      }
+                      packageSentHref={packageSentHref(item)}
+                      onPackageSent={() => onLeadActioned?.(item.id, true)}
+                    />
                   </li>
                 </ol>
               </div>

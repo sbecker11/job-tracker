@@ -1243,14 +1243,20 @@ def _attach_folder_links(
     conn,
     output_root: Path,
 ) -> None:
-    """Set folderPath (role) + companyFolderPath when company is known."""
+    """Set folderPath (role) + companyFolderPath when company is known, and
+    packageReady / packageSent for the card's "Package sent?" button."""
     company = (item.get("company") or "").strip()
     if not company:
         return
     title = (item.get("title") or "").strip()
-    role_abs, _ready = _package_folder_abs(
+    role_abs, ready = _package_folder_abs(
         conn, company=company, title=title or company, output_root=output_root
     )
+    key = item.get("normalizedKey") or ""
+    if key:
+        item["packageReady"] = bool(item.get("packageReady") or ready)
+        convs = list(list_job_conversations(conn, key))
+        item["packageSent"] = _package_sent_since_ask(convs, _human_inbound_conversations(convs))
     if not item.get("folderPath"):
         item["folderPath"] = role_abs
     elif not str(item["folderPath"]).startswith("/"):

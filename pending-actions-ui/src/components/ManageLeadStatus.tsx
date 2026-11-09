@@ -1,7 +1,7 @@
 import { useContext, useState } from 'react'
 import { DeclineReasonsContext } from '../lib/declineReasons'
 import { addressName, GREETING_LINE_RE, greetingLineFor } from '../lib/greeting'
-import { checkMessage, type QualityIssue } from '../lib/replyQuality'
+import { MessageActions } from './MessageActions'
 import {
   callUrl,
   declineUrl,
@@ -168,7 +168,12 @@ export function ManageLeadForm({
   decline,
   initialStatus,
   senders,
+  packageSentHref,
+  onPackageSent,
 }: Props & {
+  /** mps://mark link — set when the lead's résumé package is ready and not yet marked sent. */
+  packageSentHref?: string
+  onPackageSent?: () => void
   normalizedKey: string
   message?: MessageTarget
   followupDraft?: string
@@ -205,12 +210,7 @@ export function ManageLeadForm({
   const [replyText, setReplyText] = useState(reply?.draft || '')
   const [letterEdit, setLetterEdit] = useState<string | null>(null)
   const [sent, setSent] = useState('')
-  const [sentAt, setSentAt] = useState('')
-  const [copied, setCopied] = useState(false)
-  const [sendOpened, setSendOpened] = useState(false)
-  const [failed, setFailed] = useState(false)
   const [sentVia, setSentVia] = useState('')
-  const [review, setReview] = useState<QualityIssue[] | null>(null)
 
   const canDecline = Boolean(decline && target && reasons.length)
   const declining = canDecline && status === DECLINE_STATUS
@@ -233,14 +233,7 @@ export function ManageLeadForm({
   const messageMode = declining || followingUp || replying
   const word = replying ? 'reply' : followingUp ? 'follow-up' : 'decline'
 
-  const clearSend = () => {
-    setReview(null)
-    setSent('')
-    setSentAt('')
-    setCopied(false)
-    setSendOpened(false)
-    setFailed(false)
-  }
+  const clearSend = () => setSent('')
 
   const reset = () => {
     setStatus(startStatus)
@@ -254,8 +247,6 @@ export function ManageLeadForm({
 
   const markSent = (which: string, after?: () => void) => () => {
     setSent(which)
-    setFailed(false)
-    setSentAt(new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))
     after?.()
   }
 
@@ -286,28 +277,10 @@ export function ManageLeadForm({
         : followingUp
           ? leadStatusUrl(normalizedKey, 'following_up', '', { channel, message: text })
           : ''
-  const isSent = Boolean(sent) && sent === mode
   const qualityCtx = {
     theirMessage: (chosen ? chosen.messages[0]?.body : reply?.original) || '',
     firstName: firstNameOf(target?.sender.name || ''),
     kind: (replying ? 'reply' : followingUp ? 'follow-up' : 'decline') as 'reply' | 'follow-up' | 'decline',
-  }
-  const doCopy = async (body: string) => {
-    await copyText(body)
-    setCopied(true)
-  }
-  const checkThenCopy = async () => {
-    const issues = checkMessage(text, qualityCtx)
-    setReview(issues)
-    if (!issues.length) await doCopy(text)
-  }
-  const applyFix = (issue: QualityIssue) => {
-    if (!issue.fix) return
-    const next = issue.fix(text)
-    setText(next)
-    setCopied(false)
-    setSendOpened(false)
-    setReview(checkMessage(next, qualityCtx))
   }
 
   const received = (
@@ -487,115 +460,32 @@ export function ManageLeadForm({
                 }}
               />
             </label>
-            <div className="actions">
-              <button
-                type="button"
-                className={copied ? 'btn' : 'btn primary'}
-                disabled={!text.trim()}
-                title="Checks the message first, then copies it"
-                onClick={() => void checkThenCopy()}
-              >
-                {stepBadge(2)}
-                {copied ? `Copied ${word} message ✓` : `Copy ${word} message`}
-              </button>
-              {route ? (
-                copied ? (
-                  <a
-                    className={sendOpened || isSent ? 'btn' : 'btn primary'}
-                    href={route.sendsAndLogs ? textHref : route.href(text)}
-                    target={route.sendsAndLogs ? undefined : '_blank'}
-                    rel="noreferrer"
-                    title={route.step}
-                    onClick={
-                      route.sendsAndLogs
-                        ? markSent(mode, afterSent)
-                        : () => {
-                            setSentVia('')
-                            setSendOpened(true)
-                            setFailed(false)
-                          }
-                    }
-                  >
-                    {stepBadge(3)}
-                    Send {word} message
-                  </a>
-                ) : (
-                  <span className="btn disabled" title="Copy the message first">
-                    {stepBadge(3)}
-                    Send {word} message
-                  </span>
-                )
-              ) : (
-                <span className="btn disabled">No way to send found — see More options</span>
-              )}
-              {route && (
-                <span className="send-how">
-                  {route.note ?? (route.prefilled ? `opens ${route.how}, filled in` : `opens ${route.how}`)}
-                </span>
-              )}
-            </div>
-            {review && review.length === 0 && copied && <p className="quality-ok">Quality check passed ✓ — copied.</p>}
-            {review && review.length > 0 && (
-              <div className="quality-review" role="status">
-                <p className="quality-title">
-                  Quality check — {review.length} {review.length === 1 ? 'suggestion' : 'suggestions'} before you copy
-                </p>
-                <ul>
-                  {review.map((i) => (
-                    <li key={i.id} className={`quality-item ${i.level}`}>
-                      <span className="quality-level">{i.level === 'rule' ? 'House rule' : 'Suggestion'}</span>{' '}
-                      {i.message} <span className="quality-suggestion">{i.suggestion}</span>
-                      {i.fix && (
-                        <button type="button" className="btn link" onClick={() => applyFix(i)}>
-                          Apply fix
-                        </button>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-                <div className="actions">
-                  <button type="button" className="btn primary" onClick={() => void checkThenCopy()}>
-                    Check again &amp; copy
-                  </button>
-                  <button type="button" className={copied ? 'btn muted' : 'btn'} onClick={() => void doCopy(text)}>
-                    {copied ? 'Copied anyway ✓' : 'Copy anyway'}
-                  </button>
-                </div>
-              </div>
-            )}
-            {sendOpened && !isSent && !route?.sendsAndLogs && (
-              <div className="actions send-confirm">
-                {route?.note && <span>{route.note}</span>}
-                <span>Did it send?</span>
-                <a className="btn primary" href={logHref} onClick={markSent(mode, afterSent)} title="Log the message">
-                  {stepBadge(4)}
-                  Yes, it sent
-                </a>
-                <button type="button" className="btn" onClick={() => setFailed(true)}>
-                  No
-                </button>
-                <label className="sent-via" title="Which app you actually sent it from — logged with the message">
-                  via{' '}
-                  <select value={channel} onChange={(e) => setSentVia(e.target.value)}>
-                    {SENT_VIA.map(([value, label]) => (
-                      <option key={value} value={value}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            )}
-            {(isSent || failed) && (
-              <p className={`send-status ${isSent ? 'ok' : 'failed'}`}>
-                {isSent
-                  ? `Sent ✓ — logged${sentAt ? ` at ${sentAt}` : ''}.`
-                  : 'Not sent. Fix the message or pick another way under More options, then copy and send again.'}
-              </p>
-            )}
+            <MessageActions
+              key={`${mode}:${senderId ?? ''}`}
+              text={text}
+              onTextChange={setText}
+              quality={qualityCtx}
+              route={route}
+              selfLogHref={textHref}
+              messageSentHref={logHref}
+              onMessageSent={afterSent}
+              packageSentHref={declining ? undefined : packageSentHref}
+              onPackageSent={onPackageSent}
+              onSendOpened={() => setSentVia('')}
+            />
             <details className="more-options">
               <summary className="btn link">More options</summary>
               <SendToBox route={route} message={target} />
+              <label className="sent-via" title="Which app you actually sent it from — logged with the message">
+                Sent via{' '}
+                <select value={channel} onChange={(e) => setSentVia(e.target.value)}>
+                  {SENT_VIA.map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <div className="actions secondary-actions">
                 {otherRoutes.map((r) => (
                   <a
@@ -606,7 +496,6 @@ export function ManageLeadForm({
                     rel="noreferrer"
                     onClick={() => {
                       setSentVia(r.channel)
-                      setSendOpened(true)
                       if (!r.prefilled) void copyText(text)
                     }}
                   >

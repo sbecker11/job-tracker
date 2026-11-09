@@ -27,6 +27,10 @@ export interface PipelineStage {
 /** Cross-stage "what to do next" order stamped server-side
  * (pending_workflow.annotate_today_order). Lower todayRank = do it sooner. */
 export interface TodayFields {
+  /** Résumé + cover are on disk for this lead. */
+  packageReady?: boolean
+  /** Mark package sent was logged after the latest résumé ask. */
+  packageSent?: boolean
   todayTier?: number
   todayLabel?: string
   todayRank?: number
