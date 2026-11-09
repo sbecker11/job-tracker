@@ -1816,6 +1816,7 @@ def annotate_today_order(
     wait_schedule: list[dict],
     decide_apply: dict[str, list[dict]],
     dead_days: int = PROBABLY_DEAD_DAYS,
+    direct_keys: frozenset[str] = frozenset(),
 ) -> None:
     """Stamp `todayTier` / `todayLabel` / `todayRank` on every active item so
     the UI's single list reads as "what to do next, in order" across stages.
@@ -1823,13 +1824,15 @@ def annotate_today_order(
     Tiers: recruiter waiting on a reply → package ready for a recruiter →
     follow-ups on live threads → apply (best fit first) → decide → nothing to
     do yet → probably dead (silent `dead_days`+ or stale active status).
+    Within a tier, leads in `direct_keys` (direct recruiter outreach) come first.
     """
     ranked: list[tuple[tuple, dict]] = []
 
     def _add(item: dict, tier: int, sub: tuple) -> None:
         item["todayTier"] = tier
         item["todayLabel"] = TODAY_TIERS[tier]
-        ranked.append(((tier, *sub), item))
+        direct = 0 if item.get("normalizedKey") in direct_keys else 1
+        ranked.append(((tier, direct, *sub), item))
 
     for item in clarify:
         if item.get("dealbreaker"):
@@ -2184,6 +2187,9 @@ def build_workflow_payload(
         send_resume=send_resume,
         wait_schedule=wait_schedule,
         decide_apply=decide_apply,
+        direct_keys=frozenset(
+            r[0] for r in conn.execute("SELECT normalized_key FROM job_leads WHERE direct_recruiter_outreach = 1")
+        ),
     )
 
     archived_leads = _list_archived_leads(conn, age_days_fn=age_days_fn, now=now)

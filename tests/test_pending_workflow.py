@@ -954,6 +954,22 @@ def test_today_order_ranks_across_stages():
     }
 
 
+def test_today_order_puts_direct_recruiter_outreach_first_within_its_tier():
+    from job_tracker.pipeline.pending_workflow import annotate_today_order
+
+    clarify = [
+        {"normalizedKey": "overdue", "replyDue": True, "unansweredDays": 9},
+        {"normalizedKey": "direct", "replyDue": False, "unansweredDays": 0},
+    ]
+    wait = [{"normalizedKey": "direct-wait", "followUpDue": False, "waitingDays": 0}]
+    annotate_today_order(
+        clarify=clarify, send_resume=[], wait_schedule=wait, decide_apply={},
+        direct_keys=frozenset({"direct", "direct-wait"}),
+    )
+    order = [i["normalizedKey"] for i in sorted([*clarify, *wait], key=lambda i: i["todayRank"])]
+    assert order == ["direct", "overdue", "direct-wait"]
+
+
 def test_call_logged_lead_channel_is_sms_not_email():
     from job_tracker.pipeline.pending_workflow import _channel_from_addresses
 
