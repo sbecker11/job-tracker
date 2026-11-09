@@ -2112,6 +2112,7 @@ OWN_ADDRESSES = frozenset(
         "shawn.becker@spexture.com",
         "shawnbecker.recruiting@gmail.com",
         "scbboston@gmail.com",
+        "sbecker@alum.mit.edu",
     }
 )
 _OWN_DOMAINS = ("@spexture.com",)

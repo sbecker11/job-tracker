@@ -160,7 +160,7 @@ function cleanField(value: string | undefined): string {
   return /^(?:role\s+)?(?:tbd|unknown|n\/a)$/i.test(v) ? '' : v
 }
 
-const OWN_EMAIL_RE = /spexture\.com$|^shawnbecker\.recruiting@|^scbboston@/i
+const OWN_EMAIL_RE = /spexture\.com$|^shawnbecker\.recruiting@|^scbboston@|^sbecker@alum\.mit\.edu$/i
 /** Same list as `_NOT_A_PERSON_RE` in pipeline/store.py (REQUIREMENTS ROUTE-5) —
  * role mailboxes, relays, job boards and ATS senders are never a send route. */
 const NOT_A_PERSON_RE = new RegExp(

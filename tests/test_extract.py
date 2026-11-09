@@ -250,3 +250,21 @@ def test_company_from_sender_and_clean_bullet():
     assert _first_title("We need a Senior Software Engineer ASAP") is not None
     assert _clean_bullet_title("random text without role words") is None
     assert _clean_bullet_title("Senior Engineer — backend focus") == "Senior Engineer"
+
+
+def test_forward_from_own_address_takes_company_from_forwarded_sender():
+    """Regression: a forward from sbecker@alum.mit.edu became company "Mit"."""
+    message = EmailMessage(
+        id="fwd1",
+        from_address="Shawn Becker <sbecker@alum.mit.edu>",
+        subject="Fwd: Consulting Opportunity -",
+        body_plain=(
+            "Begin forwarded message:\n\n"
+            "From: Gavan Kendall <gavan.kendall@navitec.com>\n"
+            "Subject: Consulting Opportunity -\n"
+            "To: Shawn Becker <sbecker@alum.mit.edu>\n\n"
+            "Title: Agentic AI Engineer\n100% Remote\n"
+        ),
+    )
+    roles = extract_roles(message, Label.SINGLE_JD)
+    assert roles[0].company == "Navitec"

@@ -327,6 +327,22 @@ def _company_from_sender(from_address: str) -> str | None:
     return label.replace("-", " ").title()
 
 
+_FORWARDED_FROM = re.compile(r"(?im)^\s*From:[^\n]*?([\w.+'-]+@[\w-]+(?:\.[\w-]+)+)")
+
+
+def _company_sender(message: EmailMessage) -> str:
+    """Whose domain names the employer. A forward from one of Shawn's own
+    addresses uses the forwarded message's sender instead of his domain."""
+    from job_tracker.pipeline.store import is_own_address
+
+    if not is_own_address(message.from_address):
+        return message.from_address
+    for m in _FORWARDED_FROM.finditer(message.combined_text or ""):
+        if not is_own_address(m.group(1)):
+            return m.group(1)
+    return ""
+
+
 def _first_title(text: str) -> str | None:
     m = _JOB_TITLE.search(text)
     return m.group(0).strip() if m else None
@@ -357,7 +373,7 @@ def _extract_single_jd(message: EmailMessage) -> list[ExtractedRole]:
             company = _token_to_company(token)
             source = "ats_url"
     if not company:
-        company = _company_from_sender(message.from_address)
+        company = _company_from_sender(_company_sender(message))
         source = "sender_domain" if company else source
 
     title = _first_title(message.subject) or _first_title(text)
@@ -391,7 +407,7 @@ def _extract_single_jd(message: EmailMessage) -> list[ExtractedRole]:
 def _extract_multi_jd(message: EmailMessage) -> list[ExtractedRole]:
     text = message.combined_text
     shared_company = _company_from_text(f"{message.subject}\n{text}") or _company_from_sender(
-        message.from_address
+        _company_sender(message)
     )
     ats_matches = _find_ats_matches(text)
     ats_urls_by_index = [url for _, _, url in ats_matches]

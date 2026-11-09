@@ -22,7 +22,7 @@ def _lead(conn) -> str:
 
 
 def test_own_addresses():
-    for a in ("shawn.becker@spexture.com", "Shawn Becker <Shawn.Becker@spexture.com>", "shawnbecker.recruiting@gmail.com", "scbboston@gmail.com"):
+    for a in ("shawn.becker@spexture.com", "Shawn Becker <Shawn.Becker@spexture.com>", "shawnbecker.recruiting@gmail.com", "scbboston@gmail.com", "Shawn Becker <sbecker@alum.mit.edu>"):
         assert is_own_address(a), a
     assert not is_own_address("priyanshu.sharma@artech.com")
 
