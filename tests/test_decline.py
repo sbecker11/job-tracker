@@ -17,9 +17,15 @@ from job_tracker.pipeline.decline import (
     record_decline,
     terms_changed,
 )
-from job_tracker.pipeline.models import JobContact, JobConversation, JobLead
+from job_tracker.pipeline.models import JobContact, JobConversation, JobLead, UnmatchedMessage
 from job_tracker.pipeline.pending_workflow import build_workflow_payload
-from job_tracker.pipeline.store import add_job_contact, add_job_conversation, connect, upsert_lead
+from job_tracker.pipeline.store import (
+    add_job_contact,
+    add_job_conversation,
+    connect,
+    record_unmatched_message,
+    upsert_lead,
+)
 
 _SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "render_pending_actions.py"
 _spec = importlib.util.spec_from_file_location("render_pending_actions", _SCRIPT_PATH)
@@ -227,4 +233,50 @@ def test_cli_logs_the_edited_letter_text(tmp_path: Path):
         "SELECT body_text FROM job_conversations WHERE message_id LIKE 'decline:%'"
     ).fetchone()["body_text"]
     assert body == edited
+    conn.close()
+
+
+def test_cli_declines_unmatched_pitch_for_commute(tmp_path: Path):
+    db = tmp_path / "leads.db"
+    conn = connect(db)
+    record_unmatched_message(
+        conn,
+        UnmatchedMessage(
+            message_id="imap:<millcreek>",
+            direction="inbound",
+            from_address="inmail-hit-reply@linkedin.com",
+            subject="Software Architect - Millcreek, UT",
+            body_text="Hi Shawn,\n\nMy client in Millcreek is hiring a Software Architect.\n\nBrian Edelman\n",
+        ),
+    )
+    conn.close()
+    rc = decline_lead.main(
+        [
+            "--db", str(db),
+            "--message-id", "imap:<millcreek>",
+            "--reason", "location",
+            "--no-letter",
+            "--channel", "linkedin",
+            "--contact-name", "Brian Edelman",
+            "--company", "Pivotal Solutions",
+            "--title", "Software Architect",
+        ]
+    )
+    assert rc == 0
+    conn = connect(db)
+    row = conn.execute(
+        "SELECT normalized_key, company, title, status, decline_reason FROM job_leads"
+    ).fetchone()
+    assert (row["company"], row["title"], row["status"], row["decline_reason"]) == (
+        "Pivotal Solutions",
+        "Software Architect",
+        "skipped",
+        "location",
+    )
+    resolved = conn.execute(
+        "SELECT resolved_job_key FROM unmatched_messages WHERE message_id = ?",
+        ("imap:<millcreek>",),
+    ).fetchone()
+    assert resolved["resolved_job_key"] == row["normalized_key"]
+    assert conn.execute("SELECT COUNT(*) FROM job_conversations WHERE message_id LIKE 'decline:%'").fetchone()[0] == 0
     conn.close()

@@ -206,6 +206,95 @@ def draft_post_decline_reply(*, recruiter_name: str = "", company: str = "", tit
     )
 
 
+def decline_unmatched(
+    conn: sqlite3.Connection,
+    message_id: str,
+    *,
+    code: str,
+    note: str = "",
+    letter: str = "",
+    channel: str = "linkedin",
+    when: str | None = None,
+    company: str = "",
+    title: str = "",
+    contact_name: str = "",
+) -> str:
+    """Close an unmatched pitch as a skipped lead with a decline reason.
+
+    Creates an end-client-TBD stub when the pitch names no company, attaches
+    the parked message to that lead, then `record_decline`s it. A later note
+    on the same thread matches the skipped lead instead of opening a new card.
+    """
+    from job_tracker.cli.record_unmatched_reply import stub_lead_names
+    from job_tracker.pipeline.models import JobLead
+    from job_tracker.pipeline.signature import parse_signature
+    from job_tracker.pipeline.store import (
+        get_job,
+        get_unmatched_message,
+        resolve_unmatched_message,
+        upsert_lead,
+        utc_now_iso,
+    )
+
+    decline_reason(code)
+    row = get_unmatched_message(conn, message_id)
+    if row is None:
+        raise ValueError(f"no unmatched_messages row for message_id={message_id!r}")
+    requested_id = message_id
+    if row["superseded_by"]:
+        survivor = get_unmatched_message(conn, row["superseded_by"])
+        if survivor is not None:
+            row = survivor
+
+    sig = parse_signature(row["body_text"] or "")
+    name = (contact_name or "").strip() or sig.name
+    if row["resolved_job_key"]:
+        job_key = row["resolved_job_key"]
+    else:
+        company, title = stub_lead_names(name, company, title or (row["subject"] or ""))
+        job = get_job(conn, company, title)
+        if job is None:
+            lead = JobLead(
+                company=company,
+                title=title,
+                source_message_id=row["message_id"],
+                source_label="linkedin_message" if channel == "linkedin" else channel,
+                extraction_confidence=0.5,
+                verdict="pass",
+                rationale=[f"Created when Shawn declined unmatched message {row['message_id']}"],
+            )
+            upsert_lead(conn, lead)
+            job_key = lead.normalized_key
+        else:
+            job_key = job["normalized_key"]
+        resolve_unmatched_message(
+            conn,
+            row["message_id"],
+            job_key,
+            contact_name=name,
+            contact_email=sig.email,
+            contact_phone=sig.phone,
+            when=when,
+        )
+        if requested_id != row["message_id"]:
+            conn.execute(
+                "UPDATE unmatched_messages SET resolved_job_key = ?, resolved_at = ? "
+                "WHERE message_id = ? AND resolved_at IS NULL",
+                (job_key, when or utc_now_iso(), requested_id),
+            )
+            conn.commit()
+    record_decline(
+        conn,
+        job_key,
+        code=code,
+        note=note,
+        letter=letter,
+        channel=channel,
+        when=when,
+    )
+    return job_key
+
+
 def record_decline(
     conn: sqlite3.Connection,
     normalized_key: str,

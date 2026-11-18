@@ -65,8 +65,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             queryItems.first(where: { $0.name == name })?.value
         }
 
-        guard let key = value("key"), !key.isEmpty else {
-            alert("declinelead://decline requires ?key=<normalized_key>")
+        let key = value("key") ?? ""
+        let messageId = value("message_id") ?? ""
+        guard !key.isEmpty || !messageId.isEmpty else {
+            alert("declinelead://decline requires ?key=<normalized_key> or &message_id=<id>")
             return
         }
         guard let reason = value("reason"), !reason.isEmpty else {
@@ -74,7 +76,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        var args = ["--db", config.dbPath, "--key", key, "--reason", reason]
+        var args = ["--db", config.dbPath, "--reason", reason]
+        if !messageId.isEmpty {
+            args.append(contentsOf: ["--message-id", messageId])
+        } else {
+            args.append(contentsOf: ["--key", key])
+        }
+        if let company = value("company"), !company.isEmpty {
+            args.append(contentsOf: ["--company", company])
+        }
+        if let title = value("title"), !title.isEmpty {
+            args.append(contentsOf: ["--title", title])
+        }
+        if let contact = value("contact_name"), !contact.isEmpty {
+            args.append(contentsOf: ["--contact-name", contact])
+        }
         if let note = value("note"), !note.isEmpty {
             args.append(contentsOf: ["--note", note])
         }
