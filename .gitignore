@@ -5,6 +5,8 @@ __pycache__/
 .coverage
 coverage.json
 htmlcov/
+coverage/
+coverage-report.html
 *.egg-info/
 # .env itself is intentionally tracked (git-crypt-encrypted, see
 # .gitattributes) as of 2026-08-19 — only other local override variants

@@ -9,7 +9,7 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "regen": "cd .. && .venv/bin/python scripts/render_pending_actions.py --no-rescore",
-    "test": "vitest run"
+    "test": "vitest run --coverage"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.14.10",
@@ -22,6 +22,8 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.4",
+    "@vitest/coverage-v8": "^5.1.0",
+    "happy-dom": "^21.0.4",
     "oxlint": "^1.75.0",
     "typescript": "~6.0.2",
     "vite": "^8.2.0",

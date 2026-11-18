@@ -1,11 +1,32 @@
+import { useEffect, useRef } from 'react'
 import { LEAD_STATUS_OPTIONS } from './ManageLeadStatus'
 import type { ContactFilter, LeadSort, StatusFilter } from '../priorityQueue'
+
+/** Chrome restores the last <select> choice after a reload, after React has
+ * already set the default. Write the React value back once that restore runs. */
+function useHeldSelect<T extends string>(value: T) {
+  const ref = useRef<HTMLSelectElement>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const apply = () => {
+      if (el.value !== value) el.value = value
+    }
+    apply()
+    const timer = window.setTimeout(apply, 0)
+    window.addEventListener('pageshow', apply)
+    return () => {
+      window.clearTimeout(timer)
+      window.removeEventListener('pageshow', apply)
+    }
+  }, [value])
+  return ref
+}
 
 interface StageOption {
   id: ContactFilter
   label: string
   count: number
-  hint: string
 }
 
 interface StatusOption {
@@ -41,11 +62,32 @@ export function ContactFilterBar({
   activeSort,
   onSelectSort,
 }: Props) {
+  const stageRef = useHeldSelect(activeStage)
+  const statusRef = useHeldSelect(activeStatus)
+  const sortRef = useHeldSelect(activeSort)
   return (
     <div className="list-filters">
       <label className="status-filter">
+        <span>Section</span>
+        <select
+          ref={stageRef}
+          autoComplete="off"
+          value={activeStage}
+          onChange={(e) => onSelectStage(e.target.value as ContactFilter)}
+          aria-label="Filter leads by section"
+        >
+          {stageOptions.map((opt) => (
+            <option key={opt.id} value={opt.id}>
+              {opt.label} ({opt.count})
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="status-filter">
         <span>Status</span>
         <select
+          ref={statusRef}
+          autoComplete="off"
           value={activeStatus}
           onChange={(e) => onSelectStatus(e.target.value)}
           aria-label="Filter leads by status"
@@ -60,6 +102,8 @@ export function ContactFilterBar({
       <label className="status-filter">
         <span>Sort</span>
         <select
+          ref={sortRef}
+          autoComplete="off"
           value={activeSort}
           onChange={(e) => onSelectSort(e.target.value as LeadSort)}
           aria-label="Sort leads"
@@ -71,23 +115,6 @@ export function ContactFilterBar({
           ))}
         </select>
       </label>
-      <nav className="filter-bar" aria-label="Filter by task">
-        {stageOptions.map((opt) => {
-          const isActive = opt.id === activeStage
-          return (
-            <button
-              key={opt.id}
-              type="button"
-              className={`filter-chip${isActive ? ' active' : ''}${opt.count ? '' : ' empty'}`}
-              onClick={() => onSelectStage(opt.id)}
-              title={opt.hint}
-            >
-              <span className="filter-label">{opt.label}</span>
-              <span className="filter-count">{opt.count}</span>
-            </button>
-          )
-        })}
-      </nav>
     </div>
   )
 }

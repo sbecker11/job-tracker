@@ -14,6 +14,7 @@ import {
   findKeyForAnchorId,
   locateLeadFilters,
   replyAckKey,
+  sectionOptions,
   sortPriorityQueue,
   statusCounts,
   type ContactFilter,
@@ -206,6 +207,12 @@ export default function App() {
     if (!key) return
     const located = locateLeadFilters(data, key)
     if (!located) return
+    // The last #lead- hash survives a refresh. Closed and duplicate leads
+    // would switch Section to Closed; a refresh should open on All work.
+    if (located.stage === 'archived' || located.stage === 'duplicates_skipped') {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search)
+      return
+    }
     setHighlightKey(key)
     setFilter(located.stage)
     setStatusFilter(located.status)
@@ -541,53 +548,15 @@ export default function App() {
     const countFor = (stage: ContactFilter) =>
       filterPriorityQueue(priorityAll, stage, statusFilter).length
     return [
-      {
-        id: 'all' as const,
-        label: 'All tasks',
-        count: countFor('all'),
-        hint: 'Active-work tasks only. Closed/Skipped leads are under Closed, or set Status to Any status / Closed - skipped',
-      },
-      {
-        id: 'clarify' as const,
-        label: 'Clarify',
-        count: countFor('clarify'),
-        hint: 'Reply now — unreplied recruiter messages rank first',
-      },
-      {
-        id: 'send_resume' as const,
-        label: 'Send résumé',
-        count: countFor('send_resume'),
-        hint: 'Send package to the recruiter',
-      },
-      {
-        id: 'wait_schedule' as const,
-        label: 'Wait / schedule',
-        count: countFor('wait_schedule'),
-        hint: `Ball in their court — follow-up due after ${data.waitFollowupDays ?? 7} silent days`,
-      },
-      {
-        id: 'decide_apply' as const,
-        label: 'Decide / apply',
-        count: countFor('decide_apply'),
-        hint: 'Package and review work, ranked in the same list',
-      },
-      {
-        id: 'duplicates_skipped' as const,
-        label: 'Duplicates',
-        count: countFor('duplicates_skipped'),
-        hint: 'Leads skipped because they duplicated another lead',
-      },
-      {
-        id: 'archived' as const,
-        label: 'Closed',
-        count: countFor('archived'),
-        hint: 'Off the active funnel — decided, closed out, or already applied',
-      },
+      { id: 'all' as ContactFilter, label: 'All work', count: countFor('all') },
+      ...sectionOptions(priorityAll).map((s) => ({ ...s, count: countFor(s.id) })),
+      { id: 'duplicates_skipped' as const, label: 'Duplicates', count: countFor('duplicates_skipped') },
+      { id: 'archived' as const, label: 'Closed', count: countFor('archived') },
     ]
   }, [data, priorityAll, statusFilter])
 
   const filterLabel =
-    filterOptions.find((o) => o.id === filter)?.label || 'All tasks'
+    filterOptions.find((o) => o.id === filter)?.label || 'All work'
 
   const duplicateFocusLabel = duplicatesFocusKey
     ? priorityAll.find((i) => i.normalizedKey === duplicatesFocusKey)?.title ||
@@ -601,12 +570,6 @@ export default function App() {
       <header className="top">
         <div>
           <h1>Pending actions</h1>
-          <p className="subtitle">
-            Your next tasks, in order: reply to recruiters, send ready packages to recruiters,
-            follow up on live threads, apply (best fit first), decide, then leads that are only
-            waiting. Applications silent 45+ days sink to <strong>Probably dead</strong>. Each row
-            starts with <strong>YOUR ACTION</strong>. Status and task chips only filter the list.
-          </p>
         </div>
         <div className="top-meta">
           {data && (
@@ -638,6 +601,16 @@ export default function App() {
             {regenerating && <span className="regen-spinner" aria-hidden="true" />}
             {regenerating ? 'Regenerating…' : 'Regenerate'}
           </button>
+          <button
+            type="button"
+            className="btn link"
+            title="Open the coverage report in a new window"
+            onClick={() => {
+              window.open('/coverage-report.html', 'coverage-report', 'width=1100,height=900')
+            }}
+          >
+            Coverage report
+          </button>
         </div>
       </header>
 
@@ -664,11 +637,6 @@ export default function App() {
           <div className="contact-priority-head">
             <div>
               <h2>Task priority</h2>
-              <p className="panel-action">
-                Ranked by what needs a human next. All tasks still respects Status (default Active
-                work), so skipped leads stay under Closed until you pick Closed, Status = Closed - skipped,
-                or Status = Any status.
-              </p>
             </div>
             <span className="priority-total">{filtered.length} shown</span>
           </div>
