@@ -1,18 +1,17 @@
 """CLI: render one job's full communications history (job_conversations) to
-a single RTF file under that job's folder.
+a single plain-text file under that job's folder.
 
 Deliberately on-demand, not automatic (2026-07-17 design decision — see
 chat history): every inbound/outbound message is already archived as text
 in `job_conversations.body_text` the moment it's linked (by
 `triage_recruiter_inbox.py` or `scan_communications.py`), which is cheap,
-searchable, and needs no rendering step. An RTF is only generated when
-you actually want a paper trail to hand someone — this command builds it
-fresh from whatever's in the DB right now, every time; it does not
+searchable, and needs no rendering step. A ``.txt`` file is only generated
+when you actually want a paper trail to hand someone — this command builds
+it fresh from whatever's in the DB right now, every time; it does not
 accumulate separate dated snapshots.
 
-RTF (2026-10-27) so History opens in TextEdit with a dark page and light
-text. LibreOffice, which opened the previous ODT, has no dark theme that
-is comfortable to read. A leftover ``Communications_*.odt`` or ``.txt``
+Plain text (2026-11-17). Earlier exports were ODT, then RTF so TextEdit
+could open a dark page. A leftover ``Communications_*.odt`` or ``.rtf``
 next to the new file is removed on export.
 
 Every export (CLI, Find Mail, and ``viewcomms://``) collapses IMAP+Gmail
@@ -20,7 +19,7 @@ twins after stripping LinkedIn notification chrome, then replaces later
 copies of the same cleaned body with a pointer to the first instance.
 Non-human mailer tracking (pixel padding, ``midToken`` / ``lipi`` /
 unsubscribe URLs, encoded LinkedIn thread links) is diverted to a sidecar
-``.log`` next to the RTF.
+``.log`` next to the text file.
 """
 
 from __future__ import annotations
@@ -190,7 +189,7 @@ def _is_tracking_url(url: str) -> bool:
 
 
 def _human_url(url: str) -> str | None:
-    """Keep a readable URL in the ODT, or None if the whole URL belongs in the log."""
+    """Keep a readable URL in the history, or None if the whole URL belongs in the log."""
     raw = (url or "").rstrip(").,;")
     low = raw.lower()
     if "meet.google.com/" in low or "://tel.meet/" in low:
@@ -251,13 +250,13 @@ def write_tracking_log(
     job_key: str,
     sections: list[tuple[str, str, str, list[str]]],
 ) -> None:
-    """Sidecar log next to the ODT: tracking that was removed from the readable copy."""
+    """Sidecar log next to the text file: tracking that was removed from the readable copy."""
     lines = [
         f"# Communications tracking log — {title} @ {company}",
         f"# job_key: {job_key}",
         "# Stored job_conversations.body_text is unchanged; this file holds mailer",
         "# tracking (pixel padding, LinkedIn midToken/lipi URLs, encoded thread links)",
-        "# diverted out of the human-readable ODT.",
+        "# diverted out of the human-readable text file.",
         "",
     ]
     wrote = False
@@ -301,7 +300,7 @@ def clean_body_for_history(body: str, *, summary: str = "") -> str:
     """Drop quoted history, vendor footers, and HTML/mailto wrapping.
 
     Stored `job_conversations.body_text` is left untouched — this is
-    export-only so the ODT is readable without deleting the archive.
+    export-only so the text file is readable without deleting the archive.
     """
     text = (body or "").replace("\r\n", "\n").replace("\r", "\n")
     text = html.unescape(text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&"))
@@ -531,55 +530,119 @@ def status_timeline(job) -> list[tuple[str, str]]:
     return sorted(events, key=_key)
 
 
-def _rtf_escape(text: str) -> str:
-    """Escape one paragraph for RTF, keeping Unicode as ``\\uN?``."""
-    parts: list[str] = []
-    for ch in (text or "").replace("\r\n", "\n").replace("\r", "\n"):
-        if ch == "\\":
-            parts.append("\\\\")
-        elif ch == "{":
-            parts.append("\\{")
-        elif ch == "}":
-            parts.append("\\}")
-        elif ch == "\n":
-            parts.append("\\line ")
-        elif ord(ch) < 128:
-            parts.append(ch)
-        else:
-            n = ord(ch)
-            if n > 32767:
-                n -= 65536
-            parts.append(f"\\u{n}?")
-    return "".join(parts)
+def _rtf_uchar(match: re.Match[str]) -> str:
+    n = int(match.group(1))
+    if n < 0:
+        n += 65536
+    return chr(n)
+
+
+def _rtf_visible(chunk: str) -> str:
+    """Literal text in one RTF paragraph, after formatting control words."""
+    text = re.sub(r"\\u(-?\d+)\?", _rtf_uchar, chunk)
+    text = text.replace("\\\\", "\x00").replace("\\{", "\x01").replace("\\}", "\x02")
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        if text[i] == "\\":
+            j = i + 1
+            while j < len(text) and text[j].isalpha():
+                j += 1
+            if j < len(text) and text[j] == "-":
+                j += 1
+            while j < len(text) and text[j].isdigit():
+                j += 1
+            if j < len(text) and text[j] == " ":
+                j += 1
+            i = j if j > i + 1 else i + 1
+            continue
+        if text[i] in "{}":
+            i += 1
+            continue
+        out.append(text[i])
+        i += 1
+    return "".join(out).replace("\x00", "\\").replace("\x01", "{").replace("\x02", "}")
 
 
 def rtf_to_text(raw: str) -> str:
-    """Best-effort plain text from an RTF history, for tests and re-export."""
-    def _uchar(match: re.Match[str]) -> str:
-        n = int(match.group(1))
-        if n < 0:
-            n += 65536
-        return chr(n)
-
-    text = re.sub(r"\\u(-?\d+)\?", _uchar, raw)
-    text = text.replace("\\\\", "\x00")
-    text = text.replace("\\{", "{").replace("\\}", "}")
-    text = text.replace("\\par", "\n").replace("\\line", "\n")
-    text = re.sub(r"\\[a-zA-Z]+-?\d* ?", "", text)
-    text = text.replace("{", "").replace("}", "").replace("\x00", "\\")
-    return text
+    """Plain text from an RTF history. ``\\pard`` is not treated as a paragraph break."""
+    body = raw
+    start = body.find("\\pard")
+    if start >= 0:
+        body = body[start:]
+    parts = re.split(r"\\par(?![A-Za-z])", body)
+    lines = [_rtf_visible(part).strip() for part in parts]
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines) + ("\n" if lines else "")
 
 
-def _rtf_paragraph(text: str, *, size: int = 22, bold: bool = False) -> str:
-    weight = "\\b " if bold else ""
-    closer = "\\b0" if bold else ""
-    return (
-        f"\\pard\\plain\\f0\\fs{size}{weight}\\cf1\\cb2\\highlight2 "
-        f"{_rtf_escape(text)}{closer}\\par"
-    )
+def odt_to_text(path: Path) -> str:
+    """Plain text from an ODT history, one paragraph per line."""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            xml = zf.read("content.xml").decode("utf-8", errors="ignore")
+    except (OSError, zipfile.BadZipFile, KeyError):
+        return ""
+    body = xml.split("<office:text>", 1)[-1]
+    body = body.replace("<text:line-break/>", "\n").replace("<text:tab/>", "\t")
+    paragraphs = re.findall(r"<text:[ph]\b[^>]*>(.*?)</text:[ph]>", body, flags=re.S)
+    lines = [html.unescape(re.sub(r"<[^>]+>", "", part)) for part in paragraphs]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines) + ("\n" if lines else "")
 
 
-def _render_rtf(
+def convert_rich_histories(output_root: Path) -> dict:
+    """Rewrite Communications ``.rtf`` and ``.odt`` files as ``.txt`` and remove the rich copies.
+
+    A ``.txt`` that is already newer than the rich file is kept. The rich file
+    is still removed.
+    """
+    root = Path(output_root)
+    groups: dict[Path, list[Path]] = {}
+    if root.is_dir():
+        for pattern in ("Communications_*.rtf", "Communications_*.odt", "Communications_*.txt"):
+            for path in root.rglob(pattern):
+                if path.name.startswith(".") or ".~lock" in path.name:
+                    continue
+                if path.parent.name != "communications":
+                    continue
+                groups.setdefault(path.parent / path.stem, []).append(path)
+    converted = 0
+    removed = 0
+    kept_txt = 0
+    failed: list[str] = []
+    for key, files in sorted(groups.items(), key=lambda item: str(item[0])):
+        rich = [path for path in files if path.suffix.lower() in {".rtf", ".odt"} and path.is_file()]
+        if not rich:
+            continue
+        txt_path = key.with_suffix(".txt")
+        source = max(rich, key=lambda path: path.stat().st_mtime)
+        if txt_path.is_file() and txt_path.stat().st_mtime >= source.stat().st_mtime:
+            kept_txt += 1
+        else:
+            text = odt_to_text(source) if source.suffix.lower() == ".odt" else rtf_to_text(
+                source.read_text(encoding="utf-8", errors="ignore")
+            )
+            if " @ " not in text.split("\n", 1)[0]:
+                failed.append(str(source))
+                continue
+            txt_path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+            converted += 1
+        for path in rich:
+            if path.is_file():
+                path.unlink()
+                removed += 1
+    return {
+        "converted": converted,
+        "kept_existing_txt": kept_txt,
+        "removed": removed,
+        "failed": failed,
+    }
+
+
+def _render_history(
     job_key: str,
     company: str,
     title: str,
@@ -591,7 +654,7 @@ def _render_rtf(
     status: str = "",
     timeline: list[tuple[str, str]] | None = None,
 ) -> None:
-    """Write the history as a dark-page RTF (light text on #1a1a1a)."""
+    """Write the history as plain text."""
     log_name = f"Communications_{_safe_filename(title)}.log"
     lines: list[str] = [
         f"{title} @ {company}",
@@ -657,19 +720,6 @@ def _render_rtf(
             lines.append(body)
         lines.append("")
 
-    paragraphs = []
-    for index, line in enumerate(lines):
-        paragraphs.append(_rtf_paragraph(line, size=32 if index == 0 else 22, bold=index == 0))
-    # fillColor 1710618 is #1a1a1a stored as BGR. cf1 is #e6e6e6, cb2/highlight2 is the page.
-    document = (
-        "{\\rtf1\\ansi\\ansicpg1252\\deff0\n"
-        "{\\fonttbl{\\f0\\fswiss Helvetica;}}\n"
-        "{\\colortbl;\\red230\\green230\\blue230;\\red26\\green26\\blue26;}\n"
-        "{\\*\\background{\\shp{\\*\\shpinst\\shpleft0\\shptop0\\shpright0\\shpbottom0"
-        "{\\sp{\\sn fillColor}{\\sv 1710618}}{\\sp{\\sn fFilled}{\\sv 1}}}}}\n"
-        + "\n".join(paragraphs)
-        + "\n}"
-    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     write_tracking_log(
         out_path.with_suffix(".log"),
@@ -678,8 +728,8 @@ def _render_rtf(
         job_key=job_key,
         sections=tracking_sections,
     )
-    out_path.write_text(document, encoding="utf-8")
-    for suffix in (".odt", ".txt"):
+    out_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    for suffix in (".odt", ".rtf"):
         leftover = out_path.with_suffix(suffix)
         if leftover.is_file():
             leftover.unlink()
@@ -692,7 +742,7 @@ def export_job_history(
     db_path: Path = DEFAULT_DB_PATH,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
 ) -> dict:
-    """Write the communications RTF and return a JSON-serializable result.
+    """Write the communications text file and return a JSON-serializable result.
 
     Does not open the file — the URL-scheme helper and the local HTTP API
     decide whether to `open` it.
@@ -719,8 +769,8 @@ def export_job_history(
         documents = list_job_documents(conn, job_key)
         multi_lead = len(get_sibling_titles(conn, company, exclude_title=title)) > 0
         job_dir = _job_folder(output_root, company=company, title=title, multi_lead=multi_lead)
-        out_path = job_dir / "communications" / f"Communications_{_safe_filename(title)}.rtf"
-        _render_rtf(
+        out_path = job_dir / "communications" / f"Communications_{_safe_filename(title)}.txt"
+        _render_history(
             job_key,
             company,
             title,
@@ -751,13 +801,13 @@ def export_job_history(
 def discover_on_disk_communications(output_root: Path) -> list[Path]:
     """Every Communications history file under a job's communications/ folder.
 
-    A leftover ``.odt`` or ``.txt`` is included so a batch re-export can
-    replace it with RTF. When more than one suffix exists, the RTF wins.
+    A leftover ``.odt`` or ``.rtf`` is included so a batch re-export can
+    replace it with text. When more than one suffix exists, the text file wins.
     """
     root = Path(output_root)
     if not root.is_dir():
         return []
-    rank = {".odt": 0, ".txt": 1, ".rtf": 2}
+    rank = {".odt": 0, ".rtf": 1, ".txt": 2}
     found: dict[Path, Path] = {}
     for pattern in ("Communications_*.odt", "Communications_*.txt", "Communications_*.rtf"):
         for path in root.rglob(pattern):
@@ -783,36 +833,18 @@ def _lead_folder_index(conn) -> dict[tuple[str, str], tuple[str, str]]:
 
 
 def _heading_from_history(path: Path) -> tuple[str, str] | None:
-    """First ``title @ company`` line, from an RTF, a text file, or a leftover ODT."""
+    """First ``title @ company`` line, from text or a leftover RTF or ODT."""
     if path.suffix.lower() == ".odt":
-        return _heading_from_odt(path)
-    try:
-        raw = path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return None
-    if path.suffix.lower() == ".rtf":
-        raw = rtf_to_text(raw)
+        raw = odt_to_text(path)
+    else:
+        try:
+            raw = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return None
+        if path.suffix.lower() == ".rtf":
+            raw = rtf_to_text(raw)
     for line in raw.splitlines():
         line = line.strip()
-        if " @ " not in line:
-            continue
-        title, company = line.split(" @ ", 1)
-        title, company = title.strip(), company.strip()
-        if title and company:
-            return title, company
-    return None
-
-
-def _heading_from_odt(path: Path) -> tuple[str, str] | None:
-    try:
-        with zipfile.ZipFile(path) as zf:
-            xml = zf.read("content.xml").decode("utf-8", errors="ignore")
-    except (OSError, zipfile.BadZipFile, KeyError):
-        return None
-    text = re.sub(r"<text:line-break/>", " ", xml)
-    text = re.sub(r"<[^>]+>", "", text)
-    for line in text.splitlines():
-        line = html.unescape(line).strip()
         if " @ " not in line:
             continue
         title, company = line.split(" @ ", 1)

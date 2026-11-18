@@ -1,7 +1,9 @@
-"""Tests for the on-demand communications RTF export CLI."""
+"""Tests for the on-demand communications text export CLI."""
 
 from __future__ import annotations
 
+import os
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,8 @@ from job_tracker.cli.export_communications import (
     omit_empty_email_husk,
     replace_duplicate_bodies,
     replace_duplicate_job_descriptions,
+    convert_rich_histories,
+    odt_to_text,
     rtf_to_text,
     main as export_main,
 )
@@ -39,19 +43,20 @@ def seeded_db(tmp_path: Path) -> Path:
     return db_path
 
 
-def test_export_writes_rtf(seeded_db: Path, tmp_path: Path, capsys):
+def test_export_writes_txt(seeded_db: Path, tmp_path: Path, capsys):
     out_root = tmp_path / "out"
     rc = export_main(
         ["--db", str(seeded_db), "--company", "Acme", "--title", "Engineer", "--output-root", str(out_root)]
     )
     assert rc == 0
 
-    rtf_path = out_root / "Acme" / "Engineer" / "communications" / "Communications_Engineer.rtf"
-    assert rtf_path.is_file()
-    assert rtf_path.stat().st_size > 0
+    txt_path = out_root / "Acme" / "Engineer" / "communications" / "Communications_Engineer.txt"
+    assert txt_path.is_file()
+    assert txt_path.stat().st_size > 0
     assert "Exported 1 conversation" in capsys.readouterr().out
-    assert rtf_path.suffix == ".rtf"
-    rtf_path.with_suffix(".odt").write_bytes(b"old libreoffice file")
+    assert txt_path.suffix == ".txt"
+    txt_path.with_suffix(".odt").write_bytes(b"old libreoffice file")
+    txt_path.with_suffix(".rtf").write_text("{\\rtf1 old rich text}", encoding="utf-8")
 
     from job_tracker.cli.export_communications import export_job_history
 
@@ -60,18 +65,16 @@ def test_export_writes_rtf(seeded_db: Path, tmp_path: Path, capsys):
     )
     assert result["ok"] is True
     assert result["count"] == 1
-    assert Path(result["path"]) == rtf_path
-    assert not rtf_path.with_suffix(".odt").exists()
+    assert Path(result["path"]) == txt_path
+    assert not txt_path.with_suffix(".odt").exists()
+    assert not txt_path.with_suffix(".rtf").exists()
 
-    raw = rtf_path.read_text(encoding="utf-8")
-    assert raw.startswith("{\\rtf1")
-    assert "\\red230\\green230\\blue230" in raw
-    assert "\\red26\\green26\\blue26" in raw
-    content = rtf_to_text(raw)
-    assert "Engineer @ Acme" in content
+    content = txt_path.read_text(encoding="utf-8")
+    assert content.startswith("Engineer @ Acme\n")
+    assert "{\\rtf1" not in content
     assert "Hi Shawn" in content
     assert "\u2014" in content or "—" in content  # curly em dash preserved
-    log_path = rtf_path.with_suffix(".log")
+    log_path = txt_path.with_suffix(".log")
     assert log_path.is_file()
     assert "No non-human tracking data extracted." in log_path.read_text(encoding="utf-8")
 
@@ -284,9 +287,9 @@ def test_export_diverts_tracking_to_log(tmp_path: Path):
         ["--db", str(db_path), "--company", "PCC", "--title", "Staff AI", "--output-root", str(out_root)]
     )
     assert rc == 0
-    rtf_path = out_root / "PCC" / "Staff_AI" / "communications" / "Communications_Staff_AI.rtf"
-    log_path = rtf_path.with_suffix(".log")
-    content = rtf_to_text(rtf_path.read_text(encoding="utf-8"))
+    txt_path = out_root / "PCC" / "Staff_AI" / "communications" / "Communications_Staff_AI.txt"
+    log_path = txt_path.with_suffix(".log")
+    content = txt_path.read_text(encoding="utf-8")
     assert "midToken" not in content
     assert "AQHN1hl0Di2vzA" not in content
     assert "͏" not in content
@@ -427,12 +430,60 @@ def test_all_on_disk_reexports_every_odt(tmp_path: Path, capsys):
     captured = capsys.readouterr()
     assert rc == 0
     assert "Batch: 2 exported, 0 failed (2 on-disk history file(s))." in captured.out
-    beta_rtf = out_root / "Beta_Inc" / "Staff_AI" / "communications" / "Communications_Staff_AI.rtf"
-    beta_log = beta_rtf.with_suffix(".log")
-    content = rtf_to_text(beta_rtf.read_text(encoding="utf-8"))
+    beta_txt = out_root / "Beta_Inc" / "Staff_AI" / "communications" / "Communications_Staff_AI.txt"
+    beta_log = beta_txt.with_suffix(".log")
+    content = beta_txt.read_text(encoding="utf-8")
     assert "hs=224" not in content
     assert "Non-human mailer tracking was moved" in content
     assert "midToken=ABC" in beta_log.read_text(encoding="utf-8")
+
+
+def test_rtf_and_odt_histories_convert_to_txt(tmp_path: Path):
+    raw = (
+        "{\\rtf1\\ansi{\\fonttbl{\\f0\\fswiss Helvetica;}}\n"
+        "\\pard\\plain\\f0\\fs32\\b Engineer @ Acme\\b0\\par\n"
+        "\\pard\\plain\\f0\\fs22 Hello \\u8212? there\\par\n"
+        "}"
+    )
+    assert rtf_to_text(raw).splitlines() == ["Engineer @ Acme", "Hello \u2014 there"]
+
+    folder = tmp_path / "Acme" / "Engineer" / "communications"
+    folder.mkdir(parents=True)
+    rtf = folder / "Communications_Engineer.rtf"
+    rtf.write_text(raw, encoding="utf-8")
+    odt = folder / "Communications_Engineer.odt"
+    with zipfile.ZipFile(odt, "w") as zf:
+        zf.writestr(
+            "content.xml",
+            "<office:text><text:p>Engineer @ Acme</text:p><text:p>from odt</text:p></office:text>",
+        )
+    os.utime(odt, (1, 1))
+    os.utime(rtf, (2, 2))
+    assert odt_to_text(odt).splitlines()[0] == "Engineer @ Acme"
+
+    result = convert_rich_histories(tmp_path)
+    txt = folder / "Communications_Engineer.txt"
+    assert result["converted"] == 1
+    assert result["failed"] == []
+    assert "Hello \u2014 there" in txt.read_text(encoding="utf-8")
+    assert not rtf.exists()
+    assert not odt.exists()
+    assert "from odt" not in txt.read_text(encoding="utf-8")
+
+    kept = folder / "Communications_Kept.txt"
+    kept.write_text("Kept @ Acme\ncurrent\n", encoding="utf-8")
+    old = folder / "Communications_Kept.odt"
+    with zipfile.ZipFile(old, "w") as zf:
+        zf.writestr(
+            "content.xml",
+            "<office:text><text:p>Kept @ Acme</text:p><text:p>old odt</text:p></office:text>",
+        )
+    os.utime(old, (1, 1))
+    os.utime(kept, (2, 2))
+    again = convert_rich_histories(tmp_path)
+    assert again["kept_existing_txt"] == 1
+    assert kept.read_text(encoding="utf-8") == "Kept @ Acme\ncurrent\n"
+    assert not old.exists()
 
 
 def test_status_timeline_lists_stages_oldest_first_and_folds_decline():

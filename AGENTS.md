@@ -45,7 +45,7 @@ CLAUDE.md dealbreaker / skills framework changes.
 
 - **All Pending Actions URL handlers** (one shot): `tools/install-pending-action-handlers.sh` — also runs from `tools/pending-actions-ui-server/install.sh` so the React UI never ships without `refreshpending://` / `revealfolder://` / etc. Individual `tools/<name>/install.sh` still work.
 - Finder folder open: `tools/reveal-folder/install.sh` → `revealfolder://reveal?path=...`
-- View communications ODT: `tools/view-communications/install.sh` → `viewcomms://open?company=...&title=...` (Pending Actions React UI: **View communications**)
+- View communications text file: `tools/view-communications/install.sh` → `viewcomms://open?company=...&title=...` (Pending Actions React UI: **View communications**)
 - Regenerate pending-actions page: `tools/refresh-pending/install.sh` → `refreshpending://run`
 - After BCC self on a LinkedIn reply: `tools/reply-sent/install.sh` → `replysent://run` (per-row **Reply sent** next to “Recruiter waiting on you” — runs `comms_fast_cycle.py`)
 - Process new mail at shawn.becker@spexture.com immediately (full JD resolve + LLM score + package, vs. the 3-minute tick's offline/no-generate stub): `tools/triage-imap-now/install.sh` → `triageimap://run` (header **Check inbox now** button — runs `scripts/triage_imap_now.py`, then jumps to the newly-processed lead wherever it landed)
