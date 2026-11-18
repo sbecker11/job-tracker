@@ -179,7 +179,11 @@ def test_evaluate_lead_canonicalizes_legacy_structural_verdict():
         llm_apply._canonical_structural_verdict(
             "borderline PASS on structure — strong Java overlap"
         )
-        == "borderline JD structure matches resume — strong Java overlap"
+        == "JD structure partly matches resume — strong Java overlap"
+    )
+    assert (
+        llm_apply._canonical_structural_verdict("Mixed / partial PASS on structure — AWS only")
+        == "JD structure partly matches resume — AWS only"
     )
     assert (
         llm_apply._canonical_structural_verdict("weak/FAIL on structure")

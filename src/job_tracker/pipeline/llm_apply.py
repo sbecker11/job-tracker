@@ -69,13 +69,20 @@ _SPEXTURE_SUBSECTION_HEADINGS = {
 # CLAUDE.md §11 step 4 — skills-only structural read. Older reviews used
 # "PASS/FAIL on structure", which collides with Recommendation: PASS (skip).
 _STRUCTURAL_MATCH = "JD structure matches resume"
+_STRUCTURAL_PARTIAL = "JD structure partly matches resume"
 _STRUCTURAL_MISMATCH = "JD structure does not match resume"
 _STRUCTURAL_VERDICT_ALIASES = {
     "pass on structure": _STRUCTURAL_MATCH,
     "fail on structure": _STRUCTURAL_MISMATCH,
     _STRUCTURAL_MATCH.casefold(): _STRUCTURAL_MATCH,
+    _STRUCTURAL_PARTIAL.casefold(): _STRUCTURAL_PARTIAL,
     _STRUCTURAL_MISMATCH.casefold(): _STRUCTURAL_MISMATCH,
 }
+# "Partial/Borderline/Moderate PASS on structure" is a hedged skills read,
+# not a clean match. Drop the hedge word so the line stays a judgement.
+_QUALIFIED_PASS_RE = re.compile(
+    r"(?i)(?:mixed\s*/\s*)?(?:partial|borderline|moderate|provisional)\s+pass on structure"
+)
 
 
 def _canonical_structural_verdict(raw: str) -> str:
@@ -85,8 +92,9 @@ def _canonical_structural_verdict(raw: str) -> str:
     folded = re.sub(r"\s+", " ", text.casefold())
     if folded in _STRUCTURAL_VERDICT_ALIASES:
         return _STRUCTURAL_VERDICT_ALIASES[folded]
-    out = re.sub(r"(?i)FAIL on structure", _STRUCTURAL_MISMATCH, text)
-    return re.sub(r"(?i)PASS on structure", _STRUCTURAL_MATCH, out)
+    text = _QUALIFIED_PASS_RE.sub(_STRUCTURAL_PARTIAL, text)
+    text = re.sub(r"(?i)FAIL on structure", _STRUCTURAL_MISMATCH, text)
+    return re.sub(r"(?i)PASS on structure", _STRUCTURAL_MATCH, text)
 
 # CLAUDE.md §4 "Banned terms" — checked mechanically post-generation as a
 # safety net; the prompt already instructs the model to avoid these, but a
