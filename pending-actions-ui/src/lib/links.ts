@@ -33,6 +33,20 @@ function onServerMac(): boolean {
   return typeof window !== 'undefined' && SERVER_HOSTNAMES.has(window.location.hostname)
 }
 
+/** True when this browser is on the Mac that holds the résumé folders. */
+export function isClientOnServer(): boolean {
+  return onServerMac()
+}
+
+/** Open a custom-scheme or smb URL without navigating the page away. */
+export function openLocalUrl(href: string): void {
+  const frame = document.createElement('iframe')
+  frame.style.display = 'none'
+  frame.src = href
+  document.body.appendChild(frame)
+  window.setTimeout(() => frame.remove(), 5_000)
+}
+
 /** An smb:// folder URL as the link this browser can open (see revealFolderUrl). */
 export function folderHref(smbUrl: string): string {
   if (!onServerMac() || !smbUrl.startsWith(SMB_FOLDER_BASE)) return smbUrl
@@ -119,20 +133,34 @@ export function leadStatusUrl(
   })}`
 }
 
-/** Decline a lead via tools/decline-lead/ (`decline-lead`): skipped + reason, optional sent letter. */
+/** Decline a lead via tools/decline-lead/ (`decline-lead`): skipped + reason, optional sent letter.
+ * An unmatched pitch passes `messageId` instead of a lead key. The helper creates
+ * the stub lead, then stores the reason. */
 export function declineUrl(
   key: string,
   reason: string,
   note: string,
-  opts: { channel?: string; letter: boolean; letterText?: string },
+  opts: {
+    channel?: string
+    letter: boolean
+    letterText?: string
+    messageId?: string
+    company?: string
+    title?: string
+    contactName?: string
+  },
 ): string {
   return `declinelead://decline?${helperQuery({
-    key,
+    key: opts.messageId ? undefined : key,
+    message_id: opts.messageId,
     reason,
     note: note.trim(),
-    channel: opts.letter ? opts.channel : undefined,
+    channel: opts.messageId ? opts.channel : opts.letter ? opts.channel : undefined,
     letter: opts.letter ? undefined : '0',
     letter_text: opts.letter ? opts.letterText?.trim() : undefined,
+    company: opts.company,
+    title: opts.title,
+    contact_name: opts.contactName,
   })}`
 }
 

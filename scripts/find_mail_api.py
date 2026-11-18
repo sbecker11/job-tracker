@@ -25,6 +25,7 @@ if str(_SRC) not in sys.path:
 from job_tracker.cli.export_communications import export_job_history  # noqa: E402
 from job_tracker.pipeline.find_mail import search  # noqa: E402
 from job_tracker.pipeline.paste_linkedin import post_pasted_thread, refresh_pending_actions  # noqa: E402
+from job_tracker.pipeline.reveal_package import reveal_package  # noqa: E402
 from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect  # noqa: E402
 
 DEFAULT_PORT = 3175
@@ -74,20 +75,45 @@ class FindMailHandler(BaseHTTPRequestHandler):
             return
         self._send(404, {"error": "not found"})
 
-    def do_POST(self) -> None:  # noqa: N802
-        parsed = urlparse(self.path)
-        path = parsed.path.rstrip("/")
-        if path not in {"/api/linkedin-lead", "/linkedin-lead"}:
-            self._send(404, {"error": "not found"})
-            return
+    def _read_body(self) -> tuple[bytes, str | None]:
         try:
             length = int(self.headers.get("Content-Length") or "0")
         except ValueError:
             length = 0
         if length <= 0 or length > 400_000:
+            return b"", "empty"
+        return self.rfile.read(length), None
+
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
+        if path in {"/api/reveal-package", "/reveal-package"}:
+            raw, err = self._read_body()
+            if err:
+                self._send(400, {"ok": False, "error": "Send the package folder."})
+                return
+            try:
+                folder = str(json.loads(raw.decode("utf-8")).get("folder") or "")
+            except json.JSONDecodeError:
+                self._send(400, {"ok": False, "error": "Invalid JSON."})
+                return
+            if not folder:
+                self._send(400, {"ok": False, "error": "Send the package folder."})
+                return
+            try:
+                result = reveal_package(Path(folder))
+            except ValueError as exc:
+                self._send(400, {"ok": False, "error": str(exc)})
+                return
+            self._send(200, result)
+            return
+        if path not in {"/api/linkedin-lead", "/linkedin-lead"}:
+            self._send(404, {"error": "not found"})
+            return
+        raw, err = self._read_body()
+        if err:
             self._send(400, {"ok": False, "error": "Paste the LinkedIn thread in the request body."})
             return
-        raw = self.rfile.read(length)
         text = raw.decode("utf-8", errors="replace")
         if "application/json" in (self.headers.get("Content-Type") or "").lower():
             try:

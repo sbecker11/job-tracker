@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { copyMessageText, sameMessage, textFromCopyTarget } from '../lib/copyMessage'
+import { isClientOnServer, openLocalUrl, revealFolderUrl, type SendRoute } from '../lib/links'
 import { checkMessage, type QualityContext, type QualityIssue } from '../lib/replyQuality'
-import type { SendRoute } from '../lib/links'
 
 /** The one button row under every editable message, in the order of the task:
  * Copy message → Send message → Message sent? → Package sent? (when a package is ready). */
@@ -21,6 +22,8 @@ export interface MessageActionsProps {
   /** mps://mark — shown only when the lead's résumé package is ready and not yet marked sent. */
   packageSentHref?: string
   onPackageSent?: () => void
+  /** Role folder that holds the résumé and cover letter, when the package is on disk. */
+  packageFolder?: string
   onSendOpened?: () => void
 }
 
@@ -28,12 +31,25 @@ function timeNow(): string {
   return new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
 
-async function copyText(text: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(text)
-  } catch {
-    /* clipboard can be blocked in the embedded browser; the text is selectable */
+async function showPackageFolder(folder: string): Promise<string> {
+  if (isClientOnServer()) {
+    try {
+      const res = await fetch('/api/reveal-package', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder }),
+      })
+      const body = (await res.json()) as { ok?: boolean; files?: string[] }
+      if (res.ok && body.files?.length) return 'Finder is showing the résumé and cover letter. Drag them onto the LinkedIn message.'
+      if (res.ok) return 'Opened the lead folder. The résumé and cover letter are not both in it yet.'
+    } catch {
+      /* fall through to the folder link */
+    }
   }
+  const href = revealFolderUrl(folder)
+  if (!href) return 'Could not open the lead folder.'
+  openLocalUrl(href)
+  return 'Opened the lead folder.'
 }
 
 export function MessageActions({
@@ -48,24 +64,75 @@ export function MessageActions({
   messageSentBusy = false,
   packageSentHref,
   onPackageSent,
+  packageFolder,
   onSendOpened,
 }: MessageActionsProps) {
   const [copiedText, setCopiedText] = useState<string | null>(null)
+  const [copyFailed, setCopyFailed] = useState(false)
+  const copiedByEvent = useRef(false)
+  const copiedOnPointer = useRef(false)
   const [review, setReview] = useState<QualityIssue[] | null>(null)
   const [sentAt, setSentAt] = useState('')
   const [packageAt, setPackageAt] = useState('')
+  const [packageNote, setPackageNote] = useState('')
   const hasText = Boolean(text.trim())
   const copied = hasText && copiedText === text
   const messageSent = messageSentDone || Boolean(sentAt)
 
-  const doCopy = async (body: string) => {
-    await copyText(body)
-    setCopiedText(body)
+  useEffect(() => {
+    const mark = () => {
+      copiedByEvent.current = true
+      setCopyFailed(false)
+      setCopiedText(text)
+    }
+    const onCopy = (e: ClipboardEvent) => {
+      const got = textFromCopyTarget(e.target) || textFromCopyTarget(document.activeElement)
+      if (sameMessage(got, text)) mark()
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== 'c' || e.altKey || e.shiftKey || e.metaKey || !e.ctrlKey) return
+      if (!sameMessage(textFromCopyTarget(document.activeElement), text)) return
+      let ok = false
+      try {
+        ok = document.execCommand('copy')
+      } catch {
+        ok = false
+      }
+      if (ok) mark()
+    }
+    document.addEventListener('copy', onCopy, true)
+    document.addEventListener('keydown', onKey, true)
+    return () => {
+      document.removeEventListener('copy', onCopy, true)
+      document.removeEventListener('keydown', onKey, true)
+    }
+  }, [text])
+
+  const doCopy = (body: string, anchor: HTMLElement) => {
+    const ok = copyMessageText(body, anchor)
+    if (ok || copiedByEvent.current) {
+      copiedByEvent.current = false
+      setCopyFailed(false)
+      setCopiedText(body)
+      return
+    }
+    setCopyFailed(true)
   }
-  const checkThenCopy = async () => {
+  const checkThenCopy = (anchor: HTMLElement) => {
     const issues = checkMessage(text, quality)
     setReview(issues)
-    if (!issues.length) await doCopy(text)
+    if (!issues.length) doCopy(text, anchor)
+  }
+  const copyOnPointerDown = (anchor: HTMLElement, run: (anchor: HTMLElement) => void) => {
+    copiedOnPointer.current = true
+    run(anchor)
+  }
+  const copyOnClick = (anchor: HTMLElement, run: (anchor: HTMLElement) => void) => {
+    if (copiedOnPointer.current) {
+      copiedOnPointer.current = false
+      return
+    }
+    run(anchor)
   }
   const applyFix = (issue: QualityIssue) => {
     if (!issue.fix || !onTextChange) return
@@ -77,7 +144,6 @@ export function MessageActions({
     setSentAt(timeNow())
     onMessageSent?.()
   }
-
   const sendHref = route ? (route.sendsAndLogs ? selfLogHref || '' : route.href(text)) : ''
   const messageSentLabel = messageSentBusy ? 'Logging…' : messageSent ? 'Message sent ✓' : 'Message sent?'
 
@@ -88,8 +154,12 @@ export function MessageActions({
           type="button"
           className={copied ? 'btn' : 'btn primary'}
           disabled={!hasText}
-          title="Checks the message first, then copies it"
-          onClick={() => void checkThenCopy()}
+          title="Selects this reply and copies it, the same way as Copy on the selection"
+          onMouseDown={(e) => {
+            e.preventDefault()
+            copyOnPointerDown(e.currentTarget, checkThenCopy)
+          }}
+          onClick={(e) => copyOnClick(e.currentTarget, checkThenCopy)}
         >
           {copied ? 'Copied ✓' : 'Copy message'}
         </button>
@@ -135,6 +205,16 @@ export function MessageActions({
             {messageSentLabel}
           </button>
         )}
+        {packageFolder && (
+          <button
+            type="button"
+            className="btn"
+            onClick={() => void showPackageFolder(packageFolder).then(setPackageNote)}
+            title="Opens Finder with this lead's résumé and cover letter selected"
+          >
+            Show résumé &amp; cover letter
+          </button>
+        )}
         {packageSentHref && (
           <a
             className={packageAt ? 'btn muted' : 'btn'}
@@ -155,6 +235,12 @@ export function MessageActions({
         )}
       </div>
       {review && review.length === 0 && copied && <p className="quality-ok">Quality check passed ✓ — copied.</p>}
+      {copyFailed && !copied && (
+        <p className="quality-review" role="status">
+          The reply is selected. Right-click Copy, or press Command+C or Control+C. Send message turns on once that copy happens.
+        </p>
+      )}
+      {packageNote && <p className="quality-ok">{packageNote}</p>}
       {review && review.length > 0 && (
         <div className="quality-review" role="status">
           <p className="quality-title">
@@ -174,10 +260,26 @@ export function MessageActions({
             ))}
           </ul>
           <div className="actions">
-            <button type="button" className="btn primary" onClick={() => void checkThenCopy()}>
+            <button
+              type="button"
+              className="btn primary"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                copyOnPointerDown(e.currentTarget, checkThenCopy)
+              }}
+              onClick={(e) => copyOnClick(e.currentTarget, checkThenCopy)}
+            >
               Check again &amp; copy
             </button>
-            <button type="button" className={copied ? 'btn muted' : 'btn'} onClick={() => void doCopy(text)}>
+            <button
+              type="button"
+              className={copied ? 'btn muted' : 'btn'}
+              onMouseDown={(e) => {
+                e.preventDefault()
+                copyOnPointerDown(e.currentTarget, doCopy.bind(null, text))
+              }}
+              onClick={(e) => copyOnClick(e.currentTarget, doCopy.bind(null, text))}
+            >
               {copied ? 'Copied anyway ✓' : 'Copy anyway'}
             </button>
           </div>

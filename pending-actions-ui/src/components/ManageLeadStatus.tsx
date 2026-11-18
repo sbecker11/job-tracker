@@ -1,5 +1,6 @@
 import { useContext, useState } from 'react'
 import { DeclineReasonsContext } from '../lib/declineReasons'
+import { printLeadCard } from '../lib/printLeadCard'
 import { addressName, GREETING_LINE_RE, greetingLineFor } from '../lib/greeting'
 import { MessageActions } from './MessageActions'
 import {
@@ -170,10 +171,13 @@ export function ManageLeadForm({
   senders,
   packageSentHref,
   onPackageSent,
+  packageFolder,
 }: Props & {
   /** mps://mark link — set when the lead's résumé package is ready and not yet marked sent. */
   packageSentHref?: string
   onPackageSent?: () => void
+  /** Role folder with the résumé and cover letter, when that package is on disk. */
+  packageFolder?: string
   normalizedKey: string
   message?: MessageTarget
   followupDraft?: string
@@ -471,8 +475,10 @@ export function ManageLeadForm({
               onMessageSent={afterSent}
               packageSentHref={declining ? undefined : packageSentHref}
               onPackageSent={onPackageSent}
+              packageFolder={declining ? undefined : packageFolder}
               onSendOpened={() => setSentVia('')}
             />
+            <div className="more-options-row">
             <details className="more-options">
               <summary className="btn link">More options</summary>
               <SendToBox route={route} message={target} />
@@ -510,6 +516,17 @@ export function ManageLeadForm({
                 <SenderSearch sender={target.sender} normalizedKey={normalizedKey} onSaved={onApplied} />
               </div>
             </details>
+            <button
+              type="button"
+              className="btn card-print"
+              onClick={(e) => {
+                const card = e.currentTarget.closest('.priority-row')
+                if (card instanceof HTMLElement) printLeadCard(card)
+              }}
+            >
+              Print
+            </button>
+            </div>
           </div>
         )}
 
