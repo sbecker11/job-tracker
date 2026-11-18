@@ -117,6 +117,41 @@ export function helperQuery(params: Record<string, string | undefined>): string 
     .join('&')
 }
 
+const LOGGED_SEND_SCHEMES = new Set(['leadstatus:', 'recordreply:', 'declinelead:'])
+
+/** True when this href is a Message sent? helper URL the page now posts to mini1. */
+export function isLoggedSendHref(href: string): boolean {
+  try {
+    return LOGGED_SEND_SCHEMES.has(new URL(href).protocol)
+  } catch {
+    return false
+  }
+}
+
+/** Log Message sent? on the machine serving the page. Vite on mini1 proxies this to its API. */
+export async function postLoggedSend(href: string): Promise<void> {
+  const url = new URL(href)
+  const fields: Record<string, string> = { scheme: url.protocol.replace(/:$/, '') }
+  url.searchParams.forEach((value, key) => {
+    fields[key] = value
+  })
+  let payload: { ok?: boolean; error?: string } = {}
+  let res: Response
+  try {
+    res = await fetch('/api/message-sent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(fields),
+    })
+    payload = (await res.json()) as { ok?: boolean; error?: string }
+  } catch {
+    throw new Error('Could not reach mini1 to log the message.')
+  }
+  if (!res.ok || payload.ok === false) {
+    throw new Error(payload.error || 'Could not log the message on mini1.')
+  }
+}
+
 /** Lead status change via tools/set-lead-status/ (`set-lead-status`). */
 export function leadStatusUrl(
   key: string,

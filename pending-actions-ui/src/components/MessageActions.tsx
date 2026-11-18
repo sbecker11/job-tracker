@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { copyMessageText, sameMessage, textFromCopyTarget } from '../lib/copyMessage'
-import { isClientOnServer, openLocalUrl, revealFolderUrl, type SendRoute } from '../lib/links'
+import { isClientOnServer, isLoggedSendHref, openLocalUrl, postLoggedSend, revealFolderUrl, type SendRoute } from '../lib/links'
 import { checkMessage, type QualityContext, type QualityIssue } from '../lib/replyQuality'
 
 /** The one button row under every editable message, in the order of the task:
@@ -71,8 +71,11 @@ export function MessageActions({
   const [copyFailed, setCopyFailed] = useState(false)
   const copiedByEvent = useRef(false)
   const copiedOnPointer = useRef(false)
+  const loggingRef = useRef(false)
   const [review, setReview] = useState<QualityIssue[] | null>(null)
   const [sentAt, setSentAt] = useState('')
+  const [logging, setLogging] = useState(false)
+  const [logError, setLogError] = useState('')
   const [packageAt, setPackageAt] = useState('')
   const [packageNote, setPackageNote] = useState('')
   const hasText = Boolean(text.trim())
@@ -144,8 +147,29 @@ export function MessageActions({
     setSentAt(timeNow())
     onMessageSent?.()
   }
+  const onMessageSentClick = (event: { preventDefault: () => void }) => {
+    if (loggingRef.current || messageSent) return
+    if (!messageSentHref || !isLoggedSendHref(messageSentHref)) {
+      logMessage()
+      return
+    }
+    event.preventDefault()
+    loggingRef.current = true
+    setLogging(true)
+    setLogError('')
+    void postLoggedSend(messageSentHref)
+      .then(() => logMessage())
+      .catch((err: unknown) => {
+        setLogError(err instanceof Error ? err.message : 'Could not log the message on mini1.')
+      })
+      .finally(() => {
+        loggingRef.current = false
+        setLogging(false)
+      })
+  }
+
   const sendHref = route ? (route.sendsAndLogs ? selfLogHref || '' : route.href(text)) : ''
-  const messageSentLabel = messageSentBusy ? 'Logging…' : messageSent ? 'Message sent ✓' : 'Message sent?'
+  const messageSentLabel = messageSentBusy || logging ? 'Logging…' : messageSent ? 'Message sent ✓' : 'Message sent?'
 
   return (
     <div className="message-actions">
@@ -186,14 +210,15 @@ export function MessageActions({
           </span>
         )}
         {messageSentHref ? (
-          <a
+          <button
+            type="button"
             className={messageSent ? 'btn muted' : 'btn'}
-            href={messageSentHref}
-            onClick={logMessage}
+            disabled={logging || messageSent}
+            onClick={onMessageSentClick}
             title="After you send it: log the message and start the wait clock"
           >
             {messageSentLabel}
-          </a>
+          </button>
         ) : (
           <button
             type="button"
@@ -284,6 +309,11 @@ export function MessageActions({
             </button>
           </div>
         </div>
+      )}
+      {logError && (
+        <p className="quality-review" role="status">
+          {logError}
+        </p>
       )}
       {(sentAt || packageAt) && (
         <p className="send-status ok">

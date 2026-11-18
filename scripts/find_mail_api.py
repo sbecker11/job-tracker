@@ -4,6 +4,8 @@
 
 `GET /api/find-mail` searches leads and mail. `POST /api/linkedin-lead`
 turns a pasted LinkedIn thread into a lead and regenerates the page.
+`POST /api/message-sent` logs a Message sent? click (the page posts the
+helper URL's fields; the write stays on this machine).
 Binds 127.0.0.1 only. Vite proxies /api → this port. Do not expose on LAN.
 """
 
@@ -25,6 +27,7 @@ if str(_SRC) not in sys.path:
 from job_tracker.cli.export_communications import export_job_history  # noqa: E402
 from job_tracker.pipeline.find_mail import search  # noqa: E402
 from job_tracker.pipeline.paste_linkedin import post_pasted_thread, refresh_pending_actions  # noqa: E402
+from job_tracker.pipeline.logged_send import LoggedSendError, apply_logged_send  # noqa: E402
 from job_tracker.pipeline.reveal_package import reveal_package  # noqa: E402
 from job_tracker.pipeline.store import DEFAULT_DB_PATH, connect  # noqa: E402
 
@@ -106,6 +109,26 @@ class FindMailHandler(BaseHTTPRequestHandler):
                 self._send(400, {"ok": False, "error": str(exc)})
                 return
             self._send(200, result)
+            return
+        if path in {"/api/message-sent", "/message-sent"}:
+            raw, err = self._read_body()
+            if err:
+                self._send(400, {"ok": False, "error": "Send the message fields."})
+                return
+            try:
+                fields = json.loads(raw.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, {"ok": False, "error": "Invalid JSON."})
+                return
+            if not isinstance(fields, dict):
+                self._send(400, {"ok": False, "error": "Send the message fields."})
+                return
+            try:
+                detail = apply_logged_send(self.db_path, fields)
+            except LoggedSendError as exc:
+                self._send(400, {"ok": False, "error": str(exc)})
+                return
+            self._send(200, {"ok": True, "detail": detail})
             return
         if path not in {"/api/linkedin-lead", "/linkedin-lead"}:
             self._send(404, {"error": "not found"})
