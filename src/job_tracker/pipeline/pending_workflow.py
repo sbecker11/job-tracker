@@ -1104,9 +1104,6 @@ def _attach_senders(item: dict, conn, reply_plan_fn) -> None:
     item["senders"] = senders
 
 
-_LINKEDIN_PROFILE_RE = re.compile(r"https?://(?:[a-z]{2,3}\.)?linkedin\.com/in/[\w%-]+/?", re.I)
-
-
 def _phone_digits(phone: str) -> str:
     digits = re.sub(r"\D", "", phone or "")
     return digits[-10:] if len(digits) >= 10 else ""
@@ -1152,16 +1149,18 @@ def _resolve_recipient(conn, job_key: str) -> dict:
         ).fetchall()
     except sqlite3.OperationalError:
         bodies = []
+    from job_tracker.pipeline.reply_plan import _signoff_details
+
     for (body,) in bodies:
-        sig = parse_signature(body)
-        email = (sig.email or "").rstrip(".,;")
-        if email and _usable_email(email):
+        email, _, profile = _signoff_details(body)
+        if email:
             out["resolvedEmail"] = email
             out["resolvedVia"] = "their signature"
+            if profile:
+                out.setdefault("resolvedLinkedinUrl", profile)
             break
-        m = _LINKEDIN_PROFILE_RE.search(body)
-        if m and "resolvedLinkedinUrl" not in out:
-            out["resolvedLinkedinUrl"] = m.group(0)
+        if profile and "resolvedLinkedinUrl" not in out:
+            out["resolvedLinkedinUrl"] = profile
     return out
 
 

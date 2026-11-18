@@ -299,6 +299,31 @@ def test_resolve_recipient_uses_same_phone_on_another_lead(tmp_path: Path):
     conn.close()
 
 
+def test_resolve_recipient_finds_an_unlabeled_signoff_email(tmp_path: Path):
+    from job_tracker.pipeline.pending_workflow import _send_route_fields
+    from job_tracker.pipeline.reply_plan import reply_plan
+
+    conn = connect(tmp_path / "leads.db")
+    lead = _make_lead(conn)
+    conn.execute(
+        "INSERT INTO job_conversations (job_key, message_id, channel, direction, summary, occurred_at, body_text) "
+        "VALUES (?, 'm1', 'linkedin', 'inbound', 'Senior Full Stack Engineer', '2026-10-25T04:31:02+00:00', ?)",
+        (
+            lead.normalized_key,
+            "Hi\nI'd like to add you to my network. Senior Full Stack Engineer contract, Remote.\n"
+            "Cheers\nMantavya (mantavya.v@objectwin.com)",
+        ),
+    )
+    conn.commit()
+    fields = _send_route_fields(conn, lead.normalized_key)
+    assert fields["resolvedEmail"] == "mantavya.v@objectwin.com"
+    assert fields["resolvedVia"] == "their signature"
+    plan = reply_plan({"channel": "linkedin", "recruiterName": "Mantavya Vohra", **fields})
+    assert plan["routes"][0]["kind"] == "compose"
+    assert plan["routes"][0]["to"] == "mantavya.v@objectwin.com"
+    conn.close()
+
+
 def test_resolve_recipient_ignores_role_mailboxes_in_message_text(tmp_path: Path):
     from job_tracker.pipeline.pending_workflow import _send_route_fields
 
