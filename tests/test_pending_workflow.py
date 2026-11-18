@@ -19,6 +19,7 @@ from job_tracker.pipeline.store import (
 # Import render helpers the same way as test_render_pending_actions.
 import importlib.util
 import sys
+from job_tracker.pipeline.pending_workflow import TIER_APPLY, TIER_DEAD, TIER_DECIDE, TIER_LIVE, TIER_SEND_PACKAGE, TODAY_TIERS
 
 _SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "render_pending_actions.py"
 _spec = importlib.util.spec_from_file_location("render_pending_actions", _SCRIPT_PATH)
@@ -550,8 +551,9 @@ def test_recruiter_followup_after_outbound_is_clarify_reply_due(tmp_path: Path):
     clarify = workflow["stages"]["clarify"]
     hit = next(i for i in clarify if i.get("normalizedKey") == lead.normalized_key)
     assert hit["replyDue"] is True
+    assert hit["theirReply"] is True
     assert hit["unansweredDays"] >= 2
-    assert "Recruiter followed up" in hit["nextAction"]
+    assert "They replied to your message" in hit["nextAction"]
     assert hit["draftReply"]
 
 
@@ -762,8 +764,8 @@ def test_recruiter_pitch_with_ready_package_goes_to_send_resume(tmp_path: Path):
 
     hit = next(i for i in workflow["stages"]["sendResume"] if i["normalizedKey"] == lead.normalized_key)
     assert hit["resumeRequested"] is False
-    assert hit["todayTier"] == 2
-    assert hit["todayLabel"] == "Send package to recruiter"
+    assert hit["todayTier"] == TIER_SEND_PACKAGE
+    assert hit["todayLabel"] == TODAY_TIERS[TIER_SEND_PACKAGE]
     assert "Yatharth Singh" in hit["nextAction"]
 
 
@@ -817,7 +819,7 @@ def test_named_contact_without_a_message_stays_in_apply(tmp_path: Path):
     lead, entry = _ready_lead_with_package(conn, tmp_path, company="Weave", title="Platform Engineer")
     add_job_contact(conn, JobContact(job_key=lead.normalized_key, name="Hiring Team", role="recruiter"))
     data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
-    data["ready_to_apply"] = [entry]
+    data["ready_to_apply"] = [{**entry, "applyUrl": "https://jobs.ashbyhq.com/weave/1"}]
     workflow = build_workflow_payload(
         data, conn=conn, age_days_fn=render_pending_actions._age_days, now=NOW, output_root=tmp_path
     )
@@ -827,7 +829,24 @@ def test_named_contact_without_a_message_stays_in_apply(tmp_path: Path):
     hit = next(
         i for i in workflow["stages"]["decideApply"]["readyToApply"] if i["normalizedKey"] == lead.normalized_key
     )
-    assert hit["todayTier"] == 4
+    assert hit["todayTier"] == TIER_APPLY
+
+
+def test_ready_package_without_an_apply_link_is_not_apply_directly(tmp_path: Path):
+    conn = connect(tmp_path / "leads.db")
+    lead, entry = _ready_lead_with_package(conn, tmp_path, company="Anrok", title="Software Engineer")
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    data["ready_to_apply"] = [entry]
+    workflow = build_workflow_payload(
+        data, conn=conn, age_days_fn=render_pending_actions._age_days, now=NOW, output_root=tmp_path
+    )
+    conn.close()
+
+    decide = workflow["stages"]["decideApply"]
+    assert not decide["readyToApply"]
+    hit = next(i for i in decide["needsDecisionForced"] if i["normalizedKey"] == lead.normalized_key)
+    assert hit["todayTier"] == TIER_DECIDE
+    assert "no apply link" in hit["nextAction"]
 
 
 def test_silent_interviewing_lead_surfaces_as_probably_dead(tmp_path: Path):
@@ -874,7 +893,7 @@ def test_silent_interviewing_lead_surfaces_as_probably_dead(tmp_path: Path):
     hit = next(i for i in workflow["stages"]["waitSchedule"] if i["normalizedKey"] == lead.normalized_key)
     assert hit["staleActive"] is True
     assert hit["waitingDays"] == 100
-    assert hit["todayTier"] == 9
+    assert hit["todayTier"] == TIER_DEAD
     assert "Still marked interviewing" in hit["nextAction"]
     assert hit["draftReply"]
 
@@ -915,7 +934,7 @@ def test_still_active_covers_applied_and_reopened_but_not_accepted(tmp_path: Pat
     assert "Still marked applied" in rows[keys["applied"]]["nextAction"]
     reopened = rows[keys["reopened"]]
     assert reopened["reopened"] is True and reopened["staleActive"] is False
-    assert reopened["todayTier"] == 3
+    assert reopened["todayTier"] == TIER_LIVE
     assert "Reopened" in reopened["nextAction"]
     assert keys["accepted"] not in rows
 
@@ -934,6 +953,7 @@ def test_today_order_ranks_across_stages():
         {"normalizedKey": "w-dead", "followUpDue": True, "waitingDays": 88, "status": "applied"},
         {"normalizedKey": "w-stale", "followUpDue": True, "waitingDays": 102, "staleActive": True},
         {"normalizedKey": "w-quiet", "followUpDue": False, "waitingDays": 0},
+        {"normalizedKey": "w-interview", "followUpDue": False, "waitingDays": 5, "status": "interviewing"},
     ]
     decide = {
         "readyToApply": [
@@ -947,11 +967,28 @@ def test_today_order_ranks_across_stages():
     every = [*clarify, *send, *wait, *decide["readyToApply"], *decide["needsDecision"]]
     order = [i["normalizedKey"] for i in sorted(every, key=lambda i: i["todayRank"])]
     assert order == [
-        "c", "s-ask", "s-pitch", "w-live", "w-applied", "a-80", "a-73", "d", "w-quiet", "w-dead", "w-stale",
+        "w-interview", "a-80", "a-73", "s-ask", "s-pitch", "c", "w-live", "w-applied", "d", "w-quiet",
+        "w-dead", "w-stale",
     ]
     assert {i["todayLabel"] for i in wait if i["normalizedKey"] in ("w-dead", "w-stale")} == {
         "Probably dead — check in or close"
     }
+
+
+def test_today_order_puts_a_reply_to_shawn_ahead_of_a_new_pitch():
+    from job_tracker.pipeline.pending_workflow import annotate_today_order
+
+    clarify = [
+        {"normalizedKey": "cold-direct", "replyDue": True, "unansweredDays": 0, "matchPct": 95},
+        {"normalizedKey": "answered", "replyDue": True, "unansweredDays": 3, "matchPct": 10, "theirReply": True},
+    ]
+    annotate_today_order(
+        clarify=clarify, send_resume=[], wait_schedule=[], decide_apply={},
+        direct_keys=frozenset({"cold-direct"}),
+    )
+    order = [i["normalizedKey"] for i in sorted(clarify, key=lambda i: i["todayRank"])]
+    assert order == ["answered", "cold-direct"]
+    assert clarify[1]["todayTier"] == clarify[0]["todayTier"]
 
 
 def test_today_order_puts_direct_recruiter_outreach_first_within_its_tier():

@@ -28,6 +28,7 @@ from job_tracker.pipeline.pending_workflow import (
     _unanswered_inbound,
     annotate_today_order,
     build_wait_item,
+    direct_outreach_keys,
     draft_wait_followup_message,
 )
 from job_tracker.pipeline.store import DEFAULT_DB_PATH, list_job_conversations
@@ -101,7 +102,7 @@ def _finish(item: dict, conn) -> dict:
     return item
 
 
-def _rerank(payload: dict) -> None:
+def _rerank(payload: dict, conn) -> None:
     stages = payload.get("stages") or {}
     decide = stages.get("decideApply") or {}
     annotate_today_order(
@@ -109,6 +110,7 @@ def _rerank(payload: dict) -> None:
         send_resume=stages.get("sendResume") or [],
         wait_schedule=stages.get("waitSchedule") or [],
         decide_apply={k: v for k, v in decide.items() if isinstance(v, list)} if isinstance(decide, dict) else {},
+        direct_keys=direct_outreach_keys(conn),
     )
     counts = {
         "clarify": len(stages.get("clarify") or []),
@@ -159,7 +161,7 @@ def patch_lead_card(
                 raise NeedsFullRender(f"{job_key} is neither waiting nor owed a reply")
             payload["stages"].setdefault("waitSchedule", []).append(_finish(card, conn))
             result = "wait"
-    _rerank(payload)
+    _rerank(payload, conn)
     payload["generatedAt"] = now.isoformat()
     return result
 

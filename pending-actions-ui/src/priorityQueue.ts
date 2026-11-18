@@ -31,7 +31,22 @@ export const ACTIVE_STAGE_IDS: ReadonlySet<string> = new Set([
  * Filter chips on the single priority list. These used to swap entire
  * panels (tabs). They now only narrow the same ranked list.
  */
-export type ContactFilter = 'all' | PipelineStageId | 'duplicates_skipped' | 'archived'
+export type SectionFilter = `tier-${number}`
+
+export type ContactFilter = 'all' | PipelineStageId | SectionFilter | 'duplicates_skipped' | 'archived'
+
+/** The page's sections (backend `todayTier` / `todayLabel`), in page order. */
+export function sectionOptions(items: ContactPriorityItem[]): { id: SectionFilter; label: string }[] {
+  const labels = new Map<number, string>()
+  for (const item of items) {
+    if (item.todayTier != null && item.todayLabel && !labels.has(item.todayTier)) {
+      labels.set(item.todayTier, item.todayLabel)
+    }
+  }
+  return [...labels.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([tier, label]) => ({ id: `tier-${tier}` as SectionFilter, label }))
+}
 
 export type QueueStage = PipelineStageId | 'duplicates_skipped' | 'archived'
 
@@ -63,6 +78,8 @@ export interface ContactPriorityItem {
   followUpDue?: boolean
   followUpThresholdDays?: number
   replyDue?: boolean
+  /** Newest inbound arrived after a message Shawn sent. */
+  theirReply?: boolean
   unansweredDays?: number
   draftReply?: string
   threadUrl?: string
@@ -274,6 +291,7 @@ function fromClarify(c: ClarifyItem): ContactPriorityItem {
     normalizedKey: c.normalizedKey,
     replyId: c.replyId,
     replyDue: c.replyDue,
+    theirReply: c.theirReply,
     unansweredDays: c.unansweredDays,
     folderPath: c.folderPath,
     companyFolderPath: c.companyFolderPath,
@@ -564,6 +582,8 @@ export function filterPriorityQueue(
       if (!item.duplicateOfKey) return false
     } else if (stage === 'archived') {
       if (item.stage !== 'archived' && item.stage !== 'duplicates_skipped') return false
+    } else if (stage.startsWith('tier-')) {
+      if (item.todayTier !== Number(stage.slice('tier-'.length))) return false
     } else if (stage !== 'all' && item.stage !== stage) {
       return false
     }

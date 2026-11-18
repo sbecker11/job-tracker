@@ -300,6 +300,7 @@ def _next_action_clarify(
     screen_first: bool = False,
     routes: list[dict] | None = None,
     dealbreaker: str = "",
+    their_reply: bool = False,
 ) -> str:
     """`routes` is the card's reply plan (pipeline/reply_plan.py); when given,
     the send step follows its first route instead of guessing from the links.
@@ -328,6 +329,8 @@ def _next_action_clarify(
         prefix = f"Dealbreaker in the pitch ({dealbreaker}) — send the decline below, then dismiss. "
     elif screen_first and reply_due:
         prefix = f"Recruiter wants résumé + call before a JD{age} — reply now. "
+    elif their_reply and reply_due:
+        prefix = f"They replied to your message{age} — answer now. "
     elif reply_due:
         prefix = f"Recruiter followed up{age} — reply now. "
     else:
@@ -884,12 +887,14 @@ def build_clarify_queue(
             reply_due=True,
             unanswered_days=unanswered_days,
             thread_url=thread,
+            their_reply=True,
         )
         _add(
             {
                 "kind": "lead",
                 "stage": "clarify",
                 "channel": channel,
+                "theirReply": True,
                 "recruiterName": recruiter or drafted.recruiter_name,
                 "recruiterEmail": email,
                 "recruiterPhone": phone,
@@ -987,6 +992,7 @@ def build_clarify_queue(
                 "replyId": f"post-decline:{key}",
                 "contactAttempts": _contact_attempt_count(convs),
                 "replyDue": True,
+                "theirReply": True,
                 "unansweredDays": unanswered_days,
                 "postDecline": True,
                 "declineReason": code,
@@ -1788,18 +1794,30 @@ def build_stale_active_queue(
     return queue
 
 
+TIER_LIVE = 1
+TIER_APPLY = 2
+TIER_SEND_PACKAGE = 3
+TIER_REPLY = 4
+TIER_FOLLOW_UP = 5
+TIER_DECIDE = 6
+TIER_WAITING = 7
+TIER_DECLINE = 8
+TIER_DEAD = 9
+
 TODAY_TIERS = {
-    1: "Reply to recruiter",
-    2: "Send package to recruiter",
-    3: "Follow up",
-    4: "Apply",
-    5: "Decide",
-    6: "Waiting on them",
-    8: "Decline — dealbreaker in the pitch",
-    9: "Probably dead — check in or close",
+    TIER_LIVE: "Interviewing or offer in play",
+    TIER_APPLY: "Package ready — apply directly",
+    TIER_SEND_PACKAGE: "Package ready — recruiter waiting",
+    TIER_REPLY: "Recruiter waiting for my reply",
+    TIER_FOLLOW_UP: "Follow-up due",
+    TIER_DECIDE: "Review fit — pursue or skip",
+    TIER_WAITING: "Sent — waiting on them",
+    TIER_DECLINE: "Decline — dealbreaker in the pitch",
+    TIER_DEAD: "Probably dead — check in or close",
 }
 
 _LIVE_STATUS_WEIGHT = {"offered": 0, "interviewing": 0, "following_up": 1, "reopened": 1}
+_IN_PLAY_STATUSES = frozenset({"offered", "interviewing"})
 
 
 def _pct(item: dict) -> float:
@@ -1807,6 +1825,13 @@ def _pct(item: dict) -> float:
         return float(item.get("matchPct") or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def direct_outreach_keys(conn) -> frozenset[str]:
+    """Leads marked direct recruiter outreach (⭐ Yes); they rank first within their tier."""
+    return frozenset(
+        r[0] for r in conn.execute("SELECT normalized_key FROM job_leads WHERE direct_recruiter_outreach = 1")
+    )
 
 
 def annotate_today_order(
@@ -1821,49 +1846,61 @@ def annotate_today_order(
     """Stamp `todayTier` / `todayLabel` / `todayRank` on every active item so
     the UI's single list reads as "what to do next, in order" across stages.
 
-    Tiers: recruiter waiting on a reply → package ready for a recruiter →
-    follow-ups on live threads → apply (best fit first) → decide → nothing to
-    do yet → probably dead (silent `dead_days`+ or stale active status).
-    Within a tier, leads in `direct_keys` (direct recruiter outreach) come first.
+    Tiers follow the likelihood of an interview (Shawn, 2026-11-09):
+    interviewing / offer / reopened → package ready, apply directly → package
+    ready for a waiting recruiter (résumé asks first) → recruiter waiting for
+    a reply → follow-up due → decide → sent and waiting → decline (dealbreaker) →
+    probably dead (silent `dead_days`+ or stale active status). Within a
+    tier, leads in `direct_keys` (direct recruiter outreach) come first,
+    then the better match.
     """
     ranked: list[tuple[tuple, dict]] = []
 
     def _add(item: dict, tier: int, sub: tuple) -> None:
         item["todayTier"] = tier
         item["todayLabel"] = TODAY_TIERS[tier]
+        # A reply to a message Shawn already sent outranks a new pitch in the
+        # same tier, including a direct-recruiter pitch (CARD-17).
+        answered = 0 if item.get("theirReply") else 1
         direct = 0 if item.get("normalizedKey") in direct_keys else 1
-        ranked.append(((tier, direct, *sub), item))
+        ranked.append(((tier, answered, direct, *sub), item))
 
     for item in clarify:
         if item.get("dealbreaker"):
-            _add(item, 8, (-int(item.get("ageDays") or 0),))
-            continue
-        _add(item, 1, (0 if item.get("replyDue") else 1, -int(item.get("unansweredDays") or 0)))
-    for item in send_resume:
-        if item.get("resumeRequested"):
-            _add(item, 1, (0, -int(item.get("ageDays") or 0)))
+            _add(item, TIER_DECLINE, (-int(item.get("ageDays") or 0),))
+        elif item.get("status") in _IN_PLAY_STATUSES:
+            _add(item, TIER_LIVE, (0, -int(item.get("unansweredDays") or 0)))
         else:
-            _add(item, 2, (-_pct(item), int(item.get("ageDays") or 0)))
+            _add(item, TIER_REPLY, (-_pct(item), -int(item.get("unansweredDays") or 0)))
+    for item in send_resume:
+        asked = 0 if item.get("resumeRequested") else 1
+        _add(item, TIER_SEND_PACKAGE, (asked, -_pct(item), int(item.get("ageDays") or 0)))
     for item in wait_schedule:
         waiting = int(item.get("waitingDays") or 0)
+        status = item.get("status") or ""
         if item.get("reopened"):
-            _add(item, 3, (_LIVE_STATUS_WEIGHT["reopened"], waiting))
+            _add(item, TIER_LIVE, (_LIVE_STATUS_WEIGHT["reopened"], waiting))
         elif item.get("staleActive") or (item.get("followUpDue") and waiting >= dead_days):
-            _add(item, 9, (waiting,))
+            _add(item, TIER_DEAD, (waiting,))
+        elif status in _IN_PLAY_STATUSES:
+            _add(item, TIER_LIVE, (_LIVE_STATUS_WEIGHT[status], waiting))
         elif item.get("followUpDue"):
-            _add(item, 3, (_LIVE_STATUS_WEIGHT.get(item.get("status") or "", 2), waiting))
+            _add(item, TIER_FOLLOW_UP, (_LIVE_STATUS_WEIGHT.get(status, 2), -_pct(item), waiting))
         else:
-            _add(item, 6, (waiting,))
+            _add(item, TIER_WAITING, (waiting,))
     for bucket, rows in decide_apply.items():
         for item in rows:
-            if bucket == "readyToApply":
-                _add(item, 4, (-_pct(item), int(item.get("ageDays") or 0)))
-            else:
-                _add(item, 5, (-_pct(item), int(item.get("ageDays") or 0)))
+            tier = TIER_APPLY if bucket == "readyToApply" else TIER_DECIDE
+            _add(item, tier, (-_pct(item), int(item.get("ageDays") or 0)))
 
     ranked.sort(key=lambda pair: pair[0])
     for rank, (_, item) in enumerate(ranked):
         item["todayRank"] = rank
+
+
+def _has_apply_link(lead: dict) -> bool:
+    """Apply directly needs a known posting link as well as the package (CARD-7)."""
+    return (lead.get("applyUrl") or "").strip().lower().startswith(("http://", "https://"))
 
 
 def build_decide_apply_stage(
@@ -1920,10 +1957,17 @@ def build_decide_apply_stage(
             )
         return out
 
+    ready, no_link = [], []
+    for lead in _filter(ready_to_apply, bucket="readyToApply"):
+        (ready if _has_apply_link(lead) else no_link).append(lead)
+    for lead in no_link:
+        lead["nextAction"] = lead["actionHint"] = (
+            "YOUR ACTION: Package is ready but there's no apply link — add the posting's link, or skip."
+        )
     return {
-        "readyToApply": _filter(ready_to_apply, bucket="readyToApply"),
+        "readyToApply": ready,
         "needsDecision": _filter(needs_decision, bucket="needsDecision"),
-        "needsDecisionForced": _filter(needs_decision_forced, bucket="needsDecisionForced"),
+        "needsDecisionForced": no_link + _filter(needs_decision_forced, bucket="needsDecisionForced"),
         "awaitingLlmReview": _filter(awaiting_llm_review, bucket="awaitingLlmReview"),
         "jdUnresolved": _filter(jd_unresolved, bucket="jdUnresolved"),
     }
@@ -2178,6 +2222,7 @@ def build_workflow_payload(
                 screen_first=bool(item.get("screenFirst")),
                 routes=item["replyPlan"]["routes"],
                 dealbreaker=item.get("dealbreaker") or "",
+                their_reply=bool(item.get("theirReply")),
             )
     from job_tracker.pipeline.llm_reply import apply_llm_drafts
 
@@ -2187,9 +2232,7 @@ def build_workflow_payload(
         send_resume=send_resume,
         wait_schedule=wait_schedule,
         decide_apply=decide_apply,
-        direct_keys=frozenset(
-            r[0] for r in conn.execute("SELECT normalized_key FROM job_leads WHERE direct_recruiter_outreach = 1")
-        ),
+        direct_keys=direct_outreach_keys(conn),
     )
 
     archived_leads = _list_archived_leads(conn, age_days_fn=age_days_fn, now=now)

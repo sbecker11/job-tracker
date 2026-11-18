@@ -15,6 +15,7 @@ from typing import Any, Iterator
 
 from job_tracker.pipeline.decline import decline_greeting
 from job_tracker.pipeline.pending_workflow import (
+    TIER_REPLY,
     TODAY_TIERS,
     _attach_folder_links,
     _attach_lead_statuses,
@@ -93,8 +94,8 @@ def place_card_first(payload: dict, card: dict) -> dict:
     others = [item for item in iter_active_cards(payload) if item is not card and item.get("todayRank") is not None]
     others.sort(key=lambda item: int(item.get("todayRank") or 0))
     card["todayRank"] = 0
-    card["todayTier"] = 1
-    card["todayLabel"] = TODAY_TIERS[1]
+    card["todayTier"] = TIER_REPLY
+    card["todayLabel"] = TODAY_TIERS[TIER_REPLY]
     for rank, item in enumerate(others, start=1):
         item["todayRank"] = rank
 
@@ -165,6 +166,7 @@ def build_one_lead_card(conn, job_key: str, *, now: datetime | None = None) -> d
         email_is_li_relay=email_is_li_relay,
     )
     unanswered_days = _unanswered_days(convs, _age_days, now) if unanswered else 0
+    their_reply = unanswered is not None and any((c["direction"] or "") == "outbound" for c in convs)
     message_id = (latest["message_id"] if latest else "") or ""
     gmail_url = _gmail_url_for_lead(conn, job_key, message_id)
     item: dict[str, Any] = {
@@ -188,6 +190,7 @@ def build_one_lead_card(conn, job_key: str, *, now: datetime | None = None) -> d
         "replyId": f"reply-due:{job_key}",
         "contactAttempts": _contact_attempt_count(convs),
         "replyDue": unanswered is not None,
+        "theirReply": their_reply,
         "unansweredDays": unanswered_days,
         "status": row["status"] or "",
     }
@@ -217,6 +220,7 @@ def build_one_lead_card(conn, job_key: str, *, now: datetime | None = None) -> d
         thread_url=item.get("threadUrl") or "",
         gmail_url=item.get("gmailUrl") or "",
         routes=item["replyPlan"]["routes"],
+        their_reply=their_reply,
     )
     item["nextAction"] = next_action
     item["actionHint"] = next_action
@@ -256,6 +260,7 @@ def refresh_one_lead(
                 reply_due=bool(card.get("replyDue")),
                 unanswered_days=int(card.get("unansweredDays") or 0),
                 routes=card["replyPlan"]["routes"],
+                their_reply=bool(card.get("theirReply")),
             )
             card["actionHint"] = card["nextAction"]
     place_card_first(payload, card)

@@ -838,6 +838,12 @@ th.num {
   background: #2a1212;
 }
 
+.pkg-chip.their-reply {
+  color: #f3e2b0;
+  border-color: #a6843a;
+  background: #2c2412;
+}
+
 .reply-sent-btn {
   font-size: 0.78rem;
   padding: 2px 8px;
@@ -903,6 +909,10 @@ th.num {
   border-color: #a04040;
 }
 
+.priority-row.their-reply {
+  box-shadow: inset 3px 0 0 #c4a15a;
+}
+
 .priority-row.follow-up-due {
   border-color: #8a5a20;
 }
@@ -926,12 +936,13 @@ th.num {
   color: var(--danger);
 }
 
-.today-tier-heading.today-tier-2,
-.today-tier-heading.today-tier-3 {
+.today-tier-heading.today-tier-3,
+.today-tier-heading.today-tier-4,
+.today-tier-heading.today-tier-5 {
   color: var(--warn);
 }
 
-.today-tier-heading.today-tier-4 {
+.today-tier-heading.today-tier-2 {
   color: var(--ok);
 }
 
@@ -1488,6 +1499,14 @@ th.num {
   padding: 3px 4px;
 }
 
+.unmatched-decline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .manage-lead-reason {
   font-size: 0.8rem;
   padding: 4px 6px;
@@ -1650,8 +1669,22 @@ th.num {
   color: #e0a070;
 }
 
-.more-options {
+.more-options-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   margin-top: 0.5rem;
+}
+
+.more-options-row .card-print {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.more-options {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-top: 0;
 }
 
 .quality-ok {

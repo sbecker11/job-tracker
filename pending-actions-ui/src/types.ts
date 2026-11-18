@@ -100,6 +100,8 @@ export interface ClarifyItem extends TodayFields {
   replyId?: string
   contactAttempts: number
   replyDue?: boolean
+  /** Newest inbound arrived after a message Shawn sent. */
+  theirReply?: boolean
   unansweredDays?: number
   actionHint?: string
   nextAction?: string

@@ -26,6 +26,7 @@ from job_tracker.pipeline.store import (
     record_unmatched_message,
     upsert_lead,
 )
+from job_tracker.pipeline.pending_workflow import TIER_REPLY
 
 _SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "render_pending_actions.py"
 _spec = importlib.util.spec_from_file_location("render_pending_actions", _SCRIPT_PATH)
@@ -183,7 +184,8 @@ def test_reply_after_decline_surfaces_as_clarify_card(tmp_path: Path):
     assert card["declineReasonLabel"] == "Rate too low"
     assert card["termsChanged"] is True
     assert card["replyDue"] is True
-    assert card["todayTier"] == 1
+    assert card["theirReply"] is True
+    assert card["todayTier"] == TIER_REPLY
     assert "replied after you declined (Rate too low)" in card["nextAction"]
     assert card["draftReply"].endswith("Best, Shawn\nshawn.becker@spexture.com")
     assert "declineGreeting" not in card

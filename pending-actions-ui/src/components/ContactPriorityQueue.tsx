@@ -11,12 +11,12 @@ import {
   leadAnchorHref,
   leadAnchorId,
   leadStatusUrl,
-  NO_ROUTE_STEP,
   recordReplyUrl,
   revealFolderUrl,
   sendRoutes,
 } from '../lib/links'
 import { HistoryLink } from './HistoryLink'
+import { UnmatchedDecline } from './UnmatchedDecline'
 import { MessageActions, type MessageActionsProps } from './MessageActions'
 import { addressName } from '../lib/greeting'
 import {
@@ -117,7 +117,13 @@ function DetailMessageActions({
   ...rest
 }: { item: ContactPriorityItem; text: string; onTextChange: (t: string) => void } & Pick<
   MessageActionsProps,
-  'messageSentHref' | 'onMessageSent' | 'messageSentDone' | 'messageSentBusy' | 'packageSentHref' | 'onPackageSent'
+  | 'messageSentHref'
+  | 'onMessageSent'
+  | 'messageSentDone'
+  | 'messageSentBusy'
+  | 'packageSentHref'
+  | 'onPackageSent'
+  | 'packageFolder'
 >) {
   const routes = sendRoutes(messageTarget(item)).filter((r) => !r.sendsAndLogs)
   const [route, ...others] = routes
@@ -370,7 +376,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
       </div>
       {!items.length ? (
         <p className="empty-hint">
-          No matching leads in {filterLabel.toLowerCase()} — change Status or a task chip, or
+          No matching leads in {filterLabel.toLowerCase()} — change Section or Status, or
           you&apos;re clear on this slice.
         </p>
       ) : !visibleItems.length ? (
@@ -408,45 +414,16 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
           replyInPanel || (recordable && item.replyDue)
           ? `${who} is waiting on you${replyDays != null ? ` (${replyDays}d)` : ''}`
           : `No reply from ${who === 'The recruiter' ? 'the recruiter' : who} in ${item.waitingDays ?? '?'}d — time to follow up`
-        const recordSteps =
-          recordable && item.replyDue && !replyInPanel
-            ? [
-                'Click "Show steps", edit the message if you like, then click "Copy message".',
-                'Click "Send message" to open the LinkedIn thread, paste the message and press Send.',
-                'Click "Message sent?" and confirm what you sent — the card moves to Waiting on them.',
-              ]
-            : null
-        const word = replyInPanel ? 'reply' : 'follow-up'
-        const panelSteps =
-          replyInPanel || followupInPanel
-            ? [
-                `Click "Open ${word} ▾" below. Check the sender and review the ${word}; it's already written for you.`,
-                'Click "Copy message". It checks the message first; apply or skip any suggestions.',
-                route
-                  ? `Click "Send message". ${
-                      route.sendsAndLogs
-                        ? 'The text helper sends and logs it.'
-                        : route.prefilled
-                          ? `${route.how === 'email' ? 'Gmail' : 'It'} opens with the message filled in. Press Send.`
-                          : `The ${route.how} opens. Paste the message and press Send.`
-                    }`
-                  : NO_ROUTE_STEP,
-                ...(route?.sendsAndLogs ? [] : ['Click "Message sent?" to log it.']),
-                ...(packageSentHref(item) ? ['If the résumé went with it, click "Package sent?".'] : []),
-              ]
-            : null
+        const showStatus = replyInPanel || followupInPanel || Boolean(recordable && item.replyDue)
         const sendTo = route
           ? `${route.how === 'text' || route.how === 'email' ? `${who} · ${route.how} ${route.to}` : `${who} · ${route.how}`}${
               item.resolvedVia && route.to === item.resolvedEmail ? ` (found via ${item.resolvedVia})` : ''
             }`
           : `${who} — no email, LinkedIn or phone on file`
-        const steps = panelSteps ?? recordSteps
-        const stepsTitle = panelSteps ? `Manage lead (${panelSteps.length} steps):` : 'Steps:'
-        const nextAction = steps
-          ? ''
-            : item.nextAction ||
-            item.actionHint ||
-            'YOUR ACTION: See stage chip and use the buttons on the right.'
+        const nextAction =
+          item.nextAction ||
+          item.actionHint ||
+          'YOUR ACTION: See stage chip and use the buttons on the right.'
         const ackKey = replyAckKey(item)
         const replyAcknowledged = Boolean(replySentDone[ackKey])
         const replyRecording = Boolean(replyRecordPending[ackKey]) && !replyAcknowledged
@@ -500,7 +477,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
             <h3 className={`today-tier-heading today-tier-${item.todayTier}`}>{tierHeading}</h3>
           )}
           <div
-            className={`priority-row${open ? ' open' : ''}${item.followUpDue && item.todayTier !== 9 ? ' follow-up-due' : ''}${item.replyDue ? ' reply-due' : ''}${item.todayTier === 9 ? ' probably-dead' : ''}${highlighted ? ' lead-highlight' : ''}`}
+            className={`priority-row${open ? ' open' : ''}${item.followUpDue && item.todayTier !== 9 ? ' follow-up-due' : ''}${item.replyDue ? ' reply-due' : ''}${item.theirReply ? ' their-reply' : ''}${item.todayTier === 9 ? ' probably-dead' : ''}${highlighted ? ' lead-highlight' : ''}`}
           >
             <div className="priority-main">
               <span className="priority-rank" aria-label={`Priority ${index + 1}`}>
@@ -584,6 +561,9 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                       Follow-up due ({item.waitingDays}d ≥ {item.followUpThresholdDays ?? 7}d)
                     </span>
                   )}
+                  {item.theirReply && (
+                    <span className="pkg-chip their-reply">Replied to you</span>
+                  )}
                   {item.replyDue && (
                     <span className="pkg-chip reply-due">
                       Recruiter waiting on you
@@ -616,41 +596,17 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                   )}
                 </div>
               </div>
-              {steps ? (
-                <div className="next-action priority-wide">
-                  <p className="next-action-status">Current status: {panelStatus}</p>
-                  {panelSteps && <p className="next-action-sendto">Send to: {sendTo}</p>}
-                  <p className="next-action-steps-title">{stepsTitle}</p>
-                  <ol className="next-action-steps">
-                    {steps.map((step) => (
-                      <li key={step}>{step}</li>
-                    ))}
-                  </ol>
-                </div>
-              ) : (
-                <p className="next-action priority-wide">{nextAction}</p>
-              )}
-              <div className="priority-meta priority-wide">
-                {item.recruiterName && <span>{item.recruiterName}</span>}
-                {item.recruiterPhone &&
-                  (phoneHref ? (
-                    <a className="phone-link" href={phoneHref} title="Call">
-                      {item.recruiterPhone}
-                    </a>
-                  ) : (
-                    <span>{item.recruiterPhone}</span>
-                  ))}
-                {item.replyPlan?.recipient.email && (
-                  <span title={item.replyPlan.recipient.email}>Email · {item.replyPlan.recipient.email}</span>
+              <div className="next-action priority-wide">
+                {showStatus ? (
+                  <>
+                    <p className="next-action-status">Current status: {panelStatus}</p>
+                    {(replyInPanel || followupInPanel) && (
+                      <p className="next-action-sendto">Send to: {sendTo}</p>
+                    )}
+                  </>
+                ) : (
+                  <p>{nextAction}</p>
                 )}
-                <span>
-                  {item.contactAttempts
-                    ? `${item.contactAttempts}× human contact · ${item.ageDays}d`
-                    : `${item.ageDays}d`}
-                  {item.waitingDays != null ? ` · waiting ${item.waitingDays}d` : ''}
-                  {item.decidedAt ? ` · decided ${formatDecidedAt(item.decidedAt)}` : ''}
-                  {item.commCount != null ? ` · ${item.commCount} messages` : ''}
-                </span>
               </div>
               <div className="priority-actions">
                 {panelFirst && manageButton}
@@ -685,6 +641,28 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                 )}
                 {!panelFirst && manageButton}
               </div>
+              <div className="priority-meta priority-wide">
+                {item.recruiterName && <span>{item.recruiterName}</span>}
+                {item.recruiterPhone &&
+                  (phoneHref ? (
+                    <a className="phone-link" href={phoneHref} title="Call">
+                      {item.recruiterPhone}
+                    </a>
+                  ) : (
+                    <span>{item.recruiterPhone}</span>
+                  ))}
+                {item.replyPlan?.recipient.email && (
+                  <span title={item.replyPlan.recipient.email}>Email · {item.replyPlan.recipient.email}</span>
+                )}
+                <span>
+                  {item.contactAttempts
+                    ? `${item.contactAttempts}× human contact · ${item.ageDays}d`
+                    : `${item.ageDays}d`}
+                  {item.waitingDays != null ? ` · waiting ${item.waitingDays}d` : ''}
+                  {item.decidedAt ? ` · decided ${formatDecidedAt(item.decidedAt)}` : ''}
+                  {item.commCount != null ? ` · ${item.commCount} messages` : ''}
+                </span>
+              </div>
             </div>
 
             {panelKind && item.normalizedKey && (
@@ -705,6 +683,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     senders={item.senders}
                     packageSentHref={packageSentHref(item)}
                     onPackageSent={() => onLeadActioned?.(item.id, item.stage === 'send_resume')}
+                    packageFolder={item.packageReady ? item.folderPath : undefined}
                     followupDraft={item.stage === 'send_resume' && item.draftReply ? item.draftReply : item.followupDraft}
                     reply={
                       replyInPanel
@@ -753,6 +732,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                   item={item}
                   text={draftOf(item)}
                   onTextChange={(t) => setDrafts((d) => ({ ...d, [item.id]: t }))}
+                  packageFolder={item.packageReady ? item.folderPath : undefined}
                   {...clarifySentProps(item, draftOf(item), {
                     recordable,
                     onReplyRecorded,
@@ -762,6 +742,17 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                     busy: replyScanning || replyRecording,
                   })}
                 />
+                {!item.normalizedKey && item.messageId && declineReasons.length > 0 && (
+                  <UnmatchedDecline
+                    messageId={item.messageId}
+                    channel={item.channel}
+                    recruiterName={item.recruiterName}
+                    company={item.company}
+                    title={item.title}
+                    reasons={declineReasons}
+                    onClosed={() => onLeadActioned?.(item.id, true)}
+                  />
+                )}
                 {dismissUrl(item) && (
                   <div className="actions secondary-actions">
                     <a
@@ -823,6 +814,7 @@ export const ContactPriorityQueue = memo(function ContactPriorityQueue({
                       }
                       packageSentHref={packageSentHref(item)}
                       onPackageSent={() => onLeadActioned?.(item.id, true)}
+                      packageFolder={item.packageReady ? item.folderPath : undefined}
                     />
                   </li>
                 </ol>

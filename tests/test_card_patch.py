@@ -11,6 +11,7 @@ from job_tracker.pipeline import card_patch, pending_workflow
 from job_tracker.pipeline.card_patch import NeedsFullRender, patch_lead_card, spawn_card_refresh
 from job_tracker.pipeline.models import JobConversation, JobLead
 from job_tracker.pipeline.store import add_job_conversation, connect, upsert_lead
+from job_tracker.pipeline.pending_workflow import TIER_REPLY, TIER_WAITING
 
 
 @pytest.fixture(autouse=True)
@@ -90,7 +91,7 @@ def test_logged_reply_moves_the_card_to_waiting(tmp_path: Path):
     card = payload["stages"]["waitSchedule"][0]
     assert card["normalizedKey"] == key
     assert card["stage"] == "wait_schedule"
-    assert card["todayTier"] == 6
+    assert card["todayTier"] == TIER_WAITING
     assert card["replyPlan"]
     assert payload["pipeline"][2]["count"] == 1
 
@@ -105,7 +106,7 @@ def test_lead_still_owed_a_reply_gets_a_fresh_clarify_card(tmp_path: Path):
     card = payload["stages"]["clarify"][0]
     assert card["normalizedKey"] == key
     assert "Happy to talk" in card["draftReply"]
-    assert card["todayTier"] == 1
+    assert card["todayTier"] == TIER_REPLY
 
 
 def test_send_resume_card_falls_back_to_a_full_render(tmp_path: Path):

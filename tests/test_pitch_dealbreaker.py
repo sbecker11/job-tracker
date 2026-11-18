@@ -14,6 +14,7 @@ from job_tracker.pipeline.decline import pitch_dealbreaker
 from job_tracker.pipeline.models import UnmatchedMessage
 from job_tracker.pipeline.pending_workflow import build_workflow_payload
 from job_tracker.pipeline.store import connect, record_unmatched_message
+from job_tracker.pipeline.pending_workflow import TIER_DECLINE, TIER_REPLY
 
 _SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "render_pending_actions.py"
 _spec = importlib.util.spec_from_file_location("render_pending_actions", _SCRIPT_PATH)
@@ -102,11 +103,11 @@ def test_dealbreaker_card_gets_decline_and_ranks_below_replies(tmp_path: Path):
     assert "isn't a fit" in onsite["draftReply"]
     assert "remote (US)" not in onsite["draftReply"]
     assert "Dealbreaker in the pitch" in onsite["nextAction"]
-    assert onsite["todayTier"] == 8
+    assert onsite["todayTier"] == TIER_DECLINE
     assert onsite["todayLabel"] == "Decline — dealbreaker in the pitch"
 
     assert not open_.get("dealbreaker")
-    assert open_["todayTier"] == 1
+    assert open_["todayTier"] == TIER_REPLY
     assert open_["todayRank"] < onsite["todayRank"]
 
 
