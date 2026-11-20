@@ -37,12 +37,12 @@ from job_tracker.pipeline.letter_style import (
     looks_like_signature_line,
 )
 from job_tracker.pipeline.llm_call_log import log_call
-from job_tracker.pipeline.llm_extract import _MODEL_PRICING_USD_PER_MTOK
+from job_tracker.pipeline.cursor_llm import GROK_HIGH_FAST
 from job_tracker.scoring.scorer import DealbreakerHit, ScoreResult, score_jd, should_run_llm_review
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = os.environ.get("JOB_TRACKER_APPLY_MODEL", "claude-sonnet-5")
+DEFAULT_MODEL = os.environ.get("JOB_TRACKER_APPLY_MODEL", GROK_HIGH_FAST)
 
 
 _CANDIDATE_PROFILE_PATH = Path(
@@ -147,12 +147,15 @@ class CallMetrics:
     cost_usd: float | None = None
 
 
-def _cost_usd(model: str, input_tokens: int, output_tokens: int) -> float | None:
-    pricing = _MODEL_PRICING_USD_PER_MTOK.get(model)
-    if pricing is None:
-        return None
-    in_rate, out_rate = pricing
-    return (input_tokens / 1_000_000) * in_rate + (output_tokens / 1_000_000) * out_rate
+def _cost_usd(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+) -> float | None:
+    from job_tracker.pipeline.llm_extract import _cost_usd as _extract_cost
+
+    return _extract_cost(model, input_tokens, output_tokens, cache_read_tokens)
 
 
 def _sum_metrics(step: str, model: str, calls: list[CallMetrics]) -> CallMetrics:
@@ -276,12 +279,12 @@ _ANTHROPIC_TIMEOUT_S = 120.0
 
 
 def _client():
-    import anthropic
+    from job_tracker.pipeline.cursor_llm import CursorLLMError, CursorMessages
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")  # pragma: allowlist secret
-    if not api_key:
-        raise LLMApplyError("ANTHROPIC_API_KEY is not set (see .env.example).")
-    return anthropic.Anthropic(api_key=api_key, timeout=_ANTHROPIC_TIMEOUT_S)  # pragma: allowlist secret
+    try:
+        return CursorMessages(timeout_s=_ANTHROPIC_TIMEOUT_S)
+    except CursorLLMError as exc:
+        raise LLMApplyError(str(exc)) from exc
 
 
 def _parse_json_object(raw: str) -> dict:

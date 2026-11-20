@@ -133,7 +133,7 @@ _CLEAN_CONTENT = {
 
 def test_evaluate_lead_parses_response_and_computes_metrics():
     client = _FakeClient(responses=[(_EVAL_PAYLOAD_PURSUE, 1000, 200)])
-    result = llm_apply.evaluate_lead("some JD text", company="Acme", title="Engineer", model="claude-haiku-4-5", client=client)
+    result = llm_apply.evaluate_lead("some JD text", company="Acme", title="Engineer", model="grok-4.7", client=client)
 
     assert result.verdict == "pursue"
     assert result.match_pct == 85
@@ -147,13 +147,13 @@ def test_evaluate_lead_parses_response_and_computes_metrics():
     assert result.cover_letter_strategy == "Frame the agentic-AI throughline as the core narrative."
     assert result.interview_prep == ["Open with the agentic-AI project as the go-to example."]
     assert len(client.calls) == 1
-    assert client.calls[0]["model"] == "claude-haiku-4-5"
+    assert client.calls[0]["model"] == "grok-4.7"
 
     assert result.metrics is not None
     assert result.metrics.step == "evaluate"
     assert result.metrics.input_tokens == 1000
     assert result.metrics.output_tokens == 200
-    assert result.metrics.cost_usd == pytest.approx(1000 / 1_000_000 * 1.00 + 200 / 1_000_000 * 5.00)
+    assert result.metrics.cost_usd == pytest.approx(1000 / 1_000_000 * 4.00 + 200 / 1_000_000 * 12.00)
 
 
 def test_evaluate_lead_retries_a_missing_or_unknown_verdict():
@@ -375,7 +375,7 @@ def test_generate_package_full_flow_saves_docx_and_aggregates_metrics(tmp_path):
         ]
     )
     result = llm_apply.generate_package(
-        "JD text", company="Bellese", title="Senior Engineer", model="claude-haiku-4-5", client=client, output_root=tmp_path
+        "JD text", company="Bellese", title="Senior Engineer", model="grok-4.7", client=client, output_root=tmp_path
     )
 
     assert result.evaluation.verdict == "pursue"
@@ -394,8 +394,8 @@ def test_generate_package_full_flow_saves_docx_and_aggregates_metrics(tmp_path):
     assert result.total_input_tokens == 1000 + 2000
     assert result.total_output_tokens == 200 + 3000
     expected_cost = (
-        (1000 / 1_000_000 * 1.00 + 200 / 1_000_000 * 5.00)
-        + (2000 / 1_000_000 * 1.00 + 3000 / 1_000_000 * 5.00)
+        (1000 / 1_000_000 * 4.00 + 200 / 1_000_000 * 12.00)
+        + (2000 / 1_000_000 * 4.00 + 3000 / 1_000_000 * 12.00)
     )
     assert result.total_cost_usd == pytest.approx(expected_cost)
 
@@ -556,8 +556,10 @@ def test_generate_package_leaves_warnings_if_repair_cannot_clear_them(tmp_path):
 
 
 def test_cost_usd_known_model():
-    cost = llm_apply._cost_usd("claude-haiku-4-5", 1_000_000, 1_000_000)
-    assert cost == pytest.approx(1.00 + 5.00)
+    cost = llm_apply._cost_usd("grok-4.7", 1_000_000, 1_000_000)
+    assert cost == pytest.approx(4.00 + 12.00)
+    cached = llm_apply._cost_usd("grok-4.7", 0, 0, 1_000_000)
+    assert cached == pytest.approx(1.00)
 
 
 def test_cost_usd_unknown_model_returns_none():

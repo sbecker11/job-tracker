@@ -114,8 +114,8 @@ def main(argv: list[str] | None = None) -> int:
         "--llm-fallback",
         action="store_true",
         help="For messages the regex extractor can't confidently parse, ask the "
-        "Anthropic API to extract roles instead (requires ANTHROPIC_API_KEY in "
-        ".env; results are cached per message so repeat runs don't re-bill it)",
+        "Grok, through Cursor Ultra, to extract roles instead (requires CURSOR_API_KEY in "
+        ".env; results are cached per message so repeat runs don't spend the allowance again)",
     )
     ap.add_argument(
         "--llm-model",

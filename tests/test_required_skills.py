@@ -95,7 +95,7 @@ def test_extract_save_and_render(tmp_path, monkeypatch):
         title="Senior Software Engineer",
         jd_text="Java 17 required.",
         messages=["Client wants Kafka too."],
-        model="claude-sonnet-5",
+        model="grok-4.7",
         client=client,
     )
     assert "RECRUITER MESSAGE 1" in client.prompts[0]

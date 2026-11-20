@@ -126,7 +126,7 @@ def test_full_render_has_the_llm_write_open_replies(tmp_path: Path, monkeypatch)
         )
     )
     monkeypatch.setenv("JOB_TRACKER_LLM_REPLY", "1")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")  # pragma: allowlist secret
+    monkeypatch.setenv("CURSOR_API_KEY", "test")  # pragma: allowlist secret
     monkeypatch.setattr(llm_reply, "_profile_text", lambda: "Shawn Becker profile")
     monkeypatch.setattr(llm_apply, "_client", lambda: fake)
 

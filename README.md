@@ -24,7 +24,7 @@ pip install -r requirements.txt
 pip install -e ".[dev]"
 
 # Unlock .env — see docs/SECRETS.md (key: ~/.git-crypt-keys/job-tracker.key)
-# Prefer shared ANTHROPIC_API_KEY in ../.env when possible
+# Prefer shared CURSOR_API_KEY in ../.env when possible
 ```
 
 ### Gmail (one-time)

@@ -11,8 +11,8 @@ from job_tracker.pipeline import llm_extract
 
 
 def test_client_requires_api_key(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    with pytest.raises(llm_extract.LLMExtractionError, match="ANTHROPIC_API_KEY"):
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    with pytest.raises(llm_extract.LLMExtractionError, match="CURSOR_API_KEY"):
         llm_extract._client()
 
 

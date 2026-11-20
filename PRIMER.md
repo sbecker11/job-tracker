@@ -43,7 +43,7 @@ Already-triaged mail  →  re-derive outcome from CURRENT lead verdict(s)  →  
 
 - Gmail OAuth for `shawnbecker.recruiting@gmail.com`: `~/.config/job-tracker/credentials.json` + `token.json` — present.
 - `scbboston@gmail.com` / `personal_hub` is **not** processed (left untouched as of 2026-09-13).
-- `ANTHROPIC_API_KEY` in `.env` — required for Stage 2 and Stage 4 (both call the LLM). Without it, only Stage 1's keyword scoring works.
+- `CURSOR_API_KEY` in `.env` — required for Stage 2 and Stage 4 (both call Grok through Cursor Ultra). Without it, only Stage 1's keyword scoring works.
 - Candidate profile / JD Match Framework: `~/CLAUDE.md` (dealbreakers, not-dealbreakers, skills vocabulary, banned terms, contact info) and `config/framework.yaml` (the same framework, machine-readable, used by the keyword scorer; LLM evaluate also honors `not_dealbreakers` via `_EVAL_SYSTEM_PROMPT`). Keep these two in sync if the framework changes. In particular: US citizen / no-sponsorship JD requirements are ✅ fit at evaluation; packages still omit work-auth language (§4 rule 11).
 - `var/leads.db` — SQLite dedup store, created automatically on first run. Already has real data from prior runs.
 

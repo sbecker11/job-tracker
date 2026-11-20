@@ -87,14 +87,9 @@ class InterviewDetails:
 
 
 def _client():
-    import anthropic
+    from job_tracker.pipeline.llm_extract import _client as _extract_client
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")  # pragma: allowlist secret
-    if not api_key:
-        raise LLMExtractionError(
-            "ANTHROPIC_API_KEY is not set. Add it to job-tracker/.env (see .env.example)."
-        )
-    return anthropic.Anthropic(api_key=api_key, timeout=_ANTHROPIC_TIMEOUT_S)  # pragma: allowlist secret
+    return _extract_client()
 
 
 def _parse_response_text(raw: str) -> dict:

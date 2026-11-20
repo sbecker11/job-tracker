@@ -25,19 +25,17 @@ import os
 import time
 
 from job_tracker.email.models import EmailMessage, ExtractedRole
+from job_tracker.pipeline.cursor_llm import GROK_FAST_RATES, GROK_HIGH_FAST, grok_rates
 from job_tracker.pipeline.llm_call_log import log_call
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = os.environ.get("JOB_TRACKER_LLM_MODEL", "claude-haiku-4-5")
+DEFAULT_MODEL = os.environ.get("JOB_TRACKER_LLM_MODEL", GROK_HIGH_FAST)
 
-# USD per million tokens: (input, output). Source: platform.claude.com/docs/en/about-claude/pricing
-# (checked 2026-10-22). Sonnet 5's $2/$10 launch price became its standard price.
-_MODEL_PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
-    "claude-haiku-4-5": (1.00, 5.00),
-    "claude-sonnet-4-5": (3.00, 15.00),
-    "claude-sonnet-5": (2.00, 10.00),
-    "claude-opus-4-8": (5.00, 25.00),
+# USD per million tokens: (input, output, cache read). Grok 4.7 Fast rates.
+# These estimate Cursor Models pool use. They are not an Anthropic invoice.
+_MODEL_PRICING_USD_PER_MTOK: dict[str, tuple[float, float, float]] = {
+    GROK_HIGH_FAST: GROK_FAST_RATES,
 }
 
 # Digests rarely need more than this to list every posting; keeping the
@@ -102,14 +100,12 @@ _ANTHROPIC_TIMEOUT_S = 120.0
 
 
 def _client():
-    import anthropic  # imported lazily so `anthropic` is only required when this path is used
+    from job_tracker.pipeline.cursor_llm import CursorLLMError, CursorMessages
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")  # pragma: allowlist secret
-    if not api_key:
-        raise LLMExtractionError(
-            "ANTHROPIC_API_KEY is not set. Add it to job-tracker/.env (see .env.example)."
-        )
-    return anthropic.Anthropic(api_key=api_key, timeout=_ANTHROPIC_TIMEOUT_S)  # pragma: allowlist secret
+    try:
+        return CursorMessages(timeout_s=_ANTHROPIC_TIMEOUT_S)
+    except CursorLLMError as exc:
+        raise LLMExtractionError(str(exc)) from exc
 
 
 def _build_user_prompt(message: EmailMessage) -> str:
@@ -146,12 +142,21 @@ def _parse_response_text(raw: str) -> list[dict]:
     return data
 
 
-def _cost_usd(model: str, input_tokens: int, output_tokens: int) -> float | None:
-    pricing = _MODEL_PRICING_USD_PER_MTOK.get(model)
+def _cost_usd(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+) -> float | None:
+    pricing = _MODEL_PRICING_USD_PER_MTOK.get(model) or grok_rates(model)
     if pricing is None:
         return None
-    in_rate, out_rate = pricing
-    return (input_tokens / 1_000_000) * in_rate + (output_tokens / 1_000_000) * out_rate
+    in_rate, out_rate, cache_rate = pricing
+    return (
+        (input_tokens / 1_000_000) * in_rate
+        + (output_tokens / 1_000_000) * out_rate
+        + (cache_read_tokens / 1_000_000) * cache_rate
+    )
 
 
 def _estimate_tokens(text: str) -> int:

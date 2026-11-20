@@ -33,7 +33,7 @@ def conn():
 @pytest.fixture(autouse=True)
 def _on(monkeypatch):
     monkeypatch.setenv("JOB_TRACKER_LLM_REPLY", "1")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")  # pragma: allowlist secret
+    monkeypatch.setenv("CURSOR_API_KEY", "test")  # pragma: allowlist secret
     monkeypatch.setattr(llm_reply, "_profile_text", lambda: "Shawn Becker profile")
 
 

@@ -23,13 +23,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from job_tracker.pipeline.cursor_llm import GROK_HIGH_FAST
 from job_tracker.pipeline.llm_call_log import log_call
 from job_tracker.pipeline.qualifying_reply import greeting_line
 
 logger = logging.getLogger(__name__)
 
 PROMPT_VERSION = "2026-11-05.8"
-DEFAULT_REPLY_MODEL = os.environ.get("JOB_TRACKER_REPLY_MODEL", "claude-opus-4-8")
+DEFAULT_REPLY_MODEL = os.environ.get("JOB_TRACKER_REPLY_MODEL", GROK_HIGH_FAST)
 RENDER_BUDGET_S = float(os.environ.get("JOB_TRACKER_REPLY_BUDGET_S", "90"))
 _MAX_WORKERS = 6
 _THREAD_CHARS = 3_000
@@ -150,7 +151,7 @@ class ReplyContext:
 def enabled() -> bool:
     if os.environ.get("JOB_TRACKER_LLM_REPLY", "1").strip() in {"0", "false", "no", "off"}:
         return False
-    return bool(os.environ.get("ANTHROPIC_API_KEY"))  # pragma: allowlist secret
+    return bool(os.environ.get("CURSOR_API_KEY", "").strip())  # pragma: allowlist secret
 
 
 def _profile_text() -> str:
@@ -399,7 +400,7 @@ def generate(ctx: ReplyContext, profile: str, *, client=None, model: str = DEFAU
         in_tok = (getattr(usage, "input_tokens", 0) or 0) + (getattr(usage, "cache_creation_input_tokens", 0) or 0)
         cached = getattr(usage, "cache_read_input_tokens", 0) or 0
         out_tok = getattr(usage, "output_tokens", 0) or 0
-        cost = _cost_usd(model, in_tok + cached // 10, out_tok)
+        cost = _cost_usd(model, in_tok, out_tok, cached)
         total_cost += cost or 0.0
         log_call(step="reply_draft", model=model, input_tokens=in_tok + cached, output_tokens=out_tok, cost_usd=cost)
         logger.info("reply draft %s: %.1fs", ctx.card_id, time.monotonic() - start)
