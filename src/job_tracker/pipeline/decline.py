@@ -161,11 +161,6 @@ def terms_changed(code: str, reply_text: str) -> bool:
 # review. C2C-only gets the clarifier instead (DRAFT-8): a W2 option often exists.
 _PITCH_DEALBREAKERS = {
     "onsite_only": ("location", ""),
-    "eastern_time_required": (
-        "other",
-        "I'm based in Utah and work Mountain time hours, so a role that requires Eastern time "
-        "isn't a fit.",
-    ),
 }
 
 

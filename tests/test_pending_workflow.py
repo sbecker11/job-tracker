@@ -19,7 +19,15 @@ from job_tracker.pipeline.store import (
 # Import render helpers the same way as test_render_pending_actions.
 import importlib.util
 import sys
-from job_tracker.pipeline.pending_workflow import TIER_APPLY, TIER_DEAD, TIER_DECIDE, TIER_LIVE, TIER_SEND_PACKAGE, TODAY_TIERS
+from job_tracker.pipeline.pending_workflow import (
+    TIER_APPLY,
+    TIER_DEAD,
+    TIER_DECIDE,
+    TIER_DECLINE,
+    TIER_LIVE,
+    TIER_SEND_PACKAGE,
+    TODAY_TIERS,
+)
 
 _SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "render_pending_actions.py"
 _spec = importlib.util.spec_from_file_location("render_pending_actions", _SCRIPT_PATH)
@@ -554,6 +562,61 @@ def test_recruiter_followup_after_outbound_is_clarify_reply_due(tmp_path: Path):
     assert hit["theirReply"] is True
     assert hit["unansweredDays"] >= 2
     assert "They replied to your message" in hit["nextAction"]
+    assert hit["draftReply"]
+    assert not hit.get("dealbreaker")
+
+
+def test_eastern_time_reply_keeps_the_reply_draft(tmp_path: Path):
+    """A later reply that mentions Eastern time stays a reply draft."""
+    conn = connect(tmp_path / "leads.db")
+    lead = JobLead(
+        company="Intentsify",
+        title="Backend Engineer",
+        source_message_id="m-ed",
+        source_label="linkedin_message",
+        jd_text="python aws",
+        match_pct=90.0,
+        verdict="pursue",
+    )
+    upsert_lead(conn, lead)
+    add_job_contact(
+        conn,
+        JobContact(job_key=lead.normalized_key, name="Ed Soucie", email="ed@example.com", role="recruiter"),
+    )
+    add_job_conversation(
+        conn,
+        JobConversation(
+            job_key=lead.normalized_key,
+            direction="outbound",
+            summary="Still interested",
+            occurred_at=(NOW - timedelta(days=1)).isoformat(),
+            body_text="Hi Ed, still interested. Send a few times.",
+        ),
+    )
+    add_job_conversation(
+        conn,
+        JobConversation(
+            job_key=lead.normalized_key,
+            direction="inbound",
+            summary="Eastern time required",
+            occurred_at=NOW.isoformat(),
+            body_text=(
+                "Hey Shawn! Unfortunately they're not considering candidates outside of the "
+                "Eastern Time Zone at this time."
+            ),
+        ),
+    )
+    data = render_pending_actions.render(conn, output_root=tmp_path, now=NOW)
+    workflow = build_workflow_payload(
+        data, conn=conn, age_days_fn=render_pending_actions._age_days, now=NOW, output_root=tmp_path
+    )
+    conn.close()
+
+    hit = next(i for i in workflow["stages"]["clarify"] if i.get("normalizedKey") == lead.normalized_key)
+    assert not hit.get("dealbreaker")
+    assert "Mountain time" not in hit["draftReply"]
+    assert "Dealbreaker in the pitch" not in hit["nextAction"]
+    assert hit["todayTier"] != TIER_DECLINE
     assert hit["draftReply"]
 
 

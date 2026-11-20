@@ -339,6 +339,26 @@ def _next_action_clarify(
     return f"YOUR ACTION: {prefix}{numbered}"
 
 
+def apply_pitch_dealbreaker(
+    draft_body: str,
+    body: str,
+    *,
+    subject: str = "",
+    recruiter_name: str = "",
+    title: str = "",
+) -> tuple[str, str]:
+    """When this message states an onsite-only dealbreaker, the card sends
+    the decline letter instead of a clarifier (CARD-9). That includes a later
+    reply that newly imposes the restriction. The label is set so the LLM
+    reply writer leaves the letter alone."""
+    from job_tracker.pipeline.decline import pitch_dealbreaker
+
+    blocker = pitch_dealbreaker(body, subject=subject, recruiter_name=recruiter_name, title=title)
+    if blocker is None:
+        return draft_body, ""
+    return blocker.letter, blocker.label
+
+
 def _route_steps(route: dict | None, who: str) -> list[str]:
     if route is None:
         return ["Copy reply", "No reply route on file — open Manage lead → Search for sender"]
@@ -874,6 +894,13 @@ def build_clarify_queue(
                 inbound_snippet=subj,
             )
         )
+        draft_body, dealbreaker = apply_pitch_dealbreaker(
+            draft_body,
+            body,
+            subject=subj,
+            recruiter_name=recruiter or drafted.recruiter_name,
+            title=r["title"] or "",
+        )
         thread = drafted.thread_url or _thread_url_for_lead(convs, conn, key)
         channel = _card_channel(
             thread_url=thread,
@@ -888,6 +915,7 @@ def build_clarify_queue(
             unanswered_days=unanswered_days,
             thread_url=thread,
             their_reply=True,
+            dealbreaker=dealbreaker,
         )
         _add(
             {
@@ -895,6 +923,7 @@ def build_clarify_queue(
                 "stage": "clarify",
                 "channel": channel,
                 "theirReply": True,
+                "dealbreaker": dealbreaker,
                 "recruiterName": recruiter or drafted.recruiter_name,
                 "recruiterEmail": email,
                 "recruiterPhone": phone,

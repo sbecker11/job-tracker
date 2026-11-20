@@ -15,6 +15,7 @@ from typing import Any, Iterator
 
 from job_tracker.pipeline.decline import decline_greeting
 from job_tracker.pipeline.pending_workflow import (
+    TIER_DECLINE,
     TIER_REPLY,
     TODAY_TIERS,
     _attach_folder_links,
@@ -25,6 +26,7 @@ from job_tracker.pipeline.pending_workflow import (
     _gmail_url_for_lead,
     _human_inbound_conversations,
     _next_action_clarify,
+    apply_pitch_dealbreaker,
     _recruiter_contact,
     _send_route_fields,
     _sort_time,
@@ -94,8 +96,12 @@ def place_card_first(payload: dict, card: dict) -> dict:
     others = [item for item in iter_active_cards(payload) if item is not card and item.get("todayRank") is not None]
     others.sort(key=lambda item: int(item.get("todayRank") or 0))
     card["todayRank"] = 0
-    card["todayTier"] = TIER_REPLY
-    card["todayLabel"] = TODAY_TIERS[TIER_REPLY]
+    if card.get("dealbreaker"):
+        card["todayTier"] = TIER_DECLINE
+        card["todayLabel"] = TODAY_TIERS[TIER_DECLINE]
+    else:
+        card["todayTier"] = TIER_REPLY
+        card["todayLabel"] = TODAY_TIERS[TIER_REPLY]
     for rank, item in enumerate(others, start=1):
         item["todayRank"] = rank
 
@@ -158,6 +164,13 @@ def build_one_lead_card(conn, job_key: str, *, now: datetime | None = None) -> d
             inbound_snippet=subj,
         )
     )
+    draft_body, dealbreaker = apply_pitch_dealbreaker(
+        draft_body,
+        body,
+        subject=subj,
+        recruiter_name=recruiter or drafted.recruiter_name,
+        title=row["title"] or "",
+    )
     thread = drafted.thread_url or _thread_url_for_lead(convs, conn, job_key)
     channel = _card_channel(
         thread_url=thread,
@@ -191,6 +204,7 @@ def build_one_lead_card(conn, job_key: str, *, now: datetime | None = None) -> d
         "contactAttempts": _contact_attempt_count(convs),
         "replyDue": unanswered is not None,
         "theirReply": their_reply,
+        "dealbreaker": dealbreaker,
         "unansweredDays": unanswered_days,
         "status": row["status"] or "",
     }
@@ -221,6 +235,7 @@ def build_one_lead_card(conn, job_key: str, *, now: datetime | None = None) -> d
         gmail_url=item.get("gmailUrl") or "",
         routes=item["replyPlan"]["routes"],
         their_reply=their_reply,
+        dealbreaker=dealbreaker,
     )
     item["nextAction"] = next_action
     item["actionHint"] = next_action
@@ -261,6 +276,7 @@ def refresh_one_lead(
                 unanswered_days=int(card.get("unansweredDays") or 0),
                 routes=card["replyPlan"]["routes"],
                 their_reply=bool(card.get("theirReply")),
+                dealbreaker=card.get("dealbreaker") or "",
             )
             card["actionHint"] = card["nextAction"]
     place_card_first(payload, card)
