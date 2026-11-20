@@ -36,7 +36,7 @@ def _captured_steps(fast_cycle, monkeypatch, tmp_path: Path) -> list[list[str]]:
     calls: list[list[str]] = []
 
     def fake_run(cmd, *, cwd, timeout):
-        calls.append([str(c) for c in cmd])
+        calls.append([str(c) for c in cmd] + [f"timeout={timeout}"])
         return 0
 
     monkeypatch.setattr(fast_cycle, "_run", fake_run)
@@ -66,6 +66,7 @@ def test_sys2_fast_tick_intake_steps_are_offline(fast_cycle, monkeypatch, tmp_pa
         if _script(cmd).startswith("triage_"):
             assert "--offline" in cmd and "--no-generate" in cmd, cmd
     assert "--no-rescore" in calls[-1]
+    assert "timeout=150" in calls[-1]
 
 
 def test_sys3_fast_tick_skips_when_lock_busy(fast_cycle, monkeypatch, tmp_path: Path):

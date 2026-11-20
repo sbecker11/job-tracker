@@ -216,7 +216,9 @@ def run_steps(*, db: Path, skip_classify: bool) -> list[str]:
                 "--no-rescore",
             ],
             cwd=REPO_ROOT,
-            timeout=60,
+            # The render is about 30s, then reply drafts get 90s and are saved
+            # only when that budget ends. A shorter cap kills the process first.
+            timeout=150,
         ),
         "render pending-actions",
     )
