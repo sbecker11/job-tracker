@@ -41,11 +41,6 @@ dealbreakers:
     keywords: ["django"]
     min_hits: 1
     verdict: "Dealbreaker if load-bearing"
-  - id: php
-    label: "PHP as load-bearing requirement"
-    keywords: ["\\bphp\\b"]
-    min_hits: 1
-    verdict: "Dealbreaker if load-bearing"
   - id: angular
     label: "Angular as load-bearing requirement"
     keywords: ["angular"]
@@ -153,6 +148,13 @@ not_dealbreakers:
       Evaluation/targeting only — never write citizenship or sponsorship
       status into résumé/cover letter (CLAUDE.md §4 rule 11). Added
       2026-07-16 after Magnet Forensics was incorrectly gated to REVIEW.
+  - id: php
+    label: "PHP as load-bearing requirement"
+    keywords: ["\\bphp\\b"]
+    note: >-
+      NOT a concern as of 2026-11-25 — ~1 year PHP at Greenseed LLC
+      (front-end FSBO reports app). Do not invent more PHP than that
+      engagement. Withdrawn as a dealbreaker the same day.
 
 # Skills vocabulary pulled from CLAUDE.md §8 (portfolio projects) and §9
 # (technical anchors by engagement), weighted toward the most current stack
@@ -200,6 +202,11 @@ skills:
     weight: 3
   - keyword: "mlflow"
     weight: 3
+  # Greenseed PHP (~1 yr) + NuSkin Selenium — added 2026-11-25
+  - keyword: "\\bphp\\b"
+    weight: 2
+  - keyword: "selenium"
+    weight: 2
 
   # Mid / recent-past engagements (weight 2)
   - keyword: "pyspark"
@@ -282,7 +289,7 @@ generic_tech_vocabulary:
   - keyword: "\\bruby\\b"
   - keyword: "ruby on rails"
   - keyword: "\\brails\\b"
-  - keyword: "\\bphp\\b"
+  # php moved to skills: 2026-11-25 (Greenseed ~1 yr) — keep out of generic to avoid double-count
   - keyword: "laravel"
   - keyword: "symfony"
   - keyword: "\\brust\\b"
@@ -381,8 +388,7 @@ generic_tech_vocabulary:
   - keyword: "websocket"
   - keyword: "load balancer"
   - keyword: "\\bcdn\\b"
-  # Testing
-  - keyword: "selenium"
+  # Testing (selenium moved to skills: 2026-11-25 — NuSkin UI/API regression)
   - keyword: "\\bjest\\b"
   - keyword: "\\bjunit\\b"
   - keyword: "\\bpytest\\b"

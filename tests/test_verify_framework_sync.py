@@ -22,7 +22,6 @@ _CLAUDE_FIXTURE = """\
 | **C2C-only** (no W2 option) | Structural mismatch |
 | **Go / Golang** as load-bearing requirement | Dealbreaker |
 | **Django** as load-bearing requirement | Dealbreaker |
-| **PHP** as load-bearing requirement | Dealbreaker |
 | **Angular** as load-bearing requirement | Dealbreaker |
 | **.NET / C#** as load-bearing requirement | Dealbreaker |
 | **Onsite-only, not in/near Lehi, UT** | Dealbreaker |
@@ -30,6 +29,7 @@ _CLAUDE_FIXTURE = """\
 | **W2-only** | NOT a concern |
 | **1099 direct-to-individual** | NOT a concern |
 | **US citizen required** | NOT a concern |
+| **PHP** as load-bearing requirement | NOT a concern |
 
 ## 4. House Rules
 """
@@ -47,7 +47,6 @@ def _minimal_framework() -> dict:
             {"id": "c2c_only", "label": "C2C", "keywords": ["c2c only"]},
             {"id": "golang", "label": "Go", "keywords": ["golang"]},
             {"id": "django", "label": "Django", "keywords": ["django"]},
-            {"id": "php", "label": "PHP", "keywords": ["php"]},
             {"id": "angular", "label": "Angular", "keywords": ["angular"]},
             {"id": "dotnet", "label": ".NET", "keywords": [".net"]},
             {"id": "onsite_only", "label": "Onsite", "keywords": ["onsite only"]},
@@ -56,6 +55,7 @@ def _minimal_framework() -> dict:
         "not_dealbreakers": [
             {"id": "w2_only", "label": "W2-only"},
             {"id": "us_citizen_or_no_sponsorship", "label": "US citizen"},
+            {"id": "php", "label": "PHP", "keywords": ["php"]},
         ],
         "skills": [{"keyword": "python", "weight": 3}],
     }

@@ -26,7 +26,6 @@ _DEALBREAKER_MARKERS: dict[str, tuple[str, ...]] = {
     "c2c_only": ("c2c-only", "c2c only"),
     "golang": ("golang", "go / golang"),
     "django": ("django",),
-    "php": ("php",),
     "angular": ("angular",),
     "dotnet": (".net", "c#"),
     "onsite_only": ("onsite-only", "onsite only"),
@@ -40,6 +39,8 @@ _NOT_DEALBREAKER_MARKERS: dict[str, tuple[str, ...]] = {
         "without sponsorship",
         "authorized to work",
     ),
+    # 2026-11-25: ~1 year PHP at Greenseed — withdrawn as dealbreaker
+    "php": ("php",),
 }
 
 # Documented in CLAUDE §3 but not encoded as a framework not_dealbreaker row yet.
